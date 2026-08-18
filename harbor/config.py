@@ -10,7 +10,7 @@ import yaml
 DEFAULTS = {
     "general": {
         "data_dir": ".dev-data",
-        "host": "127.0.0.1",
+        "host": "0.0.0.0",
         "port": 8799,
         "executor": "fake",  # fake | pi | oi
         "poll_seconds": 15,

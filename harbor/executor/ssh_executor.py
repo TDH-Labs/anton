@@ -2,7 +2,7 @@
 
 The container runs the control plane; the executor runs recipes on a host machine
 (Mac or otherwise) that has pi/OI + credentials. Config via env:
-  HARBOR_SSH_HOST        e.g. 100.105.232.122 or mac-studio.local
+  HARBOR_SSH_HOST        e.g. 10.0.0.0 or mac-studio.local
   HARBOR_SSH_USER        ssh user
   HARBOR_SSH_KEY         path to an ssh private key (optional)
   HARBOR_SSH_COMMAND     shell command template; <recipe> and <model> are substituted

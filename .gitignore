@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 .dev-data/
 .venv/
+.harbor_backups/

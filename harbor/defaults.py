@@ -8,11 +8,15 @@ DEFAULT_JOBS_YAML = """- id: e2e-canary
   trigger: { type: cron, expr: "0 * * * *" }
   recipe: control-plane-digest
   expected_cadence_min: 60
+- id: smoke-hook
+  trigger: { type: webhook }
+  recipe: smoke-hook
+  expected_cadence_min: 0
 """
 
 DEFAULT_CONFIG_YAML = """general:
   data_dir: data
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8799
   executor: fake          # fake | pi | oi | ssh
   dashboard_token: ""      # set before exposing the dashboard port (bearer on writes)

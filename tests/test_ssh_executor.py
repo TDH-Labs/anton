@@ -18,13 +18,13 @@ class TestSSHExecutor(unittest.TestCase):
         self.dir.cleanup()
 
     def test_builds_ssh_command(self):
-        exe = SSHExecutor(host="10.0.0.108", user="umbrel", key="/keys/id",
+        exe = SSHExecutor(host="10.9.9.9", user="umbrel", key="/keys/id",
                           command="run-local-recipe.sh <recipe>", ssh_bin=self.ssh)
         res = exe.run("bill-capture", model="[REDACTED-LOCAL-INFERENCE]/q", provider="local")
         self.assertEqual(res.exit_code, 0)
         self.assertIn("-i", res.output.splitlines()[0] if res.output else "")
         joined = " ".join(res.output.splitlines())
-        self.assertIn("umbrel@10.0.0.108", joined)
+        self.assertIn("umbrel@10.9.9.9", joined)
         self.assertIn("run-local-recipe.sh bill-capture", joined)
 
     def test_unavailable_without_host(self):

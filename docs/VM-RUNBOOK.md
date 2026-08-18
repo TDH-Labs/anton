@@ -38,7 +38,7 @@ $HOME/.harbor/venv/bin/harbor doctor --data-dir $HOME/.harbor/data
 $HOME/.harbor/venv/bin/harbor serve  --data-dir $HOME/.harbor/data --executor fake --port 8799 &
 sleep 3
 curl -s http://127.0.0.1:8799/health                  # {"ok": true, ...}
-curl -s -X POST http://127.0.0.1:8799/hooks/e2e-canary # exit 0
+curl -s -X POST http://127.0.0.1:8799/hooks/smoke-hook # exit 0 (webhook-triggered default job)
 $HOME/.harbor/venv/bin/harbor canary --data-dir $HOME/.harbor/data   # PASS after the run
 $HOME/.harbor/venv/bin/harbor digest --data-dir $HOME/.harbor/data
 kill %1
@@ -119,12 +119,18 @@ docker run -d --name harbor-sas-test -p 8799:8799 \
   -v harbor_test_data:/data harbor-sas:latest
 
 sleep 5
-curl -s http://127.0.0.1:8799/health          # {"ok": true}
-curl -s http://127.0.0.1:8799/api/ledger
-curl -s -X POST http://127.0.0.1:8799/api/approvals \
+curl -s http://127.0.0.1:8799/health          # {"ok": true}  (serve: health + webhooks only)
+
+# NOTE (clean-box fix 2026-08-18): /api/ledger and /api/approvals live on the
+# SEPARATE dashboard server, not serve. Launch it too — WITH the token set:
+docker exec -d harbor-sas-test bash -lc 'HARBOR_DASHBOARD_TOKEN=change-me \
+  /app/venv/bin/harbor dashboard --data-dir /data --port 8800'
+sleep 4
+curl -s http://127.0.0.1:8800/api/ledger
+curl -s -X POST http://127.0.0.1:8800/api/approvals \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" -d '{"action":"test"}'    # 200 with token
-# without the token -> 401
+# without the token (correct env) -> 401
 docker rm -f harbor-sas-test
 ```
 
@@ -208,3 +214,38 @@ curl -s -X POST http://127.0.0.1:8799/hooks/<job-id> -d '{}'
 - Host: delete `$HARBOR_HOME` → clean reinstall.
 - Container: `docker compose down -v` (drops the volume) → redeploy.
 - Umbrel: uninstall the app (keeps the volume unless removed) → reinstall from repo.
+
+---
+
+## CLEAN-BOX PROOF RESULTS (2026-08-18, option B)
+
+Executed Phase 0–3 on a disposable Ubuntu 22.04 container + Mac-host Docker build.
+
+### Verified works
+- Install → doctor (all ✓ under py3.11), serve, health, cron-triggered canary, digest
+- Container build + run, dashboard server (/api/ledger, /api/usage, /api/approvals)
+- Approvals auth (401/401/200) **when HARBOR_DASHBOARD_TOKEN is set**
+
+### Findings (runbook/doc corrections — not code bugs)
+1. **Python prereq is real:** repo requires ≥3.11; Ubuntu 22.04 defaults to 3.10.
+   install.sh does not recover from a stale mismatched `$HOME/.harbor` venv (must `rm -rf`
+   it first). Add a prereq/preflight + venv-rebuild note.
+2. **BIND BUG:** `harbor serve` binds 127.0.0.1 → inside a container the `-p 8799:8799`
+   map is unreachable from the host. Serve must bind 0.0.0.0 (or a flag) for container use.
+3. **RUNBOOK BUG — wrong server in Phase 1/3:** `/api/ledger` and `/api/approvals` live on
+   the *dashboard* server, not the *serve* server. Phase 1 `curl .../api/ledger` on 8799
+   (serve) returns 404. Correct: start dashboard (separate port) for those.
+4. **RUNBOOK BUG — webhook job:** `POST /hooks/<id>` only accepts `trigger.type=="webhook"`
+   jobs, but defaults/jobs.yaml has only cron triggers → smoke POST 404s. Add a webhook-triggered
+   default job or note it.
+5. **RUNBOOK GAP — dashboard token:** Phase 3 says "without token → 401" but launches the
+   dashboard without setting HARBOR_DASHBOARD_TOKEN, so nothing is enforced. Auth works when
+   the env var is set (verified 401/401/200). Fix the runbook command to set it.
+
+### Option-B harvest into the LIVE engine (2026-08-18)
+The runbook proof surfaced that harbor-sas's metering is a stub (pi executor
+admits tokens stay None). The live engine now captures REAL metering by reading
+pi's session usage: `~/.buzz/skills/initiative-engine/meter.py` (cloud-only rows
+in isolation.db `metering` table), wired into `run-local-recipe.sh` after cloud
+fallback + surfaced as a "Cloud usage" card on the live dashboard.
+Verified: captures pi session usage (e.g. 1877/237 tok, $0.0084) with real data.
