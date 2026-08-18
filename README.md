@@ -31,6 +31,10 @@ harbor governor --ev 0.8 --feasibility 0.9 --kind money   # ambition governor
 harbor skills   --title "…" --golden 3       # author -> sandbox gate -> promote
 harbor delta    --data-dir …                 # failures + canary -> initiative candidates
 harbor run      --task "…" --executor fake   # one-off run into the ledger
+harbor doctor   --data-dir …                 # read-only install diagnostics
+harbor usage    --data-dir …                 # metering totals (cloud usage)
+harbor oauth    --port 0 --timeout 120       # localhost OAuth callback server
+harbor skills   --index --data-dir …         # index data/skills -> skill_dependencies
 ```
 
 ## Jobs (deterministic engine)
@@ -75,5 +79,5 @@ Container (secondary): `docker build -t harbor-sas .` then run with `/data` moun
 ## Tests
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -v   # 54 tests, zero external services
+.venv/bin/python -m unittest discover -s tests -v   # 60 tests, zero external services
 ```

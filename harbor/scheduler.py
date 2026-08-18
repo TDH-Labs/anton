@@ -26,6 +26,24 @@ class JobEngine:
         self.db = db
         self.data_dir = data_dir or config.get("general", {}).get("data_dir")
 
+    def _touch_heartbeat(self) -> None:
+        if self.data_dir:
+            import os
+            os.makedirs(self.data_dir, exist_ok=True)
+            with open(os.path.join(self.data_dir, "last-heartbeat"), "w", encoding="utf-8") as f:
+                f.write(dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
+    def _record_metering(self, record: RunRecord) -> None:
+        if self.data_dir:
+            import os
+            from .metering import connect, record
+            try:
+                conn = connect(os.path.join(self.data_dir, "isolation.db"))
+                record(conn, record)
+                conn.close()
+            except Exception:  # noqa: BLE001 — metering must never break a run
+                pass
+
     def _is_approved(self, job_id: str) -> bool:
         """R1: a gated job may only run with an approved nonce in the approvals table."""
         if not self.data_dir:
@@ -94,6 +112,8 @@ class JobEngine:
             prefer="local" if job.model_route == "local-default" else "cloud",
         )
 
+        self._touch_heartbeat()
+
         # R1/R7: hard-gate jobs (money/outbound) require an approved nonce before any run.
         if job.gate and (job.gate.get("money") or job.gate.get("outbound")):
             if not self._is_approved(job.id):
@@ -102,6 +122,7 @@ class JobEngine:
                                        duration_ms=0,
                                        ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
                 self.ledger.append(record)
+                self._record_metering(record)
                 return record
 
         started = time.monotonic()
@@ -137,6 +158,7 @@ class JobEngine:
                                cost_usd=result.cost_usd, duration_ms=result.duration_ms,
                                ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
         self.ledger.append(record)
+        self._record_metering(record)
         return record
 
     def _run_verify(self, verify_cmd: str, output: str) -> tuple[bool, str]:

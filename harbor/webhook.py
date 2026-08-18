@@ -10,6 +10,13 @@ from .scheduler import JobEngine
 
 def make_handler(engine: JobEngine):
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            if self.path == "/health":
+                self._send(200, {"ok": True, "jobs": len(engine.jobs),
+                                 "ledger_rows": len(engine.ledger.read())})
+            else:
+                self._send(404, {"error": "not found"})
+
         def do_POST(self):  # noqa: N802
             try:
                 job_id = self.path.split("/hooks/")[1]

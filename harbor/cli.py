@@ -26,6 +26,8 @@ from .sandbox import promote, run_sandbox_gate
 from .delta import scan_ledger_failures
 from .defaults import DEFAULT_JOBS_YAML
 from .setup import run_setup
+from .doctor import run_doctor
+from .metering import connect as metering_connect, daily_totals, lifetime_totals
 
 EXECUTORS = {"fake": FakeExecutor, "pi": PiExecutor, "oi": OIExecutor}
 
@@ -111,8 +113,10 @@ def cmd_serve(args, config: dict) -> int:
     srv.start()
     print(f"harbor serve: http://{host}:{srv.port}  (jobs={len(jobs)}, "
           f"executor={args.executor}, poll={config['general']['poll_seconds']}s)", flush=True)
+    engine._touch_heartbeat()
     try:
         while True:
+            engine._touch_heartbeat()
             for job in engine.due_jobs():
                 rec = engine.run_job(job)
                 print(f"[{rec.ts}] cron {job.id} exit={rec.exit} flags={rec.flags}", flush=True)
@@ -169,6 +173,11 @@ def cmd_governor(args, config: dict) -> int:
 
 def cmd_skills(args, config: dict) -> int:
     data_dir = args.data_dir
+    if args.index:
+        return _index_skills(data_dir)
+    if not args.title:
+        print("--title is required unless --index", file=sys.stderr)
+        return 2
     slug = author_skill(title=args.title, description=args.description,
                         condition=args.condition,
                         steps=(args.step1, args.step2, args.step3),
@@ -180,8 +189,53 @@ def cmd_skills(args, config: dict) -> int:
         print(f"sandbox gate FAILED for {slug}")
         return 1
     dst = promote(script, os.path.join(data_dir, "skills"), slug=slug)
+    import shutil
+    staging_skill = os.path.join(data_dir, "staging", slug_of(args.title), "SKILL.md")
+    if os.path.exists(staging_skill):
+        shutil.copy2(staging_skill, os.path.join(data_dir, "skills", slug, "SKILL.md"))
     print(f"skill {slug} promoted -> {dst}")
     return 0
+
+
+def _index_skills(data_dir: str) -> int:
+    import sqlite3
+    skills_dir = os.path.join(data_dir, "skills")
+    if not os.path.isdir(skills_dir):
+        print("no skills dir yet", file=sys.stderr)
+        return 1
+    conn = sqlite3.connect(os.path.join(data_dir, "isolation.db"))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS skill_dependencies ("
+        " skill_slug TEXT PRIMARY KEY, org_id TEXT DEFAULT 'default',"
+        " prerequisite_skill TEXT, target_capability TEXT, mastery_score REAL,"
+        " last_validated TEXT)")
+    count = 0
+    now = _now_iso()
+    for slug in sorted(os.listdir(skills_dir)):
+        sk = os.path.join(skills_dir, slug, "SKILL.md")
+        has_script = any(fn.endswith(".py") for fn in os.listdir(os.path.join(skills_dir, slug)))
+        if not os.path.exists(sk) and not has_script:
+            continue
+        desc = ""
+        if os.path.exists(sk):
+            with open(sk, encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("description:"):
+                        desc = line.split(":", 1)[1].strip().strip(chr(34)).strip(chr(39))
+                        break
+        conn.execute("INSERT OR REPLACE INTO skill_dependencies"
+                     "(skill_slug, target_capability, last_validated) VALUES(?,?,?)",
+                     (slug, desc, now))
+        count += 1
+    conn.commit()
+    conn.close()
+    print(f"indexed {count} skill(s) into skill_dependencies")
+    return 0
+
+
+def _now_iso() -> str:
+    import datetime as _dt
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def slug_of(title: str) -> str:
@@ -227,6 +281,45 @@ def cmd_dashboard(args, config: dict) -> int:
     print(f"harbor dashboard: http://{host}:{port}  (read-only pane + approvals)")
     uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
+
+
+def cmd_doctor(args, config: dict) -> int:
+    lines, ok = run_doctor(args.data_dir, executor_name=args.executor)
+    for ln in lines:
+        print(ln)
+    return 0 if ok else 1
+
+
+def cmd_usage(args, config: dict) -> int:
+    db = os.path.join(args.data_dir, "isolation.db")
+    if not os.path.exists(db):
+        print("no isolation.db yet — run setup first", file=sys.stderr)
+        return 1
+    conn = metering_connect(db)
+    import json
+    print(json.dumps({"daily": daily_totals(conn, args.org_id),
+                      "lifetime": lifetime_totals(conn, args.org_id)}, indent=2))
+    conn.close()
+    return 0
+
+
+def cmd_oauth(args, config: dict) -> int:
+    from .oauth import CallbackServer
+    srv = CallbackServer(port=args.port, timeout_s=args.timeout)
+    srv.start()
+    print(f"OAuth callback listening on http://127.0.0.1:{srv.port}/callback "
+          f"(timeout {args.timeout}s)", flush=True)
+    print("Send the provider here: /callback?code=<CODE>&state=<STATE>", flush=True)
+    try:
+        result = srv.wait()
+        print(f"received: code={'<redacted>' if result.get('code') else '(none)'} "
+              f"state={result.get('state') or '(none)'}")
+        return 0
+    except TimeoutError:
+        print("timeout — no callback received", file=sys.stderr)
+        return 1
+    finally:
+        srv.stop()
 
 
 def main(argv=None) -> int:
@@ -277,7 +370,7 @@ def main(argv=None) -> int:
     gov.set_defaults(fn=cmd_governor)
 
     skills = sub.add_parser("skills", help="author + sandbox-gate + promote a skill")
-    skills.add_argument("--title", required=True)
+    skills.add_argument("--title", default=None)
     skills.add_argument("--description", default="")
     skills.add_argument("--condition", default="task matches")
     skills.add_argument("--step1", default="Detect the condition")
@@ -304,6 +397,23 @@ def main(argv=None) -> int:
     dash.add_argument("--executor", choices=sorted(EXECUTORS), default="fake")
     dash.add_argument("--port", type=int, default=None)
     dash.set_defaults(fn=cmd_dashboard)
+    skills.add_argument("--index", action="store_true",
+                        help="index data/skills into skill_dependencies")
+
+    doctor = sub.add_parser("doctor", help="read-only diagnostics")
+    doctor.add_argument("--data-dir", default=".dev-data")
+    doctor.add_argument("--executor", default="fake")
+    doctor.set_defaults(fn=cmd_doctor)
+
+    usage = sub.add_parser("usage", help="metering totals (cloud usage)")
+    usage.add_argument("--data-dir", default=".dev-data")
+    usage.add_argument("--org-id", default="default")
+    usage.set_defaults(fn=cmd_usage)
+
+    oauth = sub.add_parser("oauth", help="localhost OAuth callback server (onboarding)")
+    oauth.add_argument("--port", type=int, default=0)
+    oauth.add_argument("--timeout", type=int, default=120)
+    oauth.set_defaults(fn=cmd_oauth)
 
     args = ap.parse_args(argv)
     config = load_config(args.config)
