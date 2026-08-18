@@ -9,7 +9,7 @@ import datetime as dt
 import os
 import secrets
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
@@ -73,9 +73,21 @@ class ResolveReq(BaseModel):
     decision: str  # approve | deny
 
 
+def _require_token(request, token: str) -> None:
+    if not token:
+        return
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {token}":
+        raise HTTPException(401, "missing or invalid bearer token")
+
+
 def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
+    import os as _os
     app = FastAPI(title="harbor-sas control plane")
     ledger = engine.ledger
+    token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("HARBOR_DASHBOARD_TOKEN") or ""
+    if token:
+        app.state.dashboard_token = token
 
     @app.get("/", response_class=HTMLResponse)
     def index():
@@ -119,7 +131,8 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                                  "FROM approvals WHERE status=? ORDER BY id DESC", (status,))
 
     @app.post("/api/approvals")
-    def create_approval(req: ApprovalReq):
+    def create_approval(req: ApprovalReq, request: Request):
+        _require_token(request, token)
         nonce = secrets.token_hex(16)
         import sqlite3
         conn = sqlite3.connect(os.path.join(data_dir, "isolation.db"))
@@ -133,7 +146,8 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         return {"id": aid, "nonce": nonce, "status": "pending"}
 
     @app.post("/api/approvals/{aid}/resolve")
-    def resolve_approval(aid: int, req: ResolveReq):
+    def resolve_approval(aid: int, req: ResolveReq, request: Request):
+        _require_token(request, token)
         if req.decision not in ("approve", "deny"):
             raise HTTPException(400, "decision must be approve|deny")
         import sqlite3

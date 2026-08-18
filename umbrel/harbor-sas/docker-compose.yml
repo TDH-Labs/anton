@@ -1,0 +1,26 @@
+services:
+  harbor-sas:
+    image: harbor-sas:latest   # replace with your registry image before installing
+    container_name: harbor-sas
+    restart: unless-stopped
+    ports:
+      - "8799:8799"
+    volumes:
+      - harbor_data:/data
+    environment:
+      - HARBOR_EXECUTOR=${HARBOR_EXECUTOR:-fake}
+      - HARBOR_DATA_DIR=/data
+      - HARBOR_PORT=8799
+      - HARBOR_DASHBOARD_TOKEN=${HARBOR_DASHBOARD_TOKEN:-}
+      - HARBOR_SSH_HOST=${HARBOR_SSH_HOST:-}
+      - HARBOR_SSH_USER=${HARBOR_SSH_USER:-}
+      - HARBOR_SSH_KEY=${HARBOR_SSH_KEY:-}
+      - HARBOR_SSH_COMMAND=${HARBOR_SSH_COMMAND:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8799/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+volumes:
+  harbor_data:

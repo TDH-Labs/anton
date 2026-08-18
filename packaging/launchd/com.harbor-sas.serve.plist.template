@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.harbor-sas.serve</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HARBOR_VENV_BIN__</string>
+    <string>serve</string>
+    <string>--data-dir</string>
+    <string>__HARBOR_DATA_DIR__</string>
+    <string>--executor</string>
+    <string>__HARBOR_EXECUTOR__</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HARBOR_DATA_DIR__/serve.stdout.log</string>
+  <key>StandardErrorPath</key><string>__HARBOR_DATA_DIR__/serve.stderr.log</string>
+</dict>
+</plist>

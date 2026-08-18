@@ -76,6 +76,32 @@ HARBOR_HOME=/opt/harbor bash install.sh
 
 Container (secondary): `docker build -t harbor-sas .` then run with `/data` mounted.
 
+## Umbrel app (server deployment)
+
+```
+umbrel/harbor-sas/   # umbrel-app.yml + docker-compose.yml + assets/icon.svg
+```
+
+- Build the image (`docker build -t harbor-sas:latest .`), push to your registry, and
+  point `image:` in `umbrel/harbor-sas/docker-compose.yml` at it.
+- Set `HARBOR_EXECUTOR=ssh` with `HARBOR_SSH_*` to run recipes on a host machine
+  (the n8n→SSH→Mac pattern), or `pi`/`oi` if executors are baked into the image.
+- **Set `HARBOR_DASHBOARD_TOKEN` before exposing port 8799** — the dashboard is
+  read-only, but approval writes require the bearer token when one is configured.
+
+## Service templates (auto-start on a host install)
+
+- `packaging/launchd/com.harbor-sas.serve.plist.template` (macOS — fill
+  `__HARBOR_VENV_BIN__`, `__HARBOR_DATA_DIR__`, `__HARBOR_EXECUTOR__`)
+- `packaging/systemd/harbor-sas.service` (Linux) + `/etc/harbor-sas.env`
+
+## Known placeholders before real deployment
+
+See the "before you deploy" list in the conversation notes: fake executor default,
+unverified pi/OI executors, empty token capture (metering records zeros until executors
+report usage), HMAC signing for approvals (currently table-status-based), governor not
+yet wired to a live auto-routing loop, placeholder default recipes.
+
 ## Tests
 
 ```bash

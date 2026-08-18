@@ -14,7 +14,8 @@ DEFAULT_CONFIG_YAML = """general:
   data_dir: data
   host: 127.0.0.1
   port: 8799
-  executor: fake          # fake | pi | oi
+  executor: fake          # fake | pi | oi | ssh
+  dashboard_token: ""      # set before exposing the dashboard port (bearer on writes)
   poll_seconds: 15
   org_id: default
 routes:

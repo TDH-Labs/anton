@@ -11,6 +11,7 @@ import time
 from .config import load_config
 from .db import init_db
 from .executor import FakeExecutor, OIExecutor, PiExecutor
+from .executor.ssh_executor import SSHExecutor
 from .jobs import load_jobs
 from .ledger import Ledger
 from .models import RunRecord
@@ -29,7 +30,7 @@ from .setup import run_setup
 from .doctor import run_doctor
 from .metering import connect as metering_connect, daily_totals, lifetime_totals
 
-EXECUTORS = {"fake": FakeExecutor, "pi": PiExecutor, "oi": OIExecutor}
+EXECUTORS = {"fake": FakeExecutor, "pi": PiExecutor, "oi": OIExecutor, "ssh": SSHExecutor}
 
 
 
