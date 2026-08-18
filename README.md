@@ -95,6 +95,12 @@ umbrel/harbor-sas/   # umbrel-app.yml + docker-compose.yml + assets/icon.svg
   `__HARBOR_VENV_BIN__`, `__HARBOR_DATA_DIR__`, `__HARBOR_EXECUTOR__`)
 - `packaging/systemd/harbor-sas.service` (Linux) + `/etc/harbor-sas.env`
 
+## Deployment runbook
+
+[`docs/VM-RUNBOOK.md`](docs/VM-RUNBOOK.md) — phase-by-phase: host smoke test, pi/OI
+executor integration, container build, Umbrel install, and the pre-deployment checklist
+(fake → real swaps).
+
 ## Known placeholders before real deployment
 
 See the "before you deploy" list in the conversation notes: fake executor default,
