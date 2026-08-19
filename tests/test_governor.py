@@ -27,3 +27,11 @@ class TestGovernor(unittest.TestCase):
     def test_uncertain_presents_with_evidence(self):
         r = classify(0.5, 0.5, risk="low")
         self.assertEqual(r.route, PRESENT_WITH_EVIDENCE)
+
+    def test_score_edge_cases(self):
+        self.assertEqual(score(-1.0, 0.5), 0.0)
+        self.assertEqual(score(0.5, -0.5), 0.0)
+        self.assertEqual(score(float("nan"), 0.5), 0.0)
+        self.assertEqual(score(0.5, float("nan")), 0.0)
+        self.assertEqual(score(float("inf"), 0.5), 0.0)
+

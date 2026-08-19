@@ -40,12 +40,29 @@ class TestGate(unittest.TestCase):
         self.assertIn("gate-blocked", rec.flags)
 
     def test_outbound_job_runs_after_approval(self):
-        conn = sqlite3.connect(os.path.join(self.dir.name, "isolation.db"))
-        conn.execute("INSERT INTO approvals(nonce, action, status, ts) VALUES(?,?,?,?)",
-                     ("nonce1", "email-client", "approved",
-                      dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"), timeout=10.0) as conn:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts) VALUES(?,?,?,?)",
+                         ("nonce1", "email-client", "approved",
+                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+            conn.commit()
         rec = self.engine.run_job(self.engine.by_id("email-client"),
                                   now=dt.datetime.now(dt.timezone.utc))
         self.assertEqual(rec.exit, 0)
+
+    def test_outbound_job_nonce_consumed_after_single_use(self):
+        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"), timeout=10.0) as conn:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts) VALUES(?,?,?,?)",
+                         ("nonce1", "email-client", "approved",
+                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+            conn.commit()
+        # First run consumes approval
+        rec1 = self.engine.run_job(self.engine.by_id("email-client"),
+                                   now=dt.datetime.now(dt.timezone.utc))
+        self.assertEqual(rec1.exit, 0)
+
+        # Second run fails closed because approval is consumed
+        rec2 = self.engine.run_job(self.engine.by_id("email-client"),
+                                   now=dt.datetime.now(dt.timezone.utc))
+        self.assertEqual(rec2.exit, 5)
+        self.assertIn("gate-blocked", rec2.flags)
+

@@ -32,3 +32,12 @@ class TestSSHExecutor(unittest.TestCase):
         res = exe.run("x", model="m", provider="local")
         self.assertEqual(res.exit_code, 1)
         self.assertIn("unavailable", res.error or "")
+
+    def test_command_injection_escaped(self):
+        exe = SSHExecutor(host="10.9.9.9", user="umbrel",
+                          command="run-local-recipe.sh <recipe>", ssh_bin=self.ssh)
+        res = exe.run("bill-capture; rm -rf /", model="m", provider="local")
+        self.assertEqual(res.exit_code, 0)
+        joined = " ".join(res.output.splitlines())
+        self.assertIn("'bill-capture; rm -rf /'", joined)
+

@@ -36,10 +36,10 @@ class JobEngine:
     def _record_metering(self, record: RunRecord) -> None:
         if self.data_dir:
             import os
-            from .metering import connect, record
+            from .metering import connect as _m_connect, record as _m_record
             try:
-                conn = connect(os.path.join(self.data_dir, "isolation.db"))
-                record(conn, record)
+                conn = _m_connect(os.path.join(self.data_dir, "isolation.db"))
+                _m_record(conn, record)
                 conn.close()
             except Exception:  # noqa: BLE001 — metering must never break a run
                 pass
@@ -53,14 +53,16 @@ class JobEngine:
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
             return False
-        conn = sqlite3.connect(p)
-        try:
+        with sqlite3.connect(p, timeout=10.0) as conn:
             row = conn.execute(
-                "SELECT status FROM approvals WHERE action=? ORDER BY id DESC LIMIT 1",
+                "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
                 (job_id,)).fetchone()
-        finally:
-            conn.close()
-        return row is not None and row[0] == "approved"
+            if not row:
+                return False
+            aid = row[0]
+            cur = conn.execute("UPDATE approvals SET status='consumed' WHERE id=? AND status='approved'", (aid,))
+            conn.commit()
+            return cur.rowcount > 0
 
     def by_id(self, job_id: str) -> Optional[Job]:
         return next((j for j in self.jobs if j.id == job_id), None)
@@ -94,14 +96,27 @@ class JobEngine:
     def enforce_budget(self, job: Job, meta: dict) -> Optional[str]:
         b = self.config.get("budgets", {})
         job_budget = job.budget or {}
-        if meta.get("tokens_in") and b.get("tokens_max_per_job") and \
-                meta["tokens_in"] > b["tokens_max_per_job"]:
-            return f"job token budget breached: {meta['tokens_in']} > {b['tokens_max_per_job']}"
+        tokens_in = meta.get("tokens_in") or 0
+        tokens_out = meta.get("tokens_out") or 0
+        cost_usd = meta.get("cost_usd") or 0.0
+        total_job_tokens = tokens_in + tokens_out
+
+        token_limit = job_budget.get("tokens_max") or b.get("tokens_max_per_job")
+        if token_limit and total_job_tokens > token_limit:
+            return f"job token budget breached: {total_job_tokens} > {token_limit}"
+
+        cost_limit = job_budget.get("cost_usd_max") or b.get("cost_usd_max_per_job")
+        if cost_limit and cost_usd > cost_limit:
+            return f"job cost budget breached: ${cost_usd:.4f} > ${cost_limit:.4f}"
+
         today = self._usage_today("cloud")
-        if b.get("daily_tokens_max") and (today["tokens_in"] + today["tokens_out"]) > b["daily_tokens_max"]:
-            return f"daily token budget breached: {today['tokens_in'] + today['tokens_out']}"
-        if b.get("daily_cost_usd_max") and today["cost_usd"] > b["daily_cost_usd_max"]:
-            return f"daily cost budget breached: ${today['cost_usd']:.4f}"
+        today_tokens = today["tokens_in"] + today["tokens_out"] + total_job_tokens
+        today_cost = today["cost_usd"] + cost_usd
+
+        if b.get("daily_tokens_max") and today_tokens > b["daily_tokens_max"]:
+            return f"daily token budget breached: {today_tokens}"
+        if b.get("daily_cost_usd_max") and today_cost > b["daily_cost_usd_max"]:
+            return f"daily cost budget breached: ${today_cost:.4f}"
         return None
 
     def run_job(self, job: Job, now: Optional[dt.datetime] = None) -> RunRecord:
@@ -126,7 +141,9 @@ class JobEngine:
                 return record
 
         started = time.monotonic()
-        result = self.executor.run(job.recipe, model=route.model, provider=route.provider)
+        timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
+        result = self.executor.run(job.recipe, model=route.model, provider=route.provider,
+                                   timeout_s=timeout_s)
 
         breach = self.enforce_budget(job, {"tokens_in": result.tokens_in,
                                            "tokens_out": result.tokens_out,
@@ -135,8 +152,11 @@ class JobEngine:
             record = RunRecord.new(task=job.id, exit_code=3, flags="budget-breach",
                                    output=result.output, model=result.model,
                                    provider=result.provider, duration_ms=result.duration_ms,
+                                   tokens_in=result.tokens_in, tokens_out=result.tokens_out,
+                                   cost_usd=result.cost_usd,
                                    ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
             self.ledger.append(record)
+            self._record_metering(record)
             return record
 
         exit_code = result.exit_code
@@ -183,7 +203,9 @@ class JobEngine:
     def run_canary(self) -> List[dict]:
         tripwires = compute_tripwires(self.jobs, self.ledger)
         if tripwires:
-            for t in tripwires:
+            current_flags = ",".join(sorted(f"tripwire:{t['job_id']}" for t in tripwires))
+            last_canary = self.ledger.last_run("fleet-canary")
+            if last_canary is None or last_canary.get("flags") != current_flags:
                 self.ledger.append(RunRecord.new(task="fleet-canary", exit_code=1,
-                                                 flags=f"tripwire:{t['job_id']}"))
+                                                 flags=current_flags))
         return tripwires

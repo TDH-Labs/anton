@@ -38,9 +38,10 @@ def run_setup(install_dir: str, *, executor: str = "fake", org_id: str = "defaul
     secrets_path = os.path.join(install_dir, "secrets.yaml")
     if provider_keys and (not os.path.exists(secrets_path) or force):
         import yaml
-        with open(secrets_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(provider_keys, f)
-        os.chmod(secrets_path, stat.S_IRUSR | stat.S_IWUSR)  # 600
+        content = yaml.safe_dump(provider_keys)
+        fd = os.open(secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with open(fd, "w", encoding="utf-8") as f:
+            f.write(content)
 
     return {
         "install_dir": install_dir,

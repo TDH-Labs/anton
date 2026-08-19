@@ -30,7 +30,15 @@ if [ ! -x "$HARBOR_HOME/venv/bin/harbor" ]; then
   "$PYTHON" -m venv "$HARBOR_HOME/venv"
 fi
 "$HARBOR_HOME/venv/bin/pip" install -q --disable-pip-version-check -e "$REPO_DIR"
-"$HARBOR_HOME/venv/bin/harbor" setup --install-dir "$HARBOR_HOME"
-echo "==> installed. Start it with:"
-echo "    $HARBOR_HOME/venv/bin/harbor serve --data-dir $HARBOR_HOME/data --executor fake"
-echo "    $HARBOR_HOME/venv/bin/harbor dashboard --data-dir $HARBOR_HOME/data"
+# 4. Check for Agent Canvas UI
+CANVAS_BIN="$(which agent-canvas 2>/dev/null || echo "$HOME/.local/bin/agent-canvas")"
+if [ -x "$CANVAS_BIN" ]; then
+  echo "==> Agent Canvas UI detected at: $CANVAS_BIN"
+else
+  echo "==> Agent Canvas UI not found. Install globally via: npm install -g @openhands/agent-canvas"
+fi
+
+echo "==> Installed successfully. Start the turnkey system with:"
+echo "    1. Control Plane & 3D Neural Graph:  $HARBOR_HOME/venv/bin/harbor dashboard --data-dir $HARBOR_HOME/data"
+echo "    2. Background Automation Engine:     $HARBOR_HOME/venv/bin/harbor serve --data-dir $HARBOR_HOME/data"
+echo "    3. Agent Canvas Multi-Panel UI:      agent-canvas --port 8000"

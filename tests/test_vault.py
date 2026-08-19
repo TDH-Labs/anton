@@ -53,3 +53,10 @@ class TestVault(unittest.TestCase):
         row = conn.execute("SELECT slug, status FROM initiatives").fetchone()
         self.assertEqual(row, ("review_vault_note", "pending"))
         conn.close()
+
+    def test_wikilink_alias_and_header_parsing(self):
+        from harbor.vault import WIKILINK
+        text = "Check [[notes/test|My Test]] and [[mocs/strategy#overview]] as well as [[doc#sub|Doc Title]]."
+        matches = WIKILINK.findall(text)
+        self.assertEqual(matches, ["notes/test", "mocs/strategy", "doc"])
+

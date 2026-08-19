@@ -38,3 +38,21 @@ class TestSandbox(unittest.TestCase):
         dst = promote(p, skills, slug="good-skill")
         self.assertTrue(os.path.exists(dst))
         self.assertTrue(dst.endswith("good-skill/good.py"))
+
+    def test_path_traversal_in_promote_rejected(self):
+        p = os.path.join(self.dir.name, "good.py")
+        open(p, "w").write(GOOD)
+        skills = os.path.join(self.dir.name, "skills")
+        with self.assertRaises(ValueError):
+            promote(p, skills, slug="../../etc/cron.d")
+
+    def test_sandbox_executes_isolated(self):
+        p = os.path.join(self.dir.name, "side_effect.py")
+        side_effect_code = """import sys
+open('leaked.txt', 'w').write('leak')
+print('ok')
+"""
+        open(p, "w").write(side_effect_code)
+        self.assertTrue(run_sandbox_gate(p, golden_payload="1"))
+        self.assertFalse(os.path.exists(os.path.join(self.dir.name, "leaked.txt")))
+

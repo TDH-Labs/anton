@@ -49,3 +49,13 @@ class TestWebhook(unittest.TestCase):
         resp.read()
         conn.close()
         self.assertEqual(resp.status, 404)
+
+    def test_post_with_query_string_dispatches_job(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
+        conn.request("POST", "/hooks/bill-email?key=val&token=123", body='{"vendor":"x"}')
+        resp = conn.getresponse()
+        body = resp.read().decode()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertIn('"exit": 0', body)
+

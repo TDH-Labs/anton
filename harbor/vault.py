@@ -37,7 +37,7 @@ tags: []
 (empty)
 """
 
-WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:|[^\]|]+)?\]\]")
+WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 
 def provision_vault(vault_dir: str) -> str:
@@ -74,42 +74,47 @@ def _walk_md(vault_dir: str) -> List[str]:
 def scan_vault(vault_dir: str) -> Tuple[List[dict], List[dict]]:
     """Return (new_or_modified, removed) note descriptors vs the vault.db index."""
     conn = init_vault_db(os.path.join(vault_dir, "vault.db"))
-    conn.execute("DELETE FROM seen_items")
-    new_mod = []
-    removed = []
-    known = {r[0] for r in conn.execute("SELECT path FROM notes")}
-    seen = set()
-    for p in _walk_md(vault_dir):
-        rel = os.path.relpath(p, vault_dir)
-        seen.add(rel)
-        with open(p, encoding="utf-8") as f:
-            text = f.read()
-        h = _hash(text)
-        conn.execute(
-            "INSERT OR REPLACE INTO seen_items(source, item_hash, ts) VALUES(?,?,?)",
-            ("vault", h, dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
-        )
-        mtime = dt.datetime.fromtimestamp(os.path.getmtime(p), tz=dt.timezone.utc).isoformat()
-        row = conn.execute("SELECT hash FROM notes WHERE path=?", (rel,)).fetchone()
-        if row is None or row[0] != h:
-            title = os.path.splitext(os.path.basename(rel))[0]
+    try:
+        conn.execute("DELETE FROM seen_items")
+        new_mod = []
+        removed = []
+        known = {r[0] for r in conn.execute("SELECT path FROM notes")}
+        seen = set()
+        for p in _walk_md(vault_dir):
+            rel = os.path.relpath(p, vault_dir)
+            seen.add(rel)
+            with open(p, encoding="utf-8") as f:
+                text = f.read()
+            h = _hash(text)
             conn.execute(
-                "INSERT OR REPLACE INTO notes(path, title, hash, mtime) VALUES(?,?,?,?)",
-                (rel, title, h, mtime),
+                "INSERT OR REPLACE INTO seen_items(source, item_hash, ts) VALUES(?,?,?)",
+                ("vault", h, dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
             )
-            new_mod.append({"path": rel, "hash": h[:12], "mtime": mtime})
-    for rel in known - seen:
-        conn.execute("DELETE FROM notes WHERE path=?", (rel,))
-        removed.append({"path": rel})
-    conn.commit()
-    conn.close()
+            mtime = dt.datetime.fromtimestamp(os.path.getmtime(p), tz=dt.timezone.utc).isoformat()
+            row = conn.execute("SELECT hash FROM notes WHERE path=?", (rel,)).fetchone()
+            if row is None or row[0] != h:
+                title = os.path.splitext(os.path.basename(rel))[0]
+                conn.execute(
+                    "INSERT OR REPLACE INTO notes(path, title, hash, mtime) VALUES(?,?,?,?)",
+                    (rel, title, h, mtime),
+                )
+                new_mod.append({"path": rel, "hash": h[:12], "mtime": mtime})
+        for rel in known - seen:
+            conn.execute("DELETE FROM notes WHERE path=?", (rel,))
+            removed.append({"path": rel})
+        conn.commit()
+    finally:
+        conn.close()
     return new_mod, removed
 
 
 def find_orphans(vault_dir: str) -> List[str]:
     """Notes with zero incoming or outgoing wikilinks."""
     conn = init_vault_db(os.path.join(vault_dir, "vault.db"))
-    note_paths = [r[0] for r in conn.execute("SELECT path FROM notes")]
+    try:
+        note_paths = [r[0] for r in conn.execute("SELECT path FROM notes")]
+    finally:
+        conn.close()
     links: dict[str, set] = {}
     for rel in note_paths:
         p = os.path.join(vault_dir, rel)
@@ -131,7 +136,6 @@ def find_orphans(vault_dir: str) -> List[str]:
               incoming.get(rel, 0)
         if out == 0 and inn == 0:
             orphans.append(rel)
-    conn.close()
     return orphans
 
 
@@ -142,3 +146,4 @@ def emit_candidate(db_conn, slug: str, source: str, risk: str = "low") -> None:
          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     db_conn.commit()
+

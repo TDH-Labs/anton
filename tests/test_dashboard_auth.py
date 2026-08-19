@@ -50,3 +50,19 @@ class TestDashboardAuth(unittest.TestCase):
     def test_reads_stay_open(self):
         self.assertEqual(self.client.get("/api/ledger").status_code, 200)
         self.assertEqual(self.client.get("/api/jobs").status_code, 200)
+
+    def test_wizard_endpoints_require_token(self):
+        r = self.client.post("/api/wizard/providers", json={"provider": "openai", "key": "sk-test"})
+        self.assertEqual(r.status_code, 401)
+        r = self.client.get("/api/wizard/oauth/start")
+        self.assertEqual(r.status_code, 401)
+        r = self.client.get("/api/wizard/mcp")
+        self.assertEqual(r.status_code, 401)
+        r = self.client.post("/api/wizard/mcp", json={"name": "test", "command": "run"})
+        self.assertEqual(r.status_code, 401)
+
+        # Authenticated requests work
+        r = self.client.post("/api/wizard/providers", json={"provider": "openai", "key": "sk-test"},
+                             headers={"Authorization": "Bearer s3cret"})
+        self.assertEqual(r.status_code, 200)
+

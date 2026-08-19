@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .scheduler import JobEngine
@@ -11,24 +12,32 @@ from .scheduler import JobEngine
 def make_handler(engine: JobEngine):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            if self.path == "/health":
+            parsed_path = urllib.parse.urlparse(self.path).path
+            if parsed_path == "/health":
                 self._send(200, {"ok": True, "jobs": len(engine.jobs),
                                  "ledger_rows": len(engine.ledger.read())})
             else:
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
-            try:
-                job_id = self.path.split("/hooks/")[1]
-            except IndexError:
+            parsed_path = urllib.parse.urlparse(self.path).path
+            if not parsed_path.startswith("/hooks/"):
+                self._send(404, {"error": "not found"})
+                return
+            job_id = parsed_path[len("/hooks/"):]
+            if not job_id:
                 self._send(404, {"error": "not found"})
                 return
             job = engine.by_id(job_id)
             if job is None or job.trigger.get("type") != "webhook":
                 self._send(404, {"error": f"no webhook job {job_id!r}"})
                 return
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(length).decode("utf-8", "replace")[:65536] if length else ""
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (ValueError, TypeError):
+                length = 0
+            length = max(0, min(length, 1048576))
+            body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
             record = engine.run_job(job)
             self._send(200, {"job_id": job.id, "exit": record.exit,
                              "ts": record.ts, "flags": record.flags})

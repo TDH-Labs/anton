@@ -1,6 +1,7 @@
 """Append-only JSONL event log. One canonical writer (R9)."""
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from typing import List, Optional
@@ -18,7 +19,12 @@ class Ledger:
     def append(self, record: RunRecord) -> None:
         self.ensure_dir()
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(record.to_json(), ensure_ascii=False) + "\n")
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     def read(self) -> List[dict]:
         if not os.path.exists(self.path):

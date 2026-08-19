@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 
 AUTO_EXECUTE = "auto_execute"
 PRESENT_WITH_EVIDENCE = "present_with_evidence"
@@ -19,6 +20,10 @@ class Ruling:
 
 
 def score(ev: float, feasibility: float) -> float:
+    if math.isnan(ev) or math.isnan(feasibility) or ev < 0 or feasibility < 0:
+        return 0.0
+    if math.isinf(ev) or math.isinf(feasibility):
+        return 0.0
     return round(ev * feasibility, 3)
 
 

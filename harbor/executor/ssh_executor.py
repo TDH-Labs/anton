@@ -11,6 +11,7 @@ The container runs the control plane; the executor runs recipes on a host machin
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -40,7 +41,9 @@ class SSHExecutor(Executor):
             return RunResult(1, "", f"ssh executor unavailable (host={self.host!r})",
                              0, model, provider, error="unavailable")
         target = f"{self.user}@{self.host}" if self.user else self.host
-        cmd = self.command.replace("<recipe>", task).replace("<model>", model)
+        safe_task = shlex.quote(task)
+        safe_model = shlex.quote(model)
+        cmd = self.command.replace("<recipe>", safe_task).replace("<model>", safe_model)
         args = [self.ssh_bin]
         if self.key:
             args += ["-i", self.key]

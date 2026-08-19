@@ -3,3 +3,9 @@ __pycache__/
 .dev-data/
 .venv/
 .harbor_backups/
+secrets.yaml
+*.db
+runs.jsonl
+.pytest_cache/
+*.egg-info/
+
