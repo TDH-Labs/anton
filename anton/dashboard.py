@@ -283,7 +283,7 @@ header {
 }
 .btn-deny:hover { background: rgba(239, 68, 68, 0.25); }
 
-/* Markdown Reader Drawer */
+/* Code & Markdown Reader Drawer */
 .markdown-drawer {
   background: #11141c; border-left: 1px solid var(--border);
   box-shadow: -12px 0 40px rgba(0,0,0,0.7); position: fixed;
@@ -301,7 +301,7 @@ header {
 .drawer-body h1, .drawer-body h2, .drawer-body h3 { color: #f8fafc; margin: 16px 0 10px 0; }
 .drawer-body table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.8rem; }
 .drawer-body th, .drawer-body td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
-.drawer-body pre { background: #0a0c10; padding: 12px; border-radius: 8px; overflow-x: auto; margin: 14px 0; font-family: var(--font-mono); }
+.drawer-body pre { background: #0a0c10; padding: 14px; border-radius: 8px; overflow-x: auto; margin: 14px 0; font-family: var(--font-mono); border: 1px solid rgba(255,255,255,0.08); }
 .drawer-body code { font-family: var(--font-mono); font-size: 0.8rem; color: var(--primary); }
 
 /* Floating Command Capsule (⌘K) */
@@ -375,21 +375,28 @@ header {
   <!-- TAB 1: STUDIO WORKSPACE -->
   <div id="tab-studio" class="tab-pane active">
     <div class="studio-layout">
-      <!-- Left: Navigator (Click to Open Markdown) -->
+      <!-- Left: Navigator (Click to Open Code or Markdown) -->
       <div class="studio-pane">
-        <div style="font-size:0.72rem;font-weight:800;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px">Interactive Memory & Skills</div>
+        <div style="font-size:0.72rem;font-weight:800;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px">Interactive Memory & Logic</div>
         <div style="display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1">
-          <div style="padding:4px 8px;font-size:0.75rem;color:var(--primary);font-weight:700">🧠 100x Learned Skills</div>
-          <div class="tree-item" onclick="openMarkdownReader('skills/100x-desktop-ide-designer')"><span>✦ 100x-desktop-ide</span><span class="tree-badge">0.98</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('skills/100x-mobile-app-designer')"><span>✦ 100x-mobile-app</span><span class="tree-badge">0.96</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('skills/elite-software-product-designer')"><span>✦ elite-software-product</span><span class="tree-badge">0.99</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('skills/100x-gtm-strategist')"><span>✦ 100x-gtm-strategist</span><span class="tree-badge">0.98</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('skills/100x-pr-publicity-specialist')"><span>✦ 100x-pr-publicity</span><span class="tree-badge">0.96</span></div>
+          <!-- Deterministic Python Scripts -->
+          <div style="padding:4px 8px;font-size:0.75rem;color:var(--warning);font-weight:700">⚡ Deterministic Python Gates</div>
+          <div class="tree-item" onclick="openFileViewer('scripts/verify_balance.py')"><span>🐍 verify_balance.py</span><span class="tree-badge">0-LLM</span></div>
+          <div class="tree-item" onclick="openFileViewer('scripts/verify_reconcile.py')"><span>🐍 verify_reconcile.py</span><span class="tree-badge">MATH</span></div>
+
+          <!-- Learned Skills -->
+          <div style="padding:8px 8px 4px 8px;font-size:0.75rem;color:var(--primary);font-weight:700;margin-top:6px">🧠 100x Learned Skills</div>
+          <div class="tree-item" onclick="openFileViewer('skills/100x-desktop-ide-designer')"><span>✦ 100x-desktop-ide</span><span class="tree-badge">0.98</span></div>
+          <div class="tree-item" onclick="openFileViewer('skills/100x-mobile-app-designer')"><span>✦ 100x-mobile-app</span><span class="tree-badge">0.96</span></div>
+          <div class="tree-item" onclick="openFileViewer('skills/elite-software-product-designer')"><span>✦ elite-software-product</span><span class="tree-badge">0.99</span></div>
+          <div class="tree-item" onclick="openFileViewer('skills/100x-gtm-strategist')"><span>✦ 100x-gtm-strategist</span><span class="tree-badge">0.98</span></div>
+          <div class="tree-item" onclick="openFileViewer('skills/100x-pr-publicity-specialist')"><span>✦ 100x-pr-publicity</span><span class="tree-badge">0.96</span></div>
           
+          <!-- Strategy Artifacts -->
           <div style="padding:8px 8px 4px 8px;font-size:0.75rem;color:var(--purple);font-weight:700;margin-top:6px">📑 GTM Strategy Artifacts</div>
-          <div class="tree-item" onclick="openMarkdownReader('strategy/award-marketing-plan')"><span>📄 award-marketing-plan</span><span class="tree-badge">MD</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('strategy/content-calendar')"><span>📅 content-calendar</span><span class="tree-badge">MD</span></div>
-          <div class="tree-item" onclick="openMarkdownReader('strategy/pr-outreach-list')"><span>📰 pr-outreach-list</span><span class="tree-badge">MD</span></div>
+          <div class="tree-item" onclick="openFileViewer('strategy/award-marketing-plan')"><span>📄 award-marketing-plan</span><span class="tree-badge">MD</span></div>
+          <div class="tree-item" onclick="openFileViewer('strategy/content-calendar')"><span>📅 content-calendar</span><span class="tree-badge">MD</span></div>
+          <div class="tree-item" onclick="openFileViewer('strategy/pr-outreach-list')"><span>📰 pr-outreach-list</span><span class="tree-badge">MD</span></div>
         </div>
       </div>
 
@@ -404,26 +411,25 @@ header {
         <svg class="wire-canvas-svg" id="dag-svg-canvas">
           <defs>
             <linearGradient id="grad-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8"/>
-              <stop offset="100%" stop-color="#c084fc" stop-opacity="0.8"/>
+              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.85"/>
+              <stop offset="100%" stop-color="#c084fc" stop-opacity="0.85"/>
             </linearGradient>
             <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#c084fc" stop-opacity="0.8"/>
-              <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.8"/>
+              <stop offset="0%" stop-color="#c084fc" stop-opacity="0.85"/>
+              <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.85"/>
             </linearGradient>
             <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.8"/>
-              <stop offset="100%" stop-color="#10b981" stop-opacity="0.8"/>
+              <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.85"/>
+              <stop offset="100%" stop-color="#10b981" stop-opacity="0.85"/>
             </linearGradient>
           </defs>
-          <!-- Dynamic Paths generated via JS -->
         </svg>
 
         <!-- Multi-Branching Grid Layout -->
         <div class="dag-area">
           <!-- Column 1: Triggers -->
           <div class="dag-col">
-            <div class="node-card active-glow" id="node-trig-1" onclick="openMarkdownReader('mocs/operations')">
+            <div class="node-card active-glow" id="node-trig-1" onclick="openFileViewer('mocs/operations')">
               <span class="socket socket-out"></span>
               <div class="node-meta-row">
                 <span class="node-tag tag-trigger">Trigger</span>
@@ -433,7 +439,7 @@ header {
               <div class="node-desc">/hooks/stripe-payout</div>
             </div>
 
-            <div class="node-card" id="node-trig-2" onclick="openMarkdownReader('strategy/award-marketing-plan')">
+            <div class="node-card" id="node-trig-2" onclick="openFileViewer('strategy/award-marketing-plan')">
               <span class="socket socket-out"></span>
               <div class="node-meta-row">
                 <span class="node-tag tag-trigger">Trigger</span>
@@ -446,7 +452,7 @@ header {
 
           <!-- Column 2: AI Cognitive Ingest -->
           <div class="dag-col">
-            <div class="node-card" id="node-brain-1" onclick="openMarkdownReader('skills/100x-desktop-ide-designer')">
+            <div class="node-card" id="node-brain-1" onclick="openFileViewer('skills/100x-desktop-ide-designer')">
               <span class="socket socket-in"></span>
               <span class="socket socket-out"></span>
               <div class="node-meta-row">
@@ -457,7 +463,7 @@ header {
               <div class="node-desc">Local [REDACTED-LOCAL-INFERENCE]-reason</div>
             </div>
 
-            <div class="node-card" id="node-brain-2" onclick="openMarkdownReader('skills/100x-gtm-strategist')">
+            <div class="node-card" id="node-brain-2" onclick="openFileViewer('skills/100x-gtm-strategist')">
               <span class="socket socket-in"></span>
               <span class="socket socket-out"></span>
               <div class="node-meta-row">
@@ -469,13 +475,13 @@ header {
             </div>
           </div>
 
-          <!-- Column 3: Deterministic Verify & Gate -->
+          <!-- Column 3: Deterministic Verify Gate (Opens Python Script) -->
           <div class="dag-col">
-            <div class="node-card gate-locked" id="node-gate-1" onclick="openMarkdownReader('mocs/operations')">
+            <div class="node-card gate-locked" id="node-gate-1" onclick="openFileViewer('scripts/verify_balance.py')">
               <span class="socket socket-in"></span>
               <span class="socket socket-out"></span>
               <div class="node-meta-row">
-                <span class="node-tag tag-gate">Verify Gate</span>
+                <span class="node-tag tag-gate">Python Gate</span>
                 <span class="node-latency" id="node-gate-badge">FAIL-CLOSED</span>
               </div>
               <div class="node-title">Deterministic Math</div>
@@ -485,7 +491,7 @@ header {
 
           <!-- Column 4: Outcomes -->
           <div class="dag-col">
-            <div class="node-card" id="node-action-1" onclick="openMarkdownReader('mocs/operations')">
+            <div class="node-card" id="node-action-1" onclick="openFileViewer('mocs/operations')">
               <span class="socket socket-in"></span>
               <div class="node-meta-row">
                 <span class="node-tag tag-action">Outcome</span>
@@ -495,7 +501,7 @@ header {
               <div class="node-desc">runs.jsonl append</div>
             </div>
 
-            <div class="node-card" id="node-action-2" onclick="openMarkdownReader('strategy/content-calendar')">
+            <div class="node-card" id="node-action-2" onclick="openFileViewer('strategy/content-calendar')">
               <span class="socket socket-in"></span>
               <div class="node-meta-row">
                 <span class="node-tag tag-action">Outcome</span>
@@ -577,14 +583,14 @@ header {
   <span style="background:#222634;border:1px solid rgba(255,255,255,0.1);padding:2px 6px;border-radius:6px;font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted)">⌘K</span>
 </div>
 
-<!-- Markdown Reader Drawer -->
+<!-- Code & Markdown Reader Drawer -->
 <div class="markdown-drawer" id="md-drawer">
   <div class="drawer-header">
-    <span class="drawer-title" id="drawer-file-title">Markdown Document</span>
-    <button class="drawer-close" onclick="closeMarkdownReader()">✕</button>
+    <span class="drawer-title" id="drawer-file-title">Document Viewer</span>
+    <button class="drawer-close" onclick="closeFileViewer()">✕</button>
   </div>
   <div class="drawer-body" id="drawer-file-content">
-    Loading document...
+    Loading artifact...
   </div>
 </div>
 
@@ -694,25 +700,39 @@ function renderSvgWires() {
 window.addEventListener('resize', renderSvgWires);
 setTimeout(renderSvgWires, 200);
 
-async function openMarkdownReader(path) {
+async function openFileViewer(path) {
   const drawer = $('md-drawer');
   drawer.style.display = 'flex';
-  $('drawer-file-title').textContent = path + '.md';
-  $('drawer-file-content').innerHTML = '<p style="color:var(--text-dim)">Fetching artifact from Second Brain...</p>';
+  $('drawer-file-title').textContent = path;
+  $('drawer-file-content').innerHTML = '<p style="color:var(--text-dim)">Loading file from Anton...</p>';
   try {
     const res = await fetch(`/api/vault/note?path=${encodeURIComponent(path)}`);
     const data = await res.json();
     if (data.content) {
-      $('drawer-file-content').innerHTML = marked.parse(data.content);
+      if (path.endsWith('.py') || data.is_code) {
+        $('drawer-file-content').innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <span style="font-size:0.72rem;font-weight:800;color:#10b981;background:rgba(16,185,129,0.15);padding:3px 8px;border-radius:6px">🐍 PYTHON 3.14 DETERMINISTIC GATE</span>
+            <span style="font-size:0.7rem;font-family:var(--font-mono);color:var(--text-dim)">0 Tokens Consumed · Zero Hallucination</span>
+          </div>
+          <pre><code class="language-python">${data.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>
+          <div style="margin-top:16px;padding:12px;background:#151822;border:1px solid var(--border);border-radius:8px">
+            <div style="font-size:0.75rem;font-weight:700;color:var(--text-main);margin-bottom:4px">Execution Contract</div>
+            <div style="font-size:0.72rem;color:var(--text-muted)">• Input: JSON payload via sys.argv[1]<br>• Return 0: Math balances exactly (Δ == 0.00)<br>• Return 4: Math mismatch detected (Fails Closed)</div>
+          </div>
+        `;
+      } else {
+        $('drawer-file-content').innerHTML = marked.parse(data.content);
+      }
     } else {
-      $('drawer-file-content').innerHTML = '<p style="color:var(--danger)">Failed to load document.</p>';
+      $('drawer-file-content').innerHTML = '<p style="color:var(--danger)">Failed to load file.</p>';
     }
   } catch (e) {
     $('drawer-file-content').innerHTML = '<p style="color:var(--danger)">Error: ' + e.message + '</p>';
   }
 }
 
-function closeMarkdownReader() { $('md-drawer').style.display = 'none'; }
+function closeFileViewer() { $('md-drawer').style.display = 'none'; }
 
 async function checkMode() {
   try {
@@ -741,7 +761,7 @@ function updateSonUI() {
       gateBadge.textContent = 'AUTO-BYPASS ⚡';
       gateBadge.style.color = '#10b981';
     }
-    if (gateDesc) gateDesc.textContent = 'Cryptographic Bypass Logged';
+    if (gateDesc) gateDesc.textContent = 'verify_balance.py (Auto-Approved)';
   } else {
     btn.classList.remove('active');
     lbl.textContent = '⚡ SON OF ANTON [OFF]';
@@ -860,7 +880,7 @@ $('cmd-input').addEventListener('keydown', async e => {
       });
       const data = await res.json();
       $('cmd-input').value = '';
-      if (data.note_path) openMarkdownReader(data.note_path);
+      if (data.note_path) openFileViewer(data.note_path);
       showToast(data.reply, 'success');
     } catch (err) {
       $('cmd-input').value = '';
@@ -875,7 +895,7 @@ window.addEventListener('keydown', e => {
   } else if (e.key === 'Enter' && activeApprovalId && document.activeElement !== $('cmd-input')) {
     resolveApproval(activeApprovalId, 'approve');
   } else if (e.key === 'Escape') {
-    closeMarkdownReader();
+    closeFileViewer();
     if (activeApprovalId) resolveApproval(activeApprovalId, 'deny');
   }
 });
@@ -893,7 +913,7 @@ async function initGraph() {
       .linkWidth(1.2)
       .linkOpacity(0.4)
       .onNodeClick(node => {
-        openMarkdownReader(node.id);
+        openFileViewer(node.id);
       });
   } catch (e) {}
 }
@@ -976,29 +996,40 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/api/vault/note")
     def get_vault_note(path: str):
-        """Fetches and serves raw markdown content for the in-app markdown reader."""
-        p = os.path.join(data_dir, "vault", path + ".md")
-        if not os.path.exists(p):
-            p = os.path.join(data_dir, "vault", path)
-        if not os.path.exists(p):
-            p = os.path.join(data_dir, path)
-        if not os.path.exists(p):
-            slug = path.replace("skills/", "")
-            p = os.path.join(data_dir, "skills", slug, "SKILL.md")
-        if not os.path.exists(p):
-            raise HTTPException(404, f"note not found: {path}")
-        with open(p, "r", encoding="utf-8") as f:
+        """Fetches and serves markdown or python code for the in-app document viewer."""
+        install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
+        candidates = [
+            os.path.join(install_dir, path),
+            os.path.join(data_dir, "vault", path + ".md"),
+            os.path.join(data_dir, "vault", path),
+            os.path.join(data_dir, path),
+            os.path.join(data_dir, "skills", path.replace("skills/", ""), "SKILL.md"),
+            os.path.join(install_dir, "scripts", os.path.basename(path))
+        ]
+        
+        found = None
+        for c in candidates:
+            if os.path.exists(c) and os.path.isfile(c):
+                found = c
+                break
+                
+        if not found:
+            raise HTTPException(404, f"file not found: {path}")
+            
+        with open(found, "r", encoding="utf-8") as f:
             content = f.read()
-        return {"path": path, "content": content}
+            
+        is_code = found.endswith(".py") or found.endswith(".sh") or found.endswith(".yaml")
+        return {"path": path, "content": content, "is_code": is_code}
 
     @app.post("/api/chat")
     def chat_prompt(req: ChatReq):
         """Handles regular conversational interactions and Second Brain queries."""
         p_lower = req.prompt.lower()
-        if "reconcil" in p_lower or "invoice" in p_lower:
+        if "reconcil" in p_lower or "math" in p_lower or "script" in p_lower or "gate" in p_lower:
             return {
-                "reply": "I have verified your Stripe and QuickBooks ledger entries. 1 discrepancy ($14.50) is held at the human gate.",
-                "note_path": "mocs/operations"
+                "reply": "Opened Python deterministic verify gate: scripts/verify_balance.py (0 tokens consumed).",
+                "note_path": "scripts/verify_balance.py"
             }
         elif "award" in p_lower or "marketing" in p_lower or "gtm" in p_lower:
             return {
