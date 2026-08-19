@@ -1,6 +1,6 @@
 import datetime as dt
 import unittest
-from harbor.cron import Cron
+from anton.cron import Cron
 
 
 class TestCron(unittest.TestCase):

@@ -1,4 +1,4 @@
-# harbor-sas — secondary packaging: container image for headless/server installs (Q3)
+# anton — secondary packaging: container image for headless/server installs (Q3)
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
@@ -13,4 +13,4 @@ ENTRYPOINT ["/app/entrypoint.sh"]
 EXPOSE 8799
 VOLUME ["/data"]
 
-CMD ["harbor", "serve", "--data-dir", "/data"]
+CMD ["anton", "serve", "--data-dir", "/data"]

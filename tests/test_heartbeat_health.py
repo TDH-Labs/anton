@@ -3,13 +3,13 @@ import os
 import tempfile
 import unittest
 
-from harbor.config import load_config
-from harbor.db import init_db
-from harbor.executor import FakeExecutor
-from harbor.jobs import load_jobs
-from harbor.ledger import Ledger
-from harbor.scheduler import JobEngine
-from harbor.webhook import WebhookServer
+from anton.config import load_config
+from anton.db import init_db
+from anton.executor import FakeExecutor
+from anton.jobs import load_jobs
+from anton.ledger import Ledger
+from anton.scheduler import JobEngine
+from anton.webhook import WebhookServer
 
 JOBS = """
 - id: e2e-canary

@@ -2,7 +2,7 @@ import os
 import stat
 import tempfile
 import unittest
-from harbor.executor.ssh_executor import SSHExecutor
+from anton.executor.ssh_executor import SSHExecutor
 
 
 class TestSSHExecutor(unittest.TestCase):

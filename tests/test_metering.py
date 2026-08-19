@@ -2,8 +2,8 @@ import datetime as dt
 import os
 import tempfile
 import unittest
-from harbor.metering import connect, daily_totals, lifetime_totals, record
-from harbor.models import RunRecord
+from anton.metering import connect, daily_totals, lifetime_totals, record
+from anton.models import RunRecord
 
 
 class TestMetering(unittest.TestCase):

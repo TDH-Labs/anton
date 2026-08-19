@@ -2,8 +2,8 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from harbor.db import init_db
-from harbor.vault_db import init_vault_db
+from anton.db import init_db
+from anton.vault_db import init_vault_db
 
 EXPECTED_ISOLATION = {"sessions", "initiatives", "approvals", "budgets", "metering",
                       "seen_external_items", "skill_dependencies", "confidence_log", "playbooks"}

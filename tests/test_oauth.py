@@ -1,6 +1,6 @@
 import http.client
 import unittest
-from harbor.oauth import CallbackServer
+from anton.oauth import CallbackServer
 
 
 class TestOAuth(unittest.TestCase):

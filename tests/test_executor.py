@@ -1,5 +1,5 @@
 import unittest
-from harbor.executor import FakeExecutor
+from anton.executor import FakeExecutor
 
 
 class TestExecutorContract(unittest.TestCase):

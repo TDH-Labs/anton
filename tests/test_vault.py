@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from harbor.vault import (emit_candidate, find_orphans, provision_vault, scan_vault)
+from anton.vault import (emit_candidate, find_orphans, provision_vault, scan_vault)
 
 
 class TestVault(unittest.TestCase):
@@ -55,7 +55,7 @@ class TestVault(unittest.TestCase):
         conn.close()
 
     def test_wikilink_alias_and_header_parsing(self):
-        from harbor.vault import WIKILINK
+        from anton.vault import WIKILINK
         text = "Check [[notes/test|My Test]] and [[mocs/strategy#overview]] as well as [[doc#sub|Doc Title]]."
         matches = WIKILINK.findall(text)
         self.assertEqual(matches, ["notes/test", "mocs/strategy", "doc"])

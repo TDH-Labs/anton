@@ -4,14 +4,14 @@ import tempfile
 import unittest
 from fastapi.testclient import TestClient
 
-from harbor.config import load_config
-from harbor.dashboard import create_app
-from harbor.db import init_db
-from harbor.executor import FakeExecutor
-from harbor.jobs import load_jobs
-from harbor.ledger import Ledger
-from harbor.scheduler import JobEngine
-from harbor.vault import provision_vault
+from anton.config import load_config
+from anton.dashboard import create_app
+from anton.db import init_db
+from anton.executor import FakeExecutor
+from anton.jobs import load_jobs
+from anton.ledger import Ledger
+from anton.scheduler import JobEngine
+from anton.vault import provision_vault
 
 JOBS = """
 - id: e2e-canary
@@ -42,7 +42,7 @@ class TestDashboard(unittest.TestCase):
     def test_index_page(self):
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("harbor-sas", r.text)
+        self.assertIn("anton", r.text)
 
     def test_ledger_api(self):
         r = self.client.get("/api/ledger")

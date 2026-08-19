@@ -3,7 +3,7 @@ import sqlite3
 import stat
 import tempfile
 import unittest
-from harbor.setup import run_setup
+from anton.setup import run_setup
 
 
 class TestSetup(unittest.TestCase):

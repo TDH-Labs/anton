@@ -2,10 +2,10 @@
 
 The container runs the control plane; the executor runs recipes on a host machine
 (Mac or otherwise) that has pi/OI + credentials. Config via env:
-  HARBOR_SSH_HOST        e.g. 10.0.0.0 or mac-studio.local
-  HARBOR_SSH_USER        ssh user
-  HARBOR_SSH_KEY         path to an ssh private key (optional)
-  HARBOR_SSH_COMMAND     shell command template; <recipe> and <model> are substituted
+  ANTON_SSH_HOST        e.g. 10.0.0.0 or mac-studio.local
+  ANTON_SSH_USER        ssh user
+  ANTON_SSH_KEY         path to an ssh private key (optional)
+  ANTON_SSH_COMMAND     shell command template; <recipe> and <model> are substituted
                          default: "bash -lc 'export PATH=$HOME/.local/bin:$PATH; run-local-recipe.sh <recipe>'"
 """
 from __future__ import annotations
@@ -26,10 +26,10 @@ class SSHExecutor(Executor):
     def __init__(self, *, host: Optional[str] = None, user: Optional[str] = None,
                  key: Optional[str] = None, command: Optional[str] = None,
                  ssh_bin: str = "ssh"):
-        self.host = host or os.environ.get("HARBOR_SSH_HOST") or ""
-        self.user = user or os.environ.get("HARBOR_SSH_USER") or ""
-        self.key = key or os.environ.get("HARBOR_SSH_KEY") or ""
-        self.command = command or os.environ.get("HARBOR_SSH_COMMAND") or DEFAULT_COMMAND
+        self.host = host or os.environ.get("ANTON_SSH_HOST") or ""
+        self.user = user or os.environ.get("ANTON_SSH_USER") or ""
+        self.key = key or os.environ.get("ANTON_SSH_KEY") or ""
+        self.command = command or os.environ.get("ANTON_SSH_COMMAND") or DEFAULT_COMMAND
         self.ssh_bin = ssh_bin
 
     def available(self) -> bool:

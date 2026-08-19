@@ -1,5 +1,5 @@
 import unittest
-from harbor.models import RunRecord
+from anton.models import RunRecord
 
 
 class TestRunRecord(unittest.TestCase):

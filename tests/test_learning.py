@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from harbor.learning import author_skill, extract_playbook
+from anton.learning import author_skill, extract_playbook
 
 
 class TestLearning(unittest.TestCase):

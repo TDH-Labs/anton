@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from harbor.sandbox import promote, run_sandbox_gate
+from anton.sandbox import promote, run_sandbox_gate
 
 BAD = "def broken(:\n    pass\n"
 GOOD = """import sys

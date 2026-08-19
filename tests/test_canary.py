@@ -2,10 +2,10 @@ import datetime as dt
 import os
 import tempfile
 import unittest
-from harbor.canary import compute_tripwires
-from harbor.jobs import Job
-from harbor.ledger import Ledger
-from harbor.models import RunRecord
+from anton.canary import compute_tripwires
+from anton.jobs import Job
+from anton.ledger import Ledger
+from anton.models import RunRecord
 
 NOW = dt.datetime(2026, 8, 18, 10, 0, 0, tzinfo=dt.timezone.utc)
 NOW_ISO = NOW.strftime("%Y-%m-%dT%H:%M:%SZ")

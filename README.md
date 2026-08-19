@@ -1,40 +1,38 @@
-# harbor-sas — standalone Single-Agent System control plane
+# Anton — Autonomous Agent Control Plane & Second Brain
 
-Greenfield product (M1–M7 complete). This repo is self-contained; it touches nothing
-outside `~/harbor-sas/`. The reference fleet on this machine is the case study only —
-its incidents became requirements R1–R9 in the product spec:
-`~/second-brain/automation-outputs/devops/harbor-sas-product-spec_2026-08-18.md`.
+Greenfield product (M1–M7 complete, hardened). This repo is self-contained; it touches nothing
+outside `~/.anton/`.
 
 ## Status — all milestones built, tested, verified
 
 | Milestone | Delivers | Status |
 | --- | --- | --- |
-| M1 | Data model (R9), ledger, isolation.db + vault.db + metering schemas, executor contract, routing | ✅ 54/54 tests pass |
+| M1 | Data model (R9), ledger, isolation.db + vault.db + metering schemas, executor contract, routing | ✅ 74/74 tests pass |
 | M2 | jobs.yaml engine, cron parser, scheduler, webhook receiver, expected-vs-actual canary | ✅ |
 | M3 | Vault module (md + vault.db), delta sensor, graph synthesis, digest | ✅ |
 | M4 | FastAPI dashboard (read-only pane) + approvals API (never executes) | ✅ |
 | M5 | Ambition governor, sandbox gate, skill authoring (Vercel contract), playbooks, R1 gate enforcement | ✅ |
-| M6 | `harbor setup`, install.sh, localhost OAuth callback server | ✅ |
-| M7 | install.sh verified end-to-end; Dockerfile included (build on CI/VM — daemon not running here) | ✅ |
+| M6 | `anton setup`, install.sh, localhost OAuth callback server | ✅ |
+| M7 | install.sh verified end-to-end; Dockerfile included (build on CI/VM) | ✅ |
 
 ## Commands
 
 ```
-harbor setup    --install-dir ~/.harbor      # provision a fresh install (vault, dbs, config)
-harbor serve    --data-dir … [--port 8799]   # scheduler loop + webhook receiver + canary
-harbor dashboard --data-dir … [--port 8799]  # read-only pane + approvals API
-harbor jobs     --data-dir … [--run-id <id>] # list / run one job
-harbor canary   --data-dir …                 # expected-vs-actual tripwires
-harbor digest   --data-dir …                 # control-plane digest into the vault
-harbor vault    --provision | scan           # second-brain provision / delta+graph
-harbor governor --ev 0.8 --feasibility 0.9 --kind money   # ambition governor
-harbor skills   --title "…" --golden 3       # author -> sandbox gate -> promote
-harbor delta    --data-dir …                 # failures + canary -> initiative candidates
-harbor run      --task "…" --executor fake   # one-off run into the ledger
-harbor doctor   --data-dir …                 # read-only install diagnostics
-harbor usage    --data-dir …                 # metering totals (cloud usage)
-harbor oauth    --port 0 --timeout 120       # localhost OAuth callback server
-harbor skills   --index --data-dir …         # index data/skills -> skill_dependencies
+anton setup    --install-dir ~/.anton      # provision a fresh install (vault, dbs, config)
+anton serve    --data-dir … [--port 8799]   # scheduler loop + webhook receiver + canary
+anton dashboard --data-dir … [--port 8799]  # read-only pane + approvals API + 3D graph
+anton jobs     --data-dir … [--run-id <id>] # list / run one job
+anton canary   --data-dir …                 # expected-vs-actual tripwires
+anton digest   --data-dir …                 # control-plane digest into the vault
+anton vault    --provision | scan           # second-brain provision / delta+graph
+anton governor --ev 0.8 --feasibility 0.9 --kind money   # ambition governor
+anton skills   --title "…" --golden 3       # author -> sandbox gate -> promote
+anton delta    --data-dir …                 # failures + canary -> initiative candidates
+anton run      --task "…" --executor fake   # one-off run into the ledger
+anton doctor   --data-dir …                 # read-only install diagnostics
+anton usage    --data-dir …                 # metering totals (cloud usage)
+anton oauth    --port 0 --timeout 120       # localhost OAuth callback server
+anton skills   --index --data-dir …         # index data/skills -> skill_dependencies
 ```
 
 ## Jobs (deterministic engine)
@@ -69,31 +67,31 @@ token_accounting` — tokens/cost populated for cloud providers only.
 ## Install (primary packaging)
 
 ```bash
-bash install.sh                 # -> $HARBOR_HOME (default ~/.harbor)
+bash install.sh                 # -> $ANTON_HOME (default ~/.anton)
 # or
-HARBOR_HOME=/opt/harbor bash install.sh
+ANTON_HOME=/opt/harbor bash install.sh
 ```
 
-Container (secondary): `docker build -t harbor-sas .` then run with `/data` mounted.
+Container (secondary): `docker build -t anton .` then run with `/data` mounted.
 
 ## Umbrel app (server deployment)
 
 ```
-umbrel/harbor-sas/   # umbrel-app.yml + docker-compose.yml + assets/icon.svg
+umbrel/anton/   # umbrel-app.yml + docker-compose.yml + assets/icon.svg
 ```
 
-- Build the image (`docker build -t harbor-sas:latest .`), push to your registry, and
-  point `image:` in `umbrel/harbor-sas/docker-compose.yml` at it.
-- Set `HARBOR_EXECUTOR=ssh` with `HARBOR_SSH_*` to run recipes on a host machine
+- Build the image (`docker build -t anton:latest .`), push to your registry, and
+  point `image:` in `umbrel/anton/docker-compose.yml` at it.
+- Set `ANTON_EXECUTOR=ssh` with `ANTON_SSH_*` to run recipes on a host machine
   (the n8n→SSH→Mac pattern), or `pi`/`oi` if executors are baked into the image.
-- **Set `HARBOR_DASHBOARD_TOKEN` before exposing port 8799** — the dashboard is
+- **Set `ANTON_DASHBOARD_TOKEN` before exposing port 8799** — the dashboard is
   read-only, but approval writes require the bearer token when one is configured.
 
 ## Service templates (auto-start on a host install)
 
-- `packaging/launchd/com.harbor-sas.serve.plist.template` (macOS — fill
-  `__HARBOR_VENV_BIN__`, `__HARBOR_DATA_DIR__`, `__HARBOR_EXECUTOR__`)
-- `packaging/systemd/harbor-sas.service` (Linux) + `/etc/harbor-sas.env`
+- `packaging/launchd/com.anton.serve.plist.template` (macOS — fill
+  `__ANTON_VENV_BIN__`, `__ANTON_DATA_DIR__`, `__ANTON_EXECUTOR__`)
+- `packaging/systemd/anton.service` (Linux) + `/etc/anton.env`
 
 ## Deployment runbook
 

@@ -2,12 +2,12 @@ import datetime as dt
 import os
 import tempfile
 import unittest
-from harbor.config import load_config
-from harbor.db import init_db
-from harbor.executor import FakeExecutor
-from harbor.jobs import load_jobs
-from harbor.ledger import Ledger
-from harbor.scheduler import JobEngine
+from anton.config import load_config
+from anton.db import init_db
+from anton.executor import FakeExecutor
+from anton.jobs import load_jobs
+from anton.ledger import Ledger
+from anton.scheduler import JobEngine
 
 JOBS = """
 - id: e2e-canary
@@ -74,7 +74,7 @@ class TestScheduler(unittest.TestCase):
     def test_budget_breach_preserves_accounting(self):
         class MeteredExecutor(FakeExecutor):
             def run(self, task, *, model, provider, cwd=None, timeout_s=None):
-                from harbor.executor.base import RunResult
+                from anton.executor.base import RunResult
                 return RunResult(0, "output", "", 100, model, provider,
                                  tokens_in=10000, tokens_out=5000, cost_usd=0.25)
 

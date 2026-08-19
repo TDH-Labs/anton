@@ -1,7 +1,7 @@
 import tempfile
 import os
 import unittest
-from harbor.jobs import load_jobs
+from anton.jobs import load_jobs
 
 JOBS = """
 - id: chief-of-staff-briefing-7am

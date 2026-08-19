@@ -1,0 +1,13 @@
+[Unit]
+Description=anton control plane (scheduler + webhooks + dashboard)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/anton.env
+ExecStart=__ANTON_VENV_BIN__ serve --data-dir __ANTON_DATA_DIR__ --executor __ANTON_EXECUTOR__
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

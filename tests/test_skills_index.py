@@ -2,7 +2,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from harbor.learning import author_skill
+from anton.learning import author_skill
 
 
 class TestSkillsIndex(unittest.TestCase):
@@ -15,13 +15,13 @@ class TestSkillsIndex(unittest.TestCase):
                                 condition="new evidence",
                                 steps=("Set prior", "Update", "Act"), out_dir=out)
             skills_dir = os.path.join(d, "skills")
-            from harbor.sandbox import promote
+            from anton.sandbox import promote
             promote(os.path.join(out, "scripts", f"{slug}_evaluator.py"), skills_dir, slug=slug)
             import shutil
             shutil.copy2(os.path.join(out, "SKILL.md"),
                          os.path.join(skills_dir, slug, "SKILL.md"))  # cmd_skills does this too
 
-            from harbor.cli import _index_skills
+            from anton.cli import _index_skills
             rc = _index_skills(d)
             self.assertEqual(rc, 0)
             conn = sqlite3.connect(os.path.join(d, "isolation.db"))

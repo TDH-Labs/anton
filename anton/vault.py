@@ -11,7 +11,7 @@ from .vault_db import init_vault_db
 
 INDEX_TEMPLATE = """# Index
 
-Second brain vault for this harbor-sas install. Notes live here as markdown;
+Second brain vault for this anton install. Notes live here as markdown;
 `vault.db` co-located next to `vault/` holds the queryable index + graph.
 
 ## Maps of Content

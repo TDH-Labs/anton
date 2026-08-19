@@ -1,8 +1,8 @@
 import os
 import tempfile
 import unittest
-from harbor.doctor import run_doctor
-from harbor.setup import run_setup
+from anton.doctor import run_doctor
+from anton.setup import run_setup
 
 
 class TestDoctor(unittest.TestCase):

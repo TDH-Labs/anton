@@ -3,13 +3,13 @@ import os
 import tempfile
 import unittest
 
-from harbor.config import load_config
-from harbor.digest import build_digest, write_digest
-from harbor.executor import FakeExecutor
-from harbor.jobs import load_jobs
-from harbor.ledger import Ledger
-from harbor.scheduler import JobEngine
-from harbor.vault import provision_vault
+from anton.config import load_config
+from anton.digest import build_digest, write_digest
+from anton.executor import FakeExecutor
+from anton.jobs import load_jobs
+from anton.ledger import Ledger
+from anton.scheduler import JobEngine
+from anton.vault import provision_vault
 
 JOBS = """
 - id: e2e-canary

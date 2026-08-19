@@ -267,7 +267,7 @@ def cmd_setup(args, config: dict) -> int:
             keys[env] = v
     info = run_setup(args.install_dir, executor=args.executor, org_id=args.org_id,
                      provider_keys=keys or None, force=args.force)
-    print("harbor-sas installed:")
+    print("anton installed:")
     for k, v in info.items():
         print(f"  {k}: {v}")
     return 0
@@ -324,7 +324,7 @@ def cmd_oauth(args, config: dict) -> int:
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="harbor", description="harbor-sas control plane")
+    ap = argparse.ArgumentParser(prog="anton", description="anton control plane")
     sub = ap.add_subparsers(dest="command", required=True)
     ap.add_argument("--config", default=None, help=argparse.SUPPRESS)
 
@@ -387,7 +387,7 @@ def main(argv=None) -> int:
     delta.set_defaults(fn=cmd_delta)
 
     setup = sub.add_parser("setup", help="provision a fresh install directory")
-    setup.add_argument("--install-dir", default=os.path.expanduser("~/.harbor"))
+    setup.add_argument("--install-dir", default=os.path.expanduser("~/.anton"))
     setup.add_argument("--executor", default="fake")
     setup.add_argument("--org-id", default="default")
     setup.add_argument("--force", action="store_true")

@@ -4,12 +4,12 @@ import sqlite3
 import tempfile
 import unittest
 
-from harbor.config import load_config
-from harbor.db import init_db
-from harbor.executor import FakeExecutor
-from harbor.jobs import load_jobs
-from harbor.ledger import Ledger
-from harbor.scheduler import JobEngine
+from anton.config import load_config
+from anton.db import init_db
+from anton.executor import FakeExecutor
+from anton.jobs import load_jobs
+from anton.ledger import Ledger
+from anton.scheduler import JobEngine
 
 JOBS = """
 - id: email-client

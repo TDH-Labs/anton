@@ -1,5 +1,5 @@
 import unittest
-from harbor.routes import is_cloud, select_route
+from anton.routes import is_cloud, select_route
 
 
 class TestRoutes(unittest.TestCase):

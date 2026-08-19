@@ -6,7 +6,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-INSTRUCTIONS = """<html><body><h2>harbor-sas — OAuth callback</h2>
+INSTRUCTIONS = """<html><body><h2>anton — OAuth callback</h2>
 <p>Waiting for the provider to redirect back…</p></body></html>"""
 
 

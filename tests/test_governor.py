@@ -1,5 +1,5 @@
 import unittest
-from harbor.governor import (AUTO_EXECUTE, LEARN_FIRST, PRESENT_FOR_APPROVAL,
+from anton.governor import (AUTO_EXECUTE, LEARN_FIRST, PRESENT_FOR_APPROVAL,
                              PRESENT_WITH_EVIDENCE, classify, score)
 
 
