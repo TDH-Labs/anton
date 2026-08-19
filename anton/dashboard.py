@@ -75,7 +75,7 @@ body {
   z-index: 100;
   box-shadow: var(--border-rim);
 }
-.brand-group { display: flex; align-items: center; gap: 10px; }
+.brand-group { display: flex; align-items: center; gap: 10px; cursor: pointer; }
 .brand-logo {
   width: 28px; height: 28px;
   background: #1c2230; border: 1px solid rgba(255,255,255,0.15);
@@ -140,8 +140,8 @@ body {
 .tree-section { font-size: 0.68rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; padding: 8px 6px 4px 6px; }
 .tree-node {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 5px 8px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
-  color: var(--text-muted); transition: all 0.15s ease;
+  padding: 6px 8px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+  color: var(--text-muted); transition: all 0.15s ease; user-select: none;
 }
 .tree-node:hover { background: #161a26; color: var(--text-main); }
 .tree-node.active { background: #1e2436; color: var(--primary); font-weight: 600; }
@@ -164,19 +164,28 @@ body {
   overflow-x: auto;
 }
 .tab {
-  display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 100%;
+  display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 100%;
   font-size: 0.78rem; color: var(--text-muted); border-right: 1px solid var(--border);
-  cursor: pointer; background: #0e1117; user-select: none;
+  cursor: pointer; background: #0e1117; user-select: none; transition: background 0.15s ease;
+  white-space: nowrap;
 }
+.tab:hover { background: #141722; color: var(--text-main); }
 .tab.active { background: var(--bg-editor); color: var(--text-main); font-weight: 600; border-bottom: 2px solid var(--primary); }
-.tab-close { font-size: 0.75rem; color: var(--text-dim); border-radius: 50%; padding: 1px 4px; }
-.tab-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.tab-close-btn {
+  font-size: 0.75rem; color: var(--text-dim); border-radius: 4px; padding: 2px 4px;
+  line-height: 1; transition: all 0.15s ease;
+}
+.tab-close-btn:hover { background: rgba(239, 68, 68, 0.25); color: #f87171; }
 
 /* Editor / Preview Content */
 .editor-body { flex: 1; position: relative; overflow: hidden; }
 #monaco-container { width: 100%; height: 100%; display: none; }
-#markdown-container { width: 100%; height: 100%; overflow-y: auto; padding: 32px 48px; display: block; }
+#markdown-container { width: 100%; height: 100%; overflow-y: auto; padding: 32px 48px; display: none; }
 #graph-tab-container { width: 100%; height: 100%; display: none; background: #0c0e14; }
+#empty-workspace-container {
+  width: 100%; height: 100%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; color: var(--text-dim);
+}
 
 /* Markdown Styling */
 .md-view h1, .md-view h2, .md-view h3 { color: #f8fafc; margin: 20px 0 12px 0; }
@@ -202,7 +211,7 @@ body {
 /* Chat & Stream History */
 .chat-stream { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 
-/* Tool Execution Accordion Card (Goose / OpenHands style) */
+/* Tool Execution Accordion Card */
 .tool-card {
   background: #141722; border: 1px solid var(--border); border-radius: 8px;
   overflow: hidden; font-size: 0.75rem;
@@ -210,9 +219,11 @@ body {
 .tool-card-header {
   padding: 8px 10px; background: #181c2a; cursor: pointer;
   display: flex; align-items: center; justify-content: space-between; font-weight: 600;
+  user-select: none;
 }
+.tool-card-header:hover { background: #202638; }
 .tool-badge { font-size: 0.62rem; font-family: var(--font-mono); padding: 2px 6px; border-radius: 4px; }
-.tool-card-body { padding: 10px; font-family: var(--font-mono); font-size: 0.7rem; background: #0e1118; color: var(--text-muted); display: none; }
+.tool-card-body { padding: 10px; font-family: var(--font-mono); font-size: 0.7rem; background: #0e1118; color: var(--text-muted); display: none; line-height: 1.6; }
 
 /* Executive Decision HUD Card */
 .decision-card {
@@ -223,10 +234,12 @@ body {
   background: var(--success); color: #022c22; font-weight: 700; font-size: 0.75rem;
   padding: 7px 12px; border-radius: 6px; border: none; cursor: pointer; flex: 1;
 }
+.btn-approve:hover { background: #34d399; }
 .btn-deny {
   background: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: 700; font-size: 0.75rem;
   padding: 7px 12px; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer; flex: 1;
 }
+.btn-deny:hover { background: rgba(239, 68, 68, 0.25); }
 
 /* Chat Prompt Input Box */
 .chat-input-wrapper {
@@ -250,6 +263,7 @@ body {
   background: var(--primary); color: #082f49; font-weight: 700; font-size: 0.75rem;
   padding: 4px 12px; border-radius: 6px; border: none; cursor: pointer;
 }
+.send-btn:hover { background: #7dd3fc; }
 
 /* 3. BOTTOM STATUS STRIP (28px) */
 .status-bar {
@@ -259,13 +273,19 @@ body {
 }
 .status-left { display: flex; align-items: center; gap: 14px; }
 .status-right { display: flex; align-items: center; gap: 14px; }
+
+.toast {
+  position: fixed; bottom: 45px; right: 24px;
+  background: #1c2130; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  padding: 10px 16px; border-radius: 8px; font-size: 0.78rem; font-weight: 600; display: none; z-index: 500;
+}
 </style>
 </head>
 <body>
 
 <!-- 1. TOP UTILITY BAR -->
 <div class="top-bar">
-  <div class="brand-group">
+  <div class="brand-group" onclick="openFile('strategy/award-marketing-plan')">
     <div class="brand-logo">⚡</div>
     <span class="brand-name">ANTON</span>
     <span class="breadcrumb">workspace / devops / vault</span>
@@ -297,40 +317,40 @@ body {
     <div class="tree-container">
       <!-- Deterministic Python Gates -->
       <div class="tree-section">⚡ Python Verify Gates</div>
-      <div class="tree-node active" onclick="openFile('scripts/verify_balance.py', 'python')">
+      <div class="tree-node" id="tree-scripts-verify_balance-py" onclick="openFile('scripts/verify_balance.py')">
         <span>🐍 verify_balance.py</span><span class="tree-pill">0-LLM</span>
       </div>
-      <div class="tree-node" onclick="openFile('anton/scheduler.py', 'python')">
+      <div class="tree-node" id="tree-anton-scheduler-py" onclick="openFile('anton/scheduler.py')">
         <span>🐍 scheduler.py</span><span class="tree-pill">ENGINE</span>
       </div>
 
       <!-- 100x Learned Skills -->
       <div class="tree-section">🧠 100x Learned Skills</div>
-      <div class="tree-node" onclick="openFile('skills/100x-desktop-ide-designer', 'markdown')">
+      <div class="tree-node" id="tree-skills-100x-desktop-ide-designer" onclick="openFile('skills/100x-desktop-ide-designer')">
         <span>✦ 100x-desktop-ide</span><span class="tree-pill">0.98</span>
       </div>
-      <div class="tree-node" onclick="openFile('skills/100x-gtm-strategist', 'markdown')">
+      <div class="tree-node" id="tree-skills-100x-gtm-strategist" onclick="openFile('skills/100x-gtm-strategist')">
         <span>✦ 100x-gtm-strategist</span><span class="tree-pill">0.98</span>
       </div>
-      <div class="tree-node" onclick="openFile('skills/100x-pr-publicity-specialist', 'markdown')">
+      <div class="tree-node" id="tree-skills-100x-pr-publicity-specialist" onclick="openFile('skills/100x-pr-publicity-specialist')">
         <span>✦ 100x-pr-publicity</span><span class="tree-pill">0.96</span>
       </div>
 
       <!-- GTM Strategy Artifacts -->
       <div class="tree-section">📑 Strategy Artifacts</div>
-      <div class="tree-node" onclick="openFile('strategy/award-marketing-plan', 'markdown')">
+      <div class="tree-node" id="tree-strategy-award-marketing-plan" onclick="openFile('strategy/award-marketing-plan')">
         <span>📄 award-marketing-plan</span><span class="tree-pill">MD</span>
       </div>
-      <div class="tree-node" onclick="openFile('strategy/content-calendar', 'markdown')">
+      <div class="tree-node" id="tree-strategy-content-calendar" onclick="openFile('strategy/content-calendar')">
         <span>📅 content-calendar</span><span class="tree-pill">MD</span>
       </div>
-      <div class="tree-node" onclick="openFile('strategy/pr-outreach-list', 'markdown')">
+      <div class="tree-node" id="tree-strategy-pr-outreach-list" onclick="openFile('strategy/pr-outreach-list')">
         <span>📰 pr-outreach-list</span><span class="tree-pill">MD</span>
       </div>
 
-      <!-- Views -->
+      <!-- Spatial Views -->
       <div class="tree-section">🌌 Spatial Views</div>
-      <div class="tree-node" onclick="open3DGraph()">
+      <div class="tree-node" id="tree-graph-view" onclick="open3DGraph()">
         <span>🪐 3D Neural Second Brain</span><span class="tree-pill">GRAPH</span>
       </div>
     </div>
@@ -340,10 +360,7 @@ body {
   <div class="editor-pane">
     <!-- Multi-Tab Bar -->
     <div class="editor-tabs" id="editor-tab-bar">
-      <div class="tab active" id="tab-primary" onclick="focusTab('primary')">
-        <span id="tab-primary-title">scripts/verify_balance.py</span>
-        <span class="tab-close">✕</span>
-      </div>
+      <!-- Tabs populated dynamically -->
     </div>
 
     <!-- Content Buffers -->
@@ -351,6 +368,11 @@ body {
       <div id="monaco-container"></div>
       <div id="markdown-container" class="md-view"></div>
       <div id="graph-tab-container"></div>
+      <div id="empty-workspace-container">
+        <div style="font-size:2rem;color:var(--primary)">⚡</div>
+        <div style="font-size:0.95rem;font-weight:700;color:var(--text-main)">No document open</div>
+        <div style="font-size:0.75rem">Select a file from the left navigator or press ⌘K to search</div>
+      </div>
     </div>
   </div>
 
@@ -364,7 +386,7 @@ body {
     <div class="chat-stream" id="agent-chat-stream">
       <!-- Executive Decision Card -->
       <div id="decision-hud-box">
-        <div class="decision-card">
+        <div class="decision-card" id="active-decision-card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <span style="font-size:0.65rem;font-weight:800;color:#fbbf24;text-transform:uppercase">Approval Gate #108</span>
             <span style="font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim)">7a3f89...</span>
@@ -418,7 +440,7 @@ body {
 <!-- 3. BOTTOM STATUS STRIP -->
 <div class="status-bar">
   <div class="status-left">
-    <span>🌿 main (commit 7883b0a)</span>
+    <span>🌿 main (commit a46e9d5)</span>
     <span>⚡ Gates: Fail-Closed Active</span>
     <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
@@ -428,13 +450,33 @@ body {
   </div>
 </div>
 
+<div class="toast" id="toast-msg"></div>
+
 <!-- Monaco Loader -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
 <script>
+const $ = id => document.getElementById(id);
+
 let editorInstance = null;
-let currentFile = 'scripts/verify_balance.py';
 let sonOfAntonActive = false;
 
+// Robust Multi-Tab State
+let openTabs = [];
+let activeTabId = null;
+
+function showToast(msg, type='info') {
+  const t = $('toast-msg');
+  t.textContent = msg; t.style.display = 'block';
+  t.style.borderColor = type === 'success' ? '#10b981' : (type === 'error' ? '#ef4444' : '#f59e0b');
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+
+function updateClock() {
+  $('clock-display').textContent = 'UTC ' + new Date().toISOString().substring(11, 19);
+}
+setInterval(updateClock, 1000); updateClock();
+
+// Monaco Init
 require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
 
 require(['vs/editor/editor.main'], function() {
@@ -448,76 +490,149 @@ require(['vs/editor/editor.main'], function() {
     minimap: { enabled: false },
     lineNumbers: 'on',
     renderLineHighlight: 'all',
-    scrollBeyondLastLine: false,
-    readOnly: false
+    scrollBeyondLastLine: false
   });
-  openFile('scripts/verify_balance.py', 'python');
+  // Open initial default file
+  openFile('scripts/verify_balance.py');
 });
 
-const $ = id => document.getElementById(id);
+// Render Tab Bar
+function renderTabBar() {
+  const bar = $('editor-tab-bar');
+  if (openTabs.length === 0) {
+    bar.innerHTML = '';
+    showBuffer('empty');
+    return;
+  }
 
-function updateClock() {
-  $('clock-display').textContent = 'UTC ' + new Date().toISOString().substring(11, 19);
+  bar.innerHTML = openTabs.map(t => `
+    <div class="tab ${t.id === activeTabId ? 'active' : ''}" onclick="switchTab('${t.id}')">
+      <span>${t.title}</span>
+      <span class="tab-close-btn" onclick="closeTab('${t.id}', event)">✕</span>
+    </div>
+  `).join('');
+
+  const activeTab = openTabs.find(t => t.id === activeTabId);
+  if (activeTab) {
+    showBuffer(activeTab.type, activeTab.content);
+  }
 }
-setInterval(updateClock, 1000); updateClock();
 
-async function openFile(path, type='markdown') {
-  currentFile = path;
-  $('tab-primary-title').textContent = path;
-  document.querySelectorAll('.tree-node').forEach(n => n.classList.remove('active'));
+function showBuffer(type, content='') {
+  const mCont = $('monaco-container');
+  const mdCont = $('markdown-container');
+  const gCont = $('graph-tab-container');
+  const eCont = $('empty-workspace-container');
 
-  const mContainer = $('monaco-container');
-  const mdContainer = $('markdown-container');
-  const gContainer = $('graph-tab-container');
+  mCont.style.display = 'none';
+  mdCont.style.display = 'none';
+  gCont.style.display = 'none';
+  eCont.style.display = 'none';
 
-  gContainer.style.display = 'none';
+  if (type === 'code') {
+    mCont.style.display = 'block';
+    if (editorInstance) {
+      editorInstance.setValue(content);
+      editorInstance.layout();
+    }
+  } else if (type === 'markdown') {
+    mdCont.style.display = 'block';
+    mdCont.innerHTML = marked.parse(content);
+  } else if (type === 'graph') {
+    gCont.style.display = 'block';
+    init3DGraphInContainer();
+  } else {
+    eCont.style.display = 'flex';
+  }
+}
+
+async function openFile(path) {
+  const basename = path.split('/').pop();
+  const existing = openTabs.find(t => t.id === path);
+
+  if (existing) {
+    activeTabId = path;
+    renderTabBar();
+    return;
+  }
 
   try {
     const res = await fetch(`/api/vault/note?path=${encodeURIComponent(path)}`);
     const data = await res.json();
+    const isCode = data.is_code || path.endsWith('.py');
 
-    if (data.is_code || path.endsWith('.py')) {
-      mdContainer.style.display = 'none';
-      mContainer.style.display = 'block';
-      if (editorInstance) {
-        editorInstance.setValue(data.content);
-        monaco.editor.setModelLanguage(editorInstance.getModel(), 'python');
-      }
-    } else {
-      mContainer.style.display = 'none';
-      mdContainer.style.display = 'block';
-      mdContainer.innerHTML = marked.parse(data.content);
-    }
+    openTabs.push({
+      id: path,
+      title: basename,
+      type: isCode ? 'code' : 'markdown',
+      content: data.content || ''
+    });
+
+    activeTabId = path;
+    renderTabBar();
   } catch (e) {
-    mdContainer.style.display = 'block';
-    mdContainer.innerHTML = '<p style="color:var(--danger)">Error loading file: ' + e.message + '</p>';
+    showToast('Failed to open file: ' + e.message, 'error');
   }
 }
 
 function open3DGraph() {
-  $('monaco-container').style.display = 'none';
-  $('markdown-container').style.display = 'none';
-  const gContainer = $('graph-tab-container');
-  gContainer.style.display = 'block';
-  $('tab-primary-title').textContent = '3D Second Brain Graph';
+  const existing = openTabs.find(t => t.id === '3d-graph');
+  if (existing) {
+    activeTabId = '3d-graph';
+    renderTabBar();
+    return;
+  }
+  openTabs.push({
+    id: '3d-graph',
+    title: '🪐 3D Second Brain',
+    type: 'graph',
+    content: ''
+  });
+  activeTabId = '3d-graph';
+  renderTabBar();
+}
 
+function switchTab(tabId) {
+  activeTabId = tabId;
+  renderTabBar();
+}
+
+function closeTab(tabId, event) {
+  if (event) event.stopPropagation();
+  const idx = openTabs.findIndex(t => t.id === tabId);
+  if (idx === -1) return;
+
+  openTabs.splice(idx, 1);
+
+  if (activeTabId === tabId) {
+    if (openTabs.length > 0) {
+      activeTabId = openTabs[Math.max(0, idx - 1)].id;
+    } else {
+      activeTabId = null;
+    }
+  }
+  renderTabBar();
+}
+
+function init3DGraphInContainer() {
+  const gCont = $('graph-tab-container');
   if (!window.graphLoaded) {
     window.graphLoaded = true;
     fetch('/api/vault/graph').then(r => r.json()).then(gData => {
-      ForceGraph3D()(gContainer)
+      ForceGraph3D()(gCont)
         .graphData(gData)
         .nodeLabel('title')
         .nodeColor(n => n.type === 'moc' ? '#c084fc' : (n.type === 'skill' ? '#10b981' : '#38bdf8'))
         .nodeVal('val')
         .linkWidth(1.2)
-        .onNodeClick(n => openFile(n.id, 'markdown'));
+        .onNodeClick(n => openFile(n.id));
     });
   }
 }
 
 function toggleToolCard(id) {
   const el = $(id);
-  el.style.display = el.style.display === 'block' ? 'none' : 'block';
+  el.style.display = (el.style.display === 'block') ? 'none' : 'block';
 }
 
 function focusSearch() { $('global-search').focus(); }
@@ -540,14 +655,37 @@ async function toggleSonOfAnton() {
         lbl.textContent = '⚡ SON OF ANTON [ACTIVE]';
         stat.textContent = 'Mode: ⚡ Son of Anton (Overdrive)';
         stat.style.color = '#fbbf24';
+        showToast('⚡ Son of Anton Mode ENGAGED', 'warning');
       } else {
         btn.classList.remove('active');
         lbl.textContent = '⚡ SON OF ANTON [OFF]';
         stat.textContent = 'Mode: Safe Standard';
         stat.style.color = 'var(--text-dim)';
+        showToast('🛡️ Standard Safe Mode Restored', 'success');
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    showToast('Failed to toggle mode', 'error');
+  }
+}
+
+async function resolveApproval(aid, decision) {
+  try {
+    const res = await fetch(`/api/approvals/${aid}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision })
+    });
+    if (res.ok) {
+      showToast(`Approval #${aid} marked as ${decision.toUpperCase()}`, 'success');
+      const box = $('decision-hud-box');
+      if (box) {
+        box.innerHTML = `<div style="padding:10px;background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);border-radius:8px;font-size:0.75rem;color:#34d399;text-align:center">✓ Gate Resolved (${decision.toUpperCase()})</div>`;
+      }
+    }
+  } catch (e) {
+    showToast(e.message, 'error');
+  }
 }
 
 async function sendChatPrompt() {
@@ -579,7 +717,9 @@ async function sendChatPrompt() {
     `;
     if (data.note_path) openFile(data.note_path);
     stream.scrollTop = stream.scrollHeight;
-  } catch (e) {}
+  } catch (e) {
+    showToast('Execution error: ' + e.message, 'error');
+  }
 }
 
 $('chat-prompt-input').addEventListener('keydown', e => {
@@ -589,10 +729,24 @@ $('chat-prompt-input').addEventListener('keydown', e => {
   }
 });
 
+$('global-search').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    const q = $('global-search').value.trim();
+    if (!q) return;
+    $('global-search').value = '';
+    $('chat-prompt-input').value = q;
+    sendChatPrompt();
+  }
+});
+
 window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault();
     $('global-search').focus();
+  } else if (e.key === 'Enter' && document.activeElement !== $('chat-prompt-input') && document.activeElement !== $('global-search')) {
+    resolveApproval(108, 'approve');
+  } else if (e.key === 'Escape' && document.activeElement !== $('chat-prompt-input')) {
+    resolveApproval(108, 'deny');
   }
 });
 </script>
