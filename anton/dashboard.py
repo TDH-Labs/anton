@@ -85,21 +85,6 @@ body {
 .brand-name { font-size: 0.95rem; font-weight: 800; letter-spacing: -0.02em; }
 .breadcrumb { font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); }
 
-/* Center Search Capsule */
-.search-capsule {
-  display: flex; align-items: center; gap: 8px;
-  background: #141722; border: 1px solid var(--border);
-  border-radius: 20px; padding: 4px 14px; width: 440px; cursor: pointer;
-}
-.search-input {
-  background: transparent; border: none; outline: none;
-  color: var(--text-main); font-size: 0.8rem; flex: 1; font-family: var(--font-sans);
-}
-.search-kbd {
-  font-size: 0.65rem; font-family: var(--font-mono);
-  background: #202636; padding: 1px 5px; border-radius: 4px; color: var(--text-dim);
-}
-
 /* Header Actions */
 .top-actions { display: flex; align-items: center; gap: 12px; }
 .son-toggle {
@@ -120,11 +105,12 @@ body {
 .workbench {
   flex: 1;
   display: grid;
-  grid-template-columns: 260px 1fr 400px;
+  grid-template-columns: 260px 1fr 380px;
   overflow: hidden;
+  position: relative;
 }
 
-/* LEFT PANE: NAVIGATOR & SECOND BRAIN */
+/* LEFT PANE: NAVIGATOR */
 .nav-pane {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
@@ -147,12 +133,13 @@ body {
 .tree-node.active { background: #1e2436; color: var(--primary); font-weight: 600; }
 .tree-pill { font-size: 0.62rem; font-family: var(--font-mono); padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.06); }
 
-/* CENTER PANE: MONACO / WORKSPACE */
+/* CENTER PANE: WORKSPACE & MONACO */
 .editor-pane {
   background: var(--bg-editor);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
 }
 /* Tab Bar */
 .editor-tabs {
@@ -162,6 +149,7 @@ body {
   display: flex;
   align-items: center;
   overflow-x: auto;
+  z-index: 10;
 }
 .tab {
   display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 100%;
@@ -180,12 +168,8 @@ body {
 /* Editor / Preview Content */
 .editor-body { flex: 1; position: relative; overflow: hidden; }
 #monaco-container { width: 100%; height: 100%; display: none; }
-#markdown-container { width: 100%; height: 100%; overflow-y: auto; padding: 32px 48px; display: none; }
+#markdown-container { width: 100%; height: 100%; overflow-y: auto; padding: 32px 48px 100px 48px; display: none; }
 #graph-tab-container { width: 100%; height: 100%; display: none; background: #0c0e14; }
-#empty-workspace-container {
-  width: 100%; height: 100%; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 12px; color: var(--text-dim);
-}
 
 /* Markdown Styling */
 .md-view h1, .md-view h2, .md-view h3 { color: #f8fafc; margin: 20px 0 12px 0; }
@@ -194,6 +178,106 @@ body {
 .md-view th, .md-view td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
 .md-view pre { background: #090b10; border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow-x: auto; margin: 14px 0; }
 .md-view code { font-family: var(--font-mono); color: var(--primary); font-size: 0.82rem; }
+
+/* =========================================================================
+   DEAD-CENTER TO BOTTOM-CENTER PROMPT TRANSITION STYLES
+   ========================================================================= */
+.prompt-stage-wrapper {
+  position: absolute;
+  z-index: 50;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* STATE 1: DEAD CENTER (Initial Zero State) */
+.prompt-stage-wrapper.stage-center {
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 680px;
+  max-width: 90%;
+}
+
+/* STATE 2: DOCKED LOWER CENTER (After 1st prompt) */
+.prompt-stage-wrapper.stage-docked {
+  top: auto;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 640px;
+  max-width: 90%;
+}
+
+.hero-greeting {
+  text-align: center;
+  margin-bottom: 20px;
+  transition: opacity 0.25s ease;
+}
+.stage-docked .hero-greeting { display: none; }
+
+.prompt-box {
+  width: 100%;
+  background: rgba(22, 27, 38, 0.95);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: var(--border-rim), 0 16px 48px rgba(0, 0, 0, 0.7);
+  border-radius: 16px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+.prompt-box:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.25), var(--border-rim);
+}
+.prompt-textarea {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  resize: none;
+  min-height: 48px;
+  line-height: 1.5;
+}
+.prompt-textarea::placeholder { color: var(--text-dim); }
+
+.prompt-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.prompt-chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  transition: opacity 0.25s ease;
+}
+.stage-docked .prompt-chips { display: none; }
+
+.chip {
+  padding: 6px 12px;
+  background: #161922;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.chip:hover {
+  background: #202636;
+  border-color: rgba(255,255,255,0.2);
+  color: var(--text-main);
+}
 
 /* RIGHT PANE: COWORKER AGENT & TRAJECTORY */
 .sidecar-pane {
@@ -241,30 +325,6 @@ body {
 }
 .btn-deny:hover { background: rgba(239, 68, 68, 0.25); }
 
-/* Chat Prompt Input Box */
-.chat-input-wrapper {
-  padding: 12px; background: #12151e; border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 8px;
-}
-.chat-box {
-  background: #181c28; border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px; display: flex; flex-direction: column; gap: 6px;
-}
-.chat-textarea {
-  background: transparent; border: none; outline: none; color: var(--text-main);
-  font-family: var(--font-sans); font-size: 0.82rem; resize: none; min-height: 48px;
-}
-.chat-actions { display: flex; justify-content: space-between; align-items: center; }
-.model-pill {
-  font-size: 0.68rem; font-family: var(--font-mono); color: var(--text-dim);
-  background: #11141d; padding: 2px 8px; border-radius: 12px; border: 1px solid var(--border);
-}
-.send-btn {
-  background: var(--primary); color: #082f49; font-weight: 700; font-size: 0.75rem;
-  padding: 4px 12px; border-radius: 6px; border: none; cursor: pointer;
-}
-.send-btn:hover { background: #7dd3fc; }
-
 /* 3. BOTTOM STATUS STRIP (28px) */
 .status-bar {
   height: 28px; background: #0c0e14; border-top: 1px solid var(--border);
@@ -285,16 +345,10 @@ body {
 
 <!-- 1. TOP UTILITY BAR -->
 <div class="top-bar">
-  <div class="brand-group" onclick="openFile('strategy/award-marketing-plan')">
+  <div class="brand-group" onclick="resetToCenterPrompt()">
     <div class="brand-logo">⚡</div>
     <span class="brand-name">ANTON</span>
     <span class="breadcrumb">workspace / devops / vault</span>
-  </div>
-
-  <div class="search-capsule" onclick="focusSearch()">
-    <span style="color:var(--primary)">⚡</span>
-    <input type="text" id="global-search" class="search-input" placeholder="Ask Anton, search notes, or run recipe (⌘K)...">
-    <span class="search-kbd">⌘K</span>
   </div>
 
   <div class="top-actions">
@@ -317,50 +371,50 @@ body {
     <div class="tree-container">
       <!-- Deterministic Python Gates -->
       <div class="tree-section">⚡ Python Verify Gates</div>
-      <div class="tree-node" id="tree-scripts-verify_balance-py" onclick="openFile('scripts/verify_balance.py')">
+      <div class="tree-node" onclick="openFile('scripts/verify_balance.py')">
         <span>🐍 verify_balance.py</span><span class="tree-pill">0-LLM</span>
       </div>
-      <div class="tree-node" id="tree-anton-scheduler-py" onclick="openFile('anton/scheduler.py')">
+      <div class="tree-node" onclick="openFile('anton/scheduler.py')">
         <span>🐍 scheduler.py</span><span class="tree-pill">ENGINE</span>
       </div>
 
       <!-- 100x Learned Skills -->
       <div class="tree-section">🧠 100x Learned Skills</div>
-      <div class="tree-node" id="tree-skills-100x-desktop-ide-designer" onclick="openFile('skills/100x-desktop-ide-designer')">
+      <div class="tree-node" onclick="openFile('skills/100x-desktop-ide-designer')">
         <span>✦ 100x-desktop-ide</span><span class="tree-pill">0.98</span>
       </div>
-      <div class="tree-node" id="tree-skills-100x-gtm-strategist" onclick="openFile('skills/100x-gtm-strategist')">
+      <div class="tree-node" onclick="openFile('skills/100x-gtm-strategist')">
         <span>✦ 100x-gtm-strategist</span><span class="tree-pill">0.98</span>
       </div>
-      <div class="tree-node" id="tree-skills-100x-pr-publicity-specialist" onclick="openFile('skills/100x-pr-publicity-specialist')">
+      <div class="tree-node" onclick="openFile('skills/100x-pr-publicity-specialist')">
         <span>✦ 100x-pr-publicity</span><span class="tree-pill">0.96</span>
       </div>
 
       <!-- GTM Strategy Artifacts -->
       <div class="tree-section">📑 Strategy Artifacts</div>
-      <div class="tree-node" id="tree-strategy-award-marketing-plan" onclick="openFile('strategy/award-marketing-plan')">
+      <div class="tree-node" onclick="openFile('strategy/award-marketing-plan')">
         <span>📄 award-marketing-plan</span><span class="tree-pill">MD</span>
       </div>
-      <div class="tree-node" id="tree-strategy-content-calendar" onclick="openFile('strategy/content-calendar')">
+      <div class="tree-node" onclick="openFile('strategy/content-calendar')">
         <span>📅 content-calendar</span><span class="tree-pill">MD</span>
       </div>
-      <div class="tree-node" id="tree-strategy-pr-outreach-list" onclick="openFile('strategy/pr-outreach-list')">
+      <div class="tree-node" onclick="openFile('strategy/pr-outreach-list')">
         <span>📰 pr-outreach-list</span><span class="tree-pill">MD</span>
       </div>
 
       <!-- Spatial Views -->
       <div class="tree-section">🌌 Spatial Views</div>
-      <div class="tree-node" id="tree-graph-view" onclick="open3DGraph()">
+      <div class="tree-node" onclick="open3DGraph()">
         <span>🪐 3D Neural Second Brain</span><span class="tree-pill">GRAPH</span>
       </div>
     </div>
   </div>
 
-  <!-- CENTER PANE: EDITOR & DOCUMENT BUFFER -->
+  <!-- CENTER PANE: WORKSPACE & MONACO -->
   <div class="editor-pane">
     <!-- Multi-Tab Bar -->
     <div class="editor-tabs" id="editor-tab-bar">
-      <!-- Tabs populated dynamically -->
+      <!-- Populated dynamically -->
     </div>
 
     <!-- Content Buffers -->
@@ -368,10 +422,38 @@ body {
       <div id="monaco-container"></div>
       <div id="markdown-container" class="md-view"></div>
       <div id="graph-tab-container"></div>
-      <div id="empty-workspace-container">
-        <div style="font-size:2rem;color:var(--primary)">⚡</div>
-        <div style="font-size:0.95rem;font-weight:700;color:var(--text-main)">No document open</div>
-        <div style="font-size:0.75rem">Select a file from the left navigator or press ⌘K to search</div>
+
+      <!-- DYNAMIC PROMPT STAGE (Transitions from Center to Docked Bottom) -->
+      <div class="prompt-stage-wrapper stage-center" id="prompt-stage">
+        <div class="hero-greeting" id="hero-greeting-box">
+          <div style="font-size:2.2rem;margin-bottom:8px">⚡</div>
+          <div style="font-size:1.25rem;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px">What would you like Anton to do?</div>
+          <div style="font-size:0.8rem;color:var(--text-muted)">Autonomous Coworker with Deterministic Gates & Second Brain Memory</div>
+        </div>
+
+        <div class="prompt-box">
+          <textarea id="main-prompt-input" class="prompt-textarea" placeholder="Ask Anton anything, design a workflow, or search knowledge (↵ to run)..."></textarea>
+          <div class="prompt-footer">
+            <span style="font-size:0.68rem;font-family:var(--font-mono);color:var(--text-dim);background:#10131b;padding:2px 8px;border-radius:10px;border:1px solid var(--border)">
+              Local [REDACTED-LOCAL-INFERENCE] ➔ Cloud Fallback
+            </span>
+            <button onclick="submitPrompt()" style="background:var(--primary);color:#082f49;font-weight:700;font-size:0.75rem;padding:5px 14px;border-radius:6px;border:none;cursor:pointer">
+              Run ↵
+            </button>
+          </div>
+        </div>
+
+        <div class="prompt-chips" id="hero-chips">
+          <div class="chip" onclick="applyChip('Reconcile Stripe payouts and QuickBooks ledger with $0.00 hard gate')">
+            ⚡ Reconcile Stripe & QBO ($0.00 Gate)
+          </div>
+          <div class="chip" onclick="applyChip('Synthesize GTM launch plan and 2-week content calendar for SaaS award')">
+            🏆 Launch 2026 SaaS Award GTM Campaign
+          </div>
+          <div class="chip" onclick="applyChip('Inspect 100x desktop IDE designer skill protocol')">
+            🧠 Inspect 100x Desktop IDE Skill
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -386,7 +468,7 @@ body {
     <div class="chat-stream" id="agent-chat-stream">
       <!-- Executive Decision Card -->
       <div id="decision-hud-box">
-        <div class="decision-card" id="active-decision-card">
+        <div class="decision-card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <span style="font-size:0.65rem;font-weight:800;color:#fbbf24;text-transform:uppercase">Approval Gate #108</span>
             <span style="font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim)">7a3f89...</span>
@@ -400,7 +482,7 @@ body {
         </div>
       </div>
 
-      <!-- Execution Tool Cards (Goose / OpenHands style) -->
+      <!-- Execution Tool Cards -->
       <div class="tool-card">
         <div class="tool-card-header" onclick="toggleToolCard('tool-1')">
           <span>⚡ tool: python3 scripts/verify_balance.py</span>
@@ -423,24 +505,13 @@ body {
         </div>
       </div>
     </div>
-
-    <!-- Chat Prompt Input -->
-    <div class="chat-input-wrapper">
-      <div class="chat-box">
-        <textarea id="chat-prompt-input" class="chat-textarea" placeholder="Ask Anton anything or instruct workflow... (↵ to send)"></textarea>
-        <div class="chat-actions">
-          <span class="model-pill">Local [REDACTED-LOCAL-INFERENCE] ➔ Cloud Fallback</span>
-          <button class="send-btn" onclick="sendChatPrompt()">Send ↵</button>
-        </div>
-      </div>
-    </div>
   </div>
 </div>
 
 <!-- 3. BOTTOM STATUS STRIP -->
 <div class="status-bar">
   <div class="status-left">
-    <span>🌿 main (commit a46e9d5)</span>
+    <span>🌿 main (commit 6382f36)</span>
     <span>⚡ Gates: Fail-Closed Active</span>
     <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
@@ -459,8 +530,9 @@ const $ = id => document.getElementById(id);
 
 let editorInstance = null;
 let sonOfAntonActive = false;
+let hasSubmittedPrompt = false;
 
-// Robust Multi-Tab State
+// Multi-Tab State
 let openTabs = [];
 let activeTabId = null;
 
@@ -492,8 +564,6 @@ require(['vs/editor/editor.main'], function() {
     renderLineHighlight: 'all',
     scrollBeyondLastLine: false
   });
-  // Open initial default file
-  openFile('scripts/verify_balance.py');
 });
 
 // Render Tab Bar
@@ -522,12 +592,10 @@ function showBuffer(type, content='') {
   const mCont = $('monaco-container');
   const mdCont = $('markdown-container');
   const gCont = $('graph-tab-container');
-  const eCont = $('empty-workspace-container');
 
   mCont.style.display = 'none';
   mdCont.style.display = 'none';
   gCont.style.display = 'none';
-  eCont.style.display = 'none';
 
   if (type === 'code') {
     mCont.style.display = 'block';
@@ -541,12 +609,13 @@ function showBuffer(type, content='') {
   } else if (type === 'graph') {
     gCont.style.display = 'block';
     init3DGraphInContainer();
-  } else {
-    eCont.style.display = 'flex';
   }
 }
 
 async function openFile(path) {
+  // If opening file, move prompt to docked state
+  dockPromptStage();
+
   const basename = path.split('/').pop();
   const existing = openTabs.find(t => t.id === path);
 
@@ -576,6 +645,7 @@ async function openFile(path) {
 }
 
 function open3DGraph() {
+  dockPromptStage();
   const existing = openTabs.find(t => t.id === '3d-graph');
   if (existing) {
     activeTabId = '3d-graph';
@@ -609,6 +679,7 @@ function closeTab(tabId, event) {
       activeTabId = openTabs[Math.max(0, idx - 1)].id;
     } else {
       activeTabId = null;
+      if (!hasSubmittedPrompt) resetToCenterPrompt();
     }
   }
   renderTabBar();
@@ -630,12 +701,79 @@ function init3DGraphInContainer() {
   }
 }
 
+/* =========================================================================
+   PROMPT TRANSITION LOGIC (DEAD CENTER ➔ DOCKED LOWER CENTER)
+   ========================================================================= */
+function dockPromptStage() {
+  const stage = $('prompt-stage');
+  stage.classList.remove('stage-center');
+  stage.classList.add('stage-docked');
+  hasSubmittedPrompt = true;
+}
+
+function resetToCenterPrompt() {
+  const stage = $('prompt-stage');
+  stage.classList.remove('stage-docked');
+  stage.classList.add('stage-center');
+  hasSubmittedPrompt = false;
+  openTabs = [];
+  activeTabId = null;
+  renderTabBar();
+  $('main-prompt-input').focus();
+}
+
+function applyChip(text) {
+  $('main-prompt-input').value = text;
+  submitPrompt();
+}
+
+async function submitPrompt() {
+  const input = $('main-prompt-input');
+  const q = input.value.trim();
+  if (!q) return;
+
+  dockPromptStage();
+  input.value = '';
+
+  const stream = $('agent-chat-stream');
+  stream.innerHTML += `
+    <div style="padding:8px 10px;background:#1e2436;border-radius:8px;font-size:0.78rem">
+      <div style="font-weight:700;color:var(--primary);margin-bottom:2px">You</div>
+      <div>${q}</div>
+    </div>
+  `;
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: q })
+    });
+    const data = await res.json();
+    stream.innerHTML += `
+      <div style="padding:8px 10px;background:#141722;border:1px solid var(--border);border-radius:8px;font-size:0.78rem">
+        <div style="font-weight:700;color:var(--purple);margin-bottom:2px">⚡ Anton</div>
+        <div>${data.reply}</div>
+      </div>
+    `;
+    if (data.note_path) openFile(data.note_path);
+    stream.scrollTop = stream.scrollHeight;
+  } catch (e) {
+    showToast('Execution error: ' + e.message, 'error');
+  }
+}
+
+$('main-prompt-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    submitPrompt();
+  }
+});
+
 function toggleToolCard(id) {
   const el = $(id);
   el.style.display = (el.style.display === 'block') ? 'none' : 'block';
 }
-
-function focusSearch() { $('global-search').focus(); }
 
 async function toggleSonOfAnton() {
   const nextState = !sonOfAntonActive;
@@ -688,64 +826,13 @@ async function resolveApproval(aid, decision) {
   }
 }
 
-async function sendChatPrompt() {
-  const input = $('chat-prompt-input');
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-
-  const stream = $('agent-chat-stream');
-  stream.innerHTML += `
-    <div style="padding:8px 10px;background:#1e2436;border-radius:8px;font-size:0.78rem">
-      <div style="font-weight:700;color:var(--primary);margin-bottom:2px">You</div>
-      <div>${q}</div>
-    </div>
-  `;
-
-  try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: q })
-    });
-    const data = await res.json();
-    stream.innerHTML += `
-      <div style="padding:8px 10px;background:#141722;border:1px solid var(--border);border-radius:8px;font-size:0.78rem">
-        <div style="font-weight:700;color:var(--purple);margin-bottom:2px">⚡ Anton</div>
-        <div>${data.reply}</div>
-      </div>
-    `;
-    if (data.note_path) openFile(data.note_path);
-    stream.scrollTop = stream.scrollHeight;
-  } catch (e) {
-    showToast('Execution error: ' + e.message, 'error');
-  }
-}
-
-$('chat-prompt-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendChatPrompt();
-  }
-});
-
-$('global-search').addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
-    const q = $('global-search').value.trim();
-    if (!q) return;
-    $('global-search').value = '';
-    $('chat-prompt-input').value = q;
-    sendChatPrompt();
-  }
-});
-
 window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
     e.preventDefault();
-    $('global-search').focus();
-  } else if (e.key === 'Enter' && document.activeElement !== $('chat-prompt-input') && document.activeElement !== $('global-search')) {
+    $('main-prompt-input').focus();
+  } else if (e.key === 'Enter' && document.activeElement !== $('main-prompt-input')) {
     resolveApproval(108, 'approve');
-  } else if (e.key === 'Escape' && document.activeElement !== $('chat-prompt-input')) {
+  } else if (e.key === 'Escape' && document.activeElement !== $('main-prompt-input')) {
     resolveApproval(108, 'deny');
   }
 });
