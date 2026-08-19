@@ -7,7 +7,7 @@ import secrets
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 
 from .canary import compute_tripwires
 from .digest import build_digest
@@ -19,6 +19,7 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ANTON — Autonomous Pro Studio & IDE</title>
+<link rel="icon" type="image/jpeg" href="/api/logo">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -76,11 +77,11 @@ body {
   box-shadow: var(--border-rim);
 }
 .brand-group { display: flex; align-items: center; gap: 10px; cursor: pointer; }
-.brand-logo {
+.brand-logo-img {
   width: 28px; height: 28px;
-  background: #1c2230; border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 6px; display: flex; align-items: center; justify-content: center;
-  font-size: 0.95rem; color: var(--primary);
+  border-radius: 6px; object-fit: cover;
+  border: 1px solid rgba(255,255,255,0.18);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
 }
 .brand-name { font-size: 0.95rem; font-weight: 800; letter-spacing: -0.02em; }
 .breadcrumb { font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); }
@@ -214,8 +215,19 @@ body {
   text-align: center;
   margin-bottom: 20px;
   transition: opacity 0.25s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 .stage-docked .hero-greeting { display: none; }
+
+.hero-logo-img {
+  width: 68px; height: 68px;
+  border-radius: 16px; object-fit: cover;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 30px rgba(56, 189, 248, 0.15);
+  margin-bottom: 12px;
+}
 
 .prompt-box {
   width: 100%;
@@ -346,7 +358,7 @@ body {
 <!-- 1. TOP UTILITY BAR -->
 <div class="top-bar">
   <div class="brand-group" onclick="resetToCenterPrompt()">
-    <div class="brand-logo">⚡</div>
+    <img src="/api/logo" alt="Anton Logo" class="brand-logo-img">
     <span class="brand-name">ANTON</span>
     <span class="breadcrumb">workspace / devops / vault</span>
   </div>
@@ -426,7 +438,7 @@ body {
       <!-- DYNAMIC PROMPT STAGE (Transitions from Center to Docked Bottom) -->
       <div class="prompt-stage-wrapper stage-center" id="prompt-stage">
         <div class="hero-greeting" id="hero-greeting-box">
-          <div style="font-size:2.2rem;margin-bottom:8px">⚡</div>
+          <img src="/api/logo" alt="Anton Logo" class="hero-logo-img">
           <div style="font-size:1.25rem;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px">What would you like Anton to do?</div>
           <div style="font-size:0.8rem;color:var(--text-muted)">Autonomous Coworker with Deterministic Gates & Second Brain Memory</div>
         </div>
@@ -511,7 +523,7 @@ body {
 <!-- 3. BOTTOM STATUS STRIP -->
 <div class="status-bar">
   <div class="status-left">
-    <span>🌿 main (commit 6382f36)</span>
+    <span>🌿 main (commit 9708433)</span>
     <span>⚡ Gates: Fail-Closed Active</span>
     <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
@@ -613,7 +625,6 @@ function showBuffer(type, content='') {
 }
 
 async function openFile(path) {
-  // If opening file, move prompt to docked state
   dockPromptStage();
 
   const basename = path.split('/').pop();
@@ -701,9 +712,6 @@ function init3DGraphInContainer() {
   }
 }
 
-/* =========================================================================
-   PROMPT TRANSITION LOGIC (DEAD CENTER ➔ DOCKED LOWER CENTER)
-   ========================================================================= */
 function dockPromptStage() {
   const stage = $('prompt-stage');
   stage.classList.remove('stage-center');
@@ -885,6 +893,20 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def index():
         return PAGE
+
+    @app.get("/api/logo")
+    def get_logo():
+        """Serves the approved Anton logo image."""
+        install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
+        logo_paths = [
+            os.path.join(install_dir, "assets", "logos", "anton_logo.jpg"),
+            "/Users/ai/rooms/devops/assets/logos/anton_dark_bw_icon_1787167963726.jpg",
+            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/anton_dark_bw_icon_1787167963726.jpg"
+        ]
+        for p in logo_paths:
+            if os.path.exists(p):
+                return FileResponse(p, media_type="image/jpeg")
+        raise HTTPException(404, "logo image not found")
 
     @app.get("/api/mode")
     def get_mode():
