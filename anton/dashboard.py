@@ -82,6 +82,7 @@ body {
   border-radius: 6px; object-fit: cover;
   border: 1px solid rgba(255,255,255,0.18);
   box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  transition: all 0.25s ease;
 }
 .brand-name { font-size: 0.95rem; font-weight: 800; letter-spacing: -0.02em; }
 .breadcrumb { font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); }
@@ -227,6 +228,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.22);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 30px rgba(56, 189, 248, 0.15);
   margin-bottom: 12px;
+  transition: all 0.3s ease;
 }
 
 .prompt-box {
@@ -358,8 +360,8 @@ body {
 <!-- 1. TOP UTILITY BAR -->
 <div class="top-bar">
   <div class="brand-group" onclick="resetToCenterPrompt()">
-    <img src="/api/logo" alt="Anton Logo" class="brand-logo-img">
-    <span class="brand-name">ANTON</span>
+    <img src="/api/logo" id="top-brand-logo" alt="Anton Logo" class="brand-logo-img">
+    <span class="brand-name" id="top-brand-name">ANTON</span>
     <span class="breadcrumb">workspace / devops / vault</span>
   </div>
 
@@ -438,8 +440,8 @@ body {
       <!-- DYNAMIC PROMPT STAGE (Transitions from Center to Docked Bottom) -->
       <div class="prompt-stage-wrapper stage-center" id="prompt-stage">
         <div class="hero-greeting" id="hero-greeting-box">
-          <img src="/api/logo" alt="Anton Logo" class="hero-logo-img">
-          <div style="font-size:1.25rem;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px">What would you like Anton to do?</div>
+          <img src="/api/logo" id="hero-brand-logo" alt="Anton Logo" class="hero-logo-img">
+          <div style="font-size:1.25rem;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px" id="hero-headline">What would you like Anton to do?</div>
           <div style="font-size:0.8rem;color:var(--text-muted)">Autonomous Coworker with Deterministic Gates & Second Brain Memory</div>
         </div>
 
@@ -523,7 +525,7 @@ body {
 <!-- 3. BOTTOM STATUS STRIP -->
 <div class="status-bar">
   <div class="status-left">
-    <span>🌿 main (commit 9708433)</span>
+    <span>🌿 main (commit d5372ee)</span>
     <span>⚡ Gates: Fail-Closed Active</span>
     <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
@@ -796,17 +798,30 @@ async function toggleSonOfAnton() {
       const btn = $('son-toggle-btn');
       const lbl = $('son-label');
       const stat = $('active-mode-status');
+      const topLogo = $('top-brand-logo');
+      const heroLogo = $('hero-brand-logo');
+      const brandName = $('top-brand-name');
+      const heroHead = $('hero-headline');
+
       if (sonOfAntonActive) {
         btn.classList.add('active');
         lbl.textContent = '⚡ SON OF ANTON [ACTIVE]';
         stat.textContent = 'Mode: ⚡ Son of Anton (Overdrive)';
         stat.style.color = '#fbbf24';
+        if (topLogo) topLogo.src = '/api/logo/son-of-anton';
+        if (heroLogo) heroLogo.src = '/api/logo/son-of-anton';
+        if (brandName) brandName.textContent = 'SON OF ANTON';
+        if (heroHead) heroHead.textContent = 'What should Son of Anton execute?';
         showToast('⚡ Son of Anton Mode ENGAGED', 'warning');
       } else {
         btn.classList.remove('active');
         lbl.textContent = '⚡ SON OF ANTON [OFF]';
         stat.textContent = 'Mode: Safe Standard';
         stat.style.color = 'var(--text-dim)';
+        if (topLogo) topLogo.src = '/api/logo';
+        if (heroLogo) heroLogo.src = '/api/logo';
+        if (brandName) brandName.textContent = 'ANTON';
+        if (heroHead) heroHead.textContent = 'What would you like Anton to do?';
         showToast('🛡️ Standard Safe Mode Restored', 'success');
       }
     }
@@ -896,17 +911,30 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/api/logo")
     def get_logo():
-        """Serves the approved Anton logo image."""
+        """Serves the approved classic Anton logo image."""
         install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
         logo_paths = [
             os.path.join(install_dir, "assets", "logos", "anton_logo.jpg"),
             "/Users/ai/rooms/devops/assets/logos/anton_dark_bw_icon_1787167963726.jpg",
-            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/anton_dark_bw_icon_1787167963726.jpg"
+            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/anton_logo.jpg"
         ]
         for p in logo_paths:
             if os.path.exists(p):
                 return FileResponse(p, media_type="image/jpeg")
         raise HTTPException(404, "logo image not found")
+
+    @app.get("/api/logo/son-of-anton")
+    def get_son_of_anton_logo():
+        """Serves the young & reckless Son of Anton logo."""
+        install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
+        svg_paths = [
+            os.path.join(install_dir, "assets", "logos", "son_of_anton_logo.svg"),
+            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/son_of_anton_logo.svg"
+        ]
+        for p in svg_paths:
+            if os.path.exists(p):
+                return FileResponse(p, media_type="image/svg+xml")
+        raise HTTPException(404, "son of anton logo not found")
 
     @app.get("/api/mode")
     def get_mode():
