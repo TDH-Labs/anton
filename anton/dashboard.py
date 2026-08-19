@@ -18,31 +18,34 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ANTON — Autonomous Studio & Cognitive Control Plane</title>
+<title>ANTON — Autonomous Pro Studio & IDE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/3d-force-graph"></script>
+<!-- Monaco Editor CDN -->
+<link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/editor/editor.main.min.css">
+<!-- Markdown Parser -->
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<!-- 3D Force Graph -->
+<script src="https://unpkg.com/3d-force-graph"></script>
+
 <style>
 :root {
-  --bg-main: #090b10;
-  --bg-canvas: #0e1118;
-  --bg-surface: #131620;
-  --bg-card: rgba(20, 24, 34, 0.85);
-  --bg-card-hover: rgba(28, 34, 48, 0.95);
+  --bg-app: #090b10;
+  --bg-sidebar: #0e1117;
+  --bg-editor: #131620;
+  --bg-card: #181c28;
+  --bg-card-hover: #202636;
   --border: rgba(255, 255, 255, 0.08);
-  --border-glow: rgba(56, 189, 248, 0.3);
-  --border-rim: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  --border-active: rgba(56, 189, 248, 0.4);
+  --border-rim: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
   --text-dim: #64748b;
   --primary: #38bdf8;
   --accent: #818cf8;
   --success: #10b981;
-  --success-bg: rgba(16, 185, 129, 0.12);
   --warning: #f59e0b;
-  --warning-bg: rgba(245, 158, 11, 0.12);
   --danger: #ef4444;
   --purple: #c084fc;
   --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -52,888 +55,546 @@ PAGE = """<!doctype html>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: var(--font-sans);
-  background-color: var(--bg-main);
+  background-color: var(--bg-app);
   color: var(--text-main);
-  min-height: 100vh;
-  padding: 1.25rem 1.5rem 5rem 1.5rem;
-  line-height: 1.5;
-  overflow-x: hidden;
-}
-
-.app-container { max-width: 1680px; margin: 0 auto; }
-
-/* Top Header */
-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.85rem 1.5rem;
-  background: var(--bg-surface);
-  backdrop-filter: blur(16px);
-  border: 1px solid var(--border);
-  box-shadow: var(--border-rim), 0 10px 30px rgba(0, 0, 0, 0.6);
-  border-radius: 14px;
-  margin-bottom: 1.25rem;
-}
-.brand { display: flex; align-items: center; gap: 12px; }
-.brand-logo {
-  width: 36px; height: 36px;
-  background: linear-gradient(135deg, #1e2433, #151822);
-  border: 1px solid rgba(255,255,255,0.18);
-  box-shadow: var(--border-rim);
-  border-radius: 10px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 1.15rem; color: var(--primary);
-}
-.brand-title { font-size: 1.1rem; font-weight: 800; letter-spacing: -0.02em; }
-.brand-badge {
-  font-size: 0.65rem; font-weight: 700; text-transform: uppercase;
-  padding: 2px 8px; border-radius: 20px;
-  background: rgba(56, 189, 248, 0.12); color: var(--primary);
-  border: 1px solid rgba(56, 189, 248, 0.25);
-}
-
-.header-actions { display: flex; align-items: center; gap: 16px; }
-
-/* Son of Anton Toggle */
-.son-toggle {
-  display: flex; align-items: center; gap: 8px; padding: 6px 14px;
-  background: #171b24; border: 1px solid var(--border);
-  box-shadow: var(--border-rim); border-radius: 30px; cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1); font-size: 0.72rem; font-weight: 800;
-  letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted);
-}
-.son-toggle:hover { border-color: rgba(255,255,255,0.25); background: #202634; }
-.son-toggle.active {
-  background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.6);
-  color: #fbbf24; box-shadow: 0 0 20px rgba(245, 158, 11, 0.3);
-}
-.son-dot {
-  width: 8px; height: 8px; border-radius: 50%; background: #64748b; transition: all 0.2s ease;
-}
-.son-toggle.active .son-dot {
-  background: #fbbf24; box-shadow: 0 0 10px #fbbf24; animation: pulse 1.5s infinite;
-}
-
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
-
-.beacon {
-  display: flex; align-items: center; gap: 8px; font-size: 0.72rem; font-weight: 700; color: var(--success);
-  padding: 5px 12px; background: var(--success-bg); border-radius: 20px; border: 1px solid rgba(16, 185, 129, 0.25);
-}
-.beacon-dot { width: 6px; height: 6px; background: var(--success); border-radius: 50%; box-shadow: 0 0 8px var(--success); }
-
-/* Navigation Tabs */
-.nav-tabs { display: flex; gap: 8px; margin-bottom: 1.25rem; }
-.tab-btn {
-  background: var(--bg-surface); border: 1px solid var(--border); box-shadow: var(--border-rim);
-  color: var(--text-muted); padding: 8px 18px; border-radius: 10px; cursor: pointer;
-  font-size: 0.82rem; font-weight: 600; transition: all 0.15s ease;
-}
-.tab-btn:hover { background: var(--bg-card-hover); color: var(--text-main); }
-.tab-btn.active {
-  background: #202534; border-color: rgba(255, 255, 255, 0.2); color: var(--text-main);
-  box-shadow: var(--border-rim), 0 4px 16px rgba(0,0,0,0.3);
-}
-
-/* 3-Column Studio Workspace */
-.studio-layout {
-  display: grid;
-  grid-template-columns: 280px 1fr 380px;
-  gap: 16px;
-  min-height: 740px;
-}
-.studio-pane {
-  background: var(--bg-surface); border: 1px solid var(--border);
-  box-shadow: var(--border-rim), 0 12px 36px rgba(0,0,0,0.4); border-radius: 14px; padding: 1.25rem;
-  overflow: hidden; display: flex; flex-direction: column;
-}
-
-/* Navigator Tree */
-.tree-item {
-  padding: 7px 10px; border-radius: 8px; font-size: 0.78rem; cursor: pointer;
-  display: flex; align-items: center; justify-content: space-between;
-  color: var(--text-muted); transition: all 0.15s ease;
-}
-.tree-item:hover { background: #1a1e2b; color: var(--text-main); }
-.tree-item.active { background: #22273a; color: var(--primary); font-weight: 600; }
-.tree-badge {
-  font-size: 0.65rem; font-family: var(--font-mono); padding: 2px 6px; border-radius: 4px;
-  background: rgba(255,255,255,0.06); color: var(--text-dim);
-}
-
-/* Canvas Area */
-.canvas-container {
-  background-color: var(--bg-canvas);
-  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1.2px, transparent 1.2px);
-  background-size: 26px 26px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  box-shadow: var(--border-rim), inset 0 0 60px rgba(0,0,0,0.5);
-  position: relative;
+  height: 100vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
 }
-.canvas-header {
-  padding: 12px 20px; background: rgba(19, 23, 32, 0.85); backdrop-filter: blur(12px);
-  border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;
-  z-index: 10;
+
+/* 1. TOP UTILITY BAR (48px) */
+.top-bar {
+  height: 48px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 100;
+  box-shadow: var(--border-rim);
+}
+.brand-group { display: flex; align-items: center; gap: 10px; }
+.brand-logo {
+  width: 28px; height: 28px;
+  background: #1c2230; border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px; display: flex; align-items: center; justify-content: center;
+  font-size: 0.95rem; color: var(--primary);
+}
+.brand-name { font-size: 0.95rem; font-weight: 800; letter-spacing: -0.02em; }
+.breadcrumb { font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono); }
+
+/* Center Search Capsule */
+.search-capsule {
+  display: flex; align-items: center; gap: 8px;
+  background: #141722; border: 1px solid var(--border);
+  border-radius: 20px; padding: 4px 14px; width: 440px; cursor: pointer;
+}
+.search-input {
+  background: transparent; border: none; outline: none;
+  color: var(--text-main); font-size: 0.8rem; flex: 1; font-family: var(--font-sans);
+}
+.search-kbd {
+  font-size: 0.65rem; font-family: var(--font-mono);
+  background: #202636; padding: 1px 5px; border-radius: 4px; color: var(--text-dim);
 }
 
-/* SVG Cable Mesh Overlay */
-.wire-canvas-svg {
-  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-  pointer-events: none; z-index: 2;
+/* Header Actions */
+.top-actions { display: flex; align-items: center; gap: 12px; }
+.son-toggle {
+  display: flex; align-items: center; gap: 6px; padding: 4px 12px;
+  background: #161a24; border: 1px solid var(--border);
+  border-radius: 20px; cursor: pointer; font-size: 0.68rem; font-weight: 800;
+  text-transform: uppercase; color: var(--text-muted); transition: all 0.2s ease;
+}
+.son-toggle:hover { border-color: rgba(255,255,255,0.2); }
+.son-toggle.active {
+  background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.6);
+  color: #fbbf24; box-shadow: 0 0 14px rgba(245, 158, 11, 0.25);
+}
+.son-dot { width: 7px; height: 7px; border-radius: 50%; background: #64748b; }
+.son-toggle.active .son-dot { background: #fbbf24; box-shadow: 0 0 8px #fbbf24; }
+
+/* 2. MAIN 3-PANE WORKBENCH */
+.workbench {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 260px 1fr 400px;
+  overflow: hidden;
 }
 
-/* Multi-Branching Nodes Area */
-.dag-area {
-  flex: 1; padding: 30px 40px; display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 32px; align-items: center;
-  position: relative; z-index: 5;
+/* LEFT PANE: NAVIGATOR & SECOND BRAIN */
+.nav-pane {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.nav-header {
+  padding: 10px 14px; font-size: 0.7rem; font-weight: 800; text-transform: uppercase;
+  color: var(--text-dim); letter-spacing: 0.04em; border-bottom: 1px solid var(--border);
+}
+.tree-container { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+.tree-section { font-size: 0.68rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; padding: 8px 6px 4px 6px; }
+.tree-node {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 8px; border-radius: 6px; font-size: 0.78rem; cursor: pointer;
+  color: var(--text-muted); transition: all 0.15s ease;
+}
+.tree-node:hover { background: #161a26; color: var(--text-main); }
+.tree-node.active { background: #1e2436; color: var(--primary); font-weight: 600; }
+.tree-pill { font-size: 0.62rem; font-family: var(--font-mono); padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,0.06); }
+
+/* CENTER PANE: MONACO / WORKSPACE */
+.editor-pane {
+  background: var(--bg-editor);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* Tab Bar */
+.editor-tabs {
+  height: 38px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  overflow-x: auto;
+}
+.tab {
+  display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 100%;
+  font-size: 0.78rem; color: var(--text-muted); border-right: 1px solid var(--border);
+  cursor: pointer; background: #0e1117; user-select: none;
+}
+.tab.active { background: var(--bg-editor); color: var(--text-main); font-weight: 600; border-bottom: 2px solid var(--primary); }
+.tab-close { font-size: 0.75rem; color: var(--text-dim); border-radius: 50%; padding: 1px 4px; }
+.tab-close:hover { background: rgba(255,255,255,0.1); color: #fff; }
+
+/* Editor / Preview Content */
+.editor-body { flex: 1; position: relative; overflow: hidden; }
+#monaco-container { width: 100%; height: 100%; display: none; }
+#markdown-container { width: 100%; height: 100%; overflow-y: auto; padding: 32px 48px; display: block; }
+#graph-tab-container { width: 100%; height: 100%; display: none; background: #0c0e14; }
+
+/* Markdown Styling */
+.md-view h1, .md-view h2, .md-view h3 { color: #f8fafc; margin: 20px 0 12px 0; }
+.md-view p { color: #cbd5e1; line-height: 1.7; margin-bottom: 14px; font-size: 0.9rem; }
+.md-view table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.82rem; }
+.md-view th, .md-view td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+.md-view pre { background: #090b10; border: 1px solid var(--border); border-radius: 8px; padding: 14px; overflow-x: auto; margin: 14px 0; }
+.md-view code { font-family: var(--font-mono); color: var(--primary); font-size: 0.82rem; }
+
+/* RIGHT PANE: COWORKER AGENT & TRAJECTORY */
+.sidecar-pane {
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidecar-header {
+  padding: 10px 14px; font-size: 0.7rem; font-weight: 800; text-transform: uppercase;
+  color: var(--text-dim); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;
 }
 
-.dag-col { display: flex; flex-direction: column; gap: 24px; justify-content: center; }
+/* Chat & Stream History */
+.chat-stream { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
 
-/* Visual Node Card */
-.node-card {
-  background: var(--bg-card);
-  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: var(--border-rim), 0 10px 28px rgba(0, 0, 0, 0.5);
-  border-radius: 12px; padding: 14px 16px; width: 100%; cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  position: relative;
+/* Tool Execution Accordion Card (Goose / OpenHands style) */
+.tool-card {
+  background: #141722; border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; font-size: 0.75rem;
 }
-.node-card:hover {
-  transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.28);
-  background: var(--bg-card-hover); box-shadow: var(--border-rim), 0 14px 36px rgba(0,0,0,0.6);
+.tool-card-header {
+  padding: 8px 10px; background: #181c2a; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; font-weight: 600;
 }
-.node-card.active-glow {
-  border-color: var(--primary); box-shadow: 0 0 24px rgba(56, 189, 248, 0.25), var(--border-rim);
-}
-.node-card.gate-locked {
-  border-color: rgba(245, 158, 11, 0.5); box-shadow: 0 0 24px rgba(245, 158, 11, 0.2), var(--border-rim);
-}
-.node-card.gate-bypassed {
-  border-color: rgba(16, 185, 129, 0.5); box-shadow: 0 0 24px rgba(16, 185, 129, 0.2), var(--border-rim);
-}
+.tool-badge { font-size: 0.62rem; font-family: var(--font-mono); padding: 2px 6px; border-radius: 4px; }
+.tool-card-body { padding: 10px; font-family: var(--font-mono); font-size: 0.7rem; background: #0e1118; color: var(--text-muted); display: none; }
 
-/* Sockets */
-.socket {
-  position: absolute; width: 10px; height: 10px; border-radius: 50%;
-  background: #1e2433; border: 2px solid #64748b; top: 50%; transform: translateY(-50%);
-  transition: all 0.2s ease;
-}
-.socket-in { left: -6px; }
-.socket-out { right: -6px; }
-.node-card:hover .socket { border-color: var(--primary); box-shadow: 0 0 8px var(--primary); }
-
-.node-meta-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.node-tag {
-  font-size: 0.62rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
-  padding: 2px 6px; border-radius: 5px; display: inline-block;
-}
-.tag-trigger { background: rgba(56, 189, 248, 0.15); color: var(--primary); }
-.tag-brain { background: rgba(192, 132, 252, 0.15); color: var(--purple); }
-.tag-gate { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
-.tag-action { background: rgba(16, 185, 129, 0.15); color: var(--success); }
-
-.node-latency { font-family: var(--font-mono); font-size: 0.65rem; color: var(--text-dim); }
-.node-title { font-size: 0.88rem; font-weight: 700; margin-bottom: 3px; letter-spacing: -0.01em; }
-.node-desc { font-size: 0.72rem; color: var(--text-muted); }
-
-/* Right HUD Panels */
-.research-hud {
-  background: rgba(22, 26, 38, 0.7); border: 1px solid rgba(192, 132, 252, 0.25);
-  box-shadow: var(--border-rim); border-radius: 12px; padding: 14px; margin-bottom: 14px;
-}
-.research-title {
-  font-size: 0.72rem; font-weight: 800; color: var(--purple); text-transform: uppercase;
-  display: flex; align-items: center; gap: 6px; margin-bottom: 8px; letter-spacing: 0.03em;
-}
-.thought-step {
-  font-size: 0.73rem; color: var(--text-muted); padding: 3px 0;
-  display: flex; align-items: center; gap: 8px; font-family: var(--font-mono);
-}
-.thought-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--purple); }
-
-/* Decision Card */
+/* Executive Decision HUD Card */
 .decision-card {
-  background: rgba(28, 32, 46, 0.9); border: 1px solid rgba(245, 158, 11, 0.4);
-  box-shadow: var(--border-rim), 0 10px 30px rgba(0,0,0,0.5); border-radius: 12px; padding: 16px; margin-bottom: 14px;
-}
-.decision-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.decision-badge {
-  font-size: 0.65rem; font-weight: 800; text-transform: uppercase; padding: 2px 7px; border-radius: 12px;
-  background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3);
+  background: rgba(30, 25, 15, 0.9); border: 1px solid rgba(245, 158, 11, 0.5);
+  box-shadow: var(--border-rim), 0 8px 24px rgba(0,0,0,0.5); border-radius: 10px; padding: 12px;
 }
 .btn-approve {
-  flex: 1; background: var(--success); color: #022c22; font-weight: 700; font-size: 0.78rem;
-  padding: 8px 12px; border-radius: 8px; border: none; cursor: pointer; transition: all 0.15s ease;
-  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: var(--success); color: #022c22; font-weight: 700; font-size: 0.75rem;
+  padding: 7px 12px; border-radius: 6px; border: none; cursor: pointer; flex: 1;
 }
-.btn-approve:hover { background: #34d399; }
 .btn-deny {
-  flex: 1; background: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: 700; font-size: 0.78rem;
-  padding: 8px 12px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer;
-  transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; gap: 6px;
-}
-.btn-deny:hover { background: rgba(239, 68, 68, 0.25); }
-
-/* Code & Markdown Reader Drawer */
-.markdown-drawer {
-  background: #11141c; border-left: 1px solid var(--border);
-  box-shadow: -12px 0 40px rgba(0,0,0,0.7); position: fixed;
-  top: 0; right: 0; width: 680px; height: 100vh; z-index: 300;
-  display: none; flex-direction: column; overflow: hidden;
-}
-.drawer-header {
-  padding: 16px 24px; background: #161a25; border-bottom: 1px solid var(--border);
-  display: flex; justify-content: space-between; align-items: center;
-}
-.drawer-title { font-size: 0.95rem; font-weight: 700; color: var(--text-main); font-family: var(--font-mono); }
-.drawer-close { background: transparent; border: none; color: var(--text-dim); font-size: 1.2rem; cursor: pointer; }
-.drawer-close:hover { color: #fff; }
-.drawer-body { flex: 1; padding: 24px; overflow-y: auto; font-size: 0.86rem; line-height: 1.7; color: #cbd5e1; }
-.drawer-body h1, .drawer-body h2, .drawer-body h3 { color: #f8fafc; margin: 16px 0 10px 0; }
-.drawer-body table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 0.8rem; }
-.drawer-body th, .drawer-body td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
-.drawer-body pre { background: #0a0c10; padding: 14px; border-radius: 8px; overflow-x: auto; margin: 14px 0; font-family: var(--font-mono); border: 1px solid rgba(255,255,255,0.08); }
-.drawer-body code { font-family: var(--font-mono); font-size: 0.8rem; color: var(--primary); }
-
-/* Floating Command Capsule (⌘K) */
-.command-capsule {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: rgba(20, 24, 34, 0.92); backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.16); box-shadow: var(--border-rim), 0 16px 48px rgba(0, 0, 0, 0.7);
-  border-radius: 30px; padding: 8px 20px; display: flex; align-items: center; gap: 12px; width: 600px; max-width: 90vw; z-index: 100;
-}
-.command-input {
-  background: transparent; border: none; outline: none; color: var(--text-main); font-family: var(--font-sans); font-size: 0.85rem; flex: 1;
+  background: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: 700; font-size: 0.75rem;
+  padding: 7px 12px; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.3); cursor: pointer; flex: 1;
 }
 
-/* Modal */
-.modal-backdrop {
-  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-  background: rgba(0,0,0,0.75); backdrop-filter: blur(6px);
-  display: none; align-items: center; justify-content: center; z-index: 400;
+/* Chat Prompt Input Box */
+.chat-input-wrapper {
+  padding: 12px; background: #12151e; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
 }
-.modal-box {
-  background: #151822; border: 1px solid rgba(245, 158, 11, 0.4);
-  box-shadow: 0 20px 50px rgba(0,0,0,0.8); border-radius: 16px; padding: 24px; max-width: 480px; width: 90%;
+.chat-box {
+  background: #181c28; border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px; display: flex; flex-direction: column; gap: 6px;
+}
+.chat-textarea {
+  background: transparent; border: none; outline: none; color: var(--text-main);
+  font-family: var(--font-sans); font-size: 0.82rem; resize: none; min-height: 48px;
+}
+.chat-actions { display: flex; justify-content: space-between; align-items: center; }
+.model-pill {
+  font-size: 0.68rem; font-family: var(--font-mono); color: var(--text-dim);
+  background: #11141d; padding: 2px 8px; border-radius: 12px; border: 1px solid var(--border);
+}
+.send-btn {
+  background: var(--primary); color: #082f49; font-weight: 700; font-size: 0.75rem;
+  padding: 4px 12px; border-radius: 6px; border: none; cursor: pointer;
 }
 
-.toast {
-  position: fixed; bottom: 85px; right: 24px;
-  background: #1c2130; border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-  padding: 10px 16px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; display: none; z-index: 500;
+/* 3. BOTTOM STATUS STRIP (28px) */
+.status-bar {
+  height: 28px; background: #0c0e14; border-top: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px; font-size: 0.68rem; font-family: var(--font-mono); color: var(--text-dim);
 }
+.status-left { display: flex; align-items: center; gap: 14px; }
+.status-right { display: flex; align-items: center; gap: 14px; }
 </style>
 </head>
 <body>
 
-<div class="app-container">
-  <!-- Header -->
-  <header>
-    <div class="brand">
-      <div class="brand-logo">⚡</div>
-      <div>
-        <div style="display:flex;align-items:center;gap:8px">
-          <span class="brand-title">ANTON</span>
-          <span class="brand-badge">COGNITIVE OS v0.1.0</span>
-        </div>
-        <div style="font-size:0.72rem;color:var(--text-dim)">Second Brain & Autonomous Operating Studio</div>
-      </div>
-    </div>
-    
-    <div class="header-actions">
-      <!-- Son of Anton Toggle -->
-      <button class="son-toggle" id="son-toggle-btn" onclick="toggleSonOfAnton()">
-        <span class="son-dot"></span>
-        <span id="son-label">⚡ SON OF ANTON [OFF]</span>
-      </button>
-
-      <div class="beacon">
-        <span class="beacon-dot"></span>
-        <span>DAEMON ONLINE</span>
-      </div>
-      <div style="font-family:var(--font-mono);color:var(--text-muted);font-size:0.8rem" id="clock-display">UTC --:--:--</div>
-    </div>
-  </header>
-
-  <!-- Navigation Tabs -->
-  <div class="nav-tabs">
-    <button class="tab-btn active" onclick="switchTab('studio', event)">📐 Studio Workspace</button>
-    <button class="tab-btn" onclick="switchTab('neural', event)">🌌 3D Neural Second Brain</button>
-    <button class="tab-btn" onclick="switchTab('telemetry', event)">📊 Telemetry & Ledger</button>
-    <button class="tab-btn" onclick="switchTab('wizard', event)">⚙️ Key Vault & Bridges</button>
+<!-- 1. TOP UTILITY BAR -->
+<div class="top-bar">
+  <div class="brand-group">
+    <div class="brand-logo">⚡</div>
+    <span class="brand-name">ANTON</span>
+    <span class="breadcrumb">workspace / devops / vault</span>
   </div>
 
-  <!-- TAB 1: STUDIO WORKSPACE -->
-  <div id="tab-studio" class="tab-pane active">
-    <div class="studio-layout">
-      <!-- Left: Navigator (Click to Open Code or Markdown) -->
-      <div class="studio-pane">
-        <div style="font-size:0.72rem;font-weight:800;color:var(--text-dim);text-transform:uppercase;margin-bottom:10px">Interactive Memory & Logic</div>
-        <div style="display:flex;flex-direction:column;gap:4px;overflow-y:auto;flex:1">
-          <!-- Deterministic Python Scripts -->
-          <div style="padding:4px 8px;font-size:0.75rem;color:var(--warning);font-weight:700">⚡ Deterministic Python Gates</div>
-          <div class="tree-item" onclick="openFileViewer('scripts/verify_balance.py')"><span>🐍 verify_balance.py</span><span class="tree-badge">0-LLM</span></div>
-          <div class="tree-item" onclick="openFileViewer('scripts/verify_reconcile.py')"><span>🐍 verify_reconcile.py</span><span class="tree-badge">MATH</span></div>
+  <div class="search-capsule" onclick="focusSearch()">
+    <span style="color:var(--primary)">⚡</span>
+    <input type="text" id="global-search" class="search-input" placeholder="Ask Anton, search notes, or run recipe (⌘K)...">
+    <span class="search-kbd">⌘K</span>
+  </div>
 
-          <!-- Learned Skills -->
-          <div style="padding:8px 8px 4px 8px;font-size:0.75rem;color:var(--primary);font-weight:700;margin-top:6px">🧠 100x Learned Skills</div>
-          <div class="tree-item" onclick="openFileViewer('skills/100x-desktop-ide-designer')"><span>✦ 100x-desktop-ide</span><span class="tree-badge">0.98</span></div>
-          <div class="tree-item" onclick="openFileViewer('skills/100x-mobile-app-designer')"><span>✦ 100x-mobile-app</span><span class="tree-badge">0.96</span></div>
-          <div class="tree-item" onclick="openFileViewer('skills/elite-software-product-designer')"><span>✦ elite-software-product</span><span class="tree-badge">0.99</span></div>
-          <div class="tree-item" onclick="openFileViewer('skills/100x-gtm-strategist')"><span>✦ 100x-gtm-strategist</span><span class="tree-badge">0.98</span></div>
-          <div class="tree-item" onclick="openFileViewer('skills/100x-pr-publicity-specialist')"><span>✦ 100x-pr-publicity</span><span class="tree-badge">0.96</span></div>
-          
-          <!-- Strategy Artifacts -->
-          <div style="padding:8px 8px 4px 8px;font-size:0.75rem;color:var(--purple);font-weight:700;margin-top:6px">📑 GTM Strategy Artifacts</div>
-          <div class="tree-item" onclick="openFileViewer('strategy/award-marketing-plan')"><span>📄 award-marketing-plan</span><span class="tree-badge">MD</span></div>
-          <div class="tree-item" onclick="openFileViewer('strategy/content-calendar')"><span>📅 content-calendar</span><span class="tree-badge">MD</span></div>
-          <div class="tree-item" onclick="openFileViewer('strategy/pr-outreach-list')"><span>📰 pr-outreach-list</span><span class="tree-badge">MD</span></div>
-        </div>
+  <div class="top-actions">
+    <button class="son-toggle" id="son-toggle-btn" onclick="toggleSonOfAnton()">
+      <span class="son-dot"></span>
+      <span id="son-label">⚡ SON OF ANTON [OFF]</span>
+    </button>
+    <div style="font-size:0.75rem;color:var(--success);font-weight:700;display:flex;align-items:center;gap:6px">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--success);box-shadow:0 0 6px var(--success)"></span>
+      ONLINE
+    </div>
+  </div>
+</div>
+
+<!-- 2. MAIN 3-PANE WORKBENCH -->
+<div class="workbench">
+  <!-- LEFT PANE: NAVIGATOR -->
+  <div class="nav-pane">
+    <div class="nav-header">Knowledge & Code Tree</div>
+    <div class="tree-container">
+      <!-- Deterministic Python Gates -->
+      <div class="tree-section">⚡ Python Verify Gates</div>
+      <div class="tree-node active" onclick="openFile('scripts/verify_balance.py', 'python')">
+        <span>🐍 verify_balance.py</span><span class="tree-pill">0-LLM</span>
+      </div>
+      <div class="tree-node" onclick="openFile('anton/scheduler.py', 'python')">
+        <span>🐍 scheduler.py</span><span class="tree-pill">ENGINE</span>
       </div>
 
-      <!-- Center: Multi-Branching DAG Canvas -->
-      <div class="canvas-container" id="canvas-container-elem">
-        <div class="canvas-header">
-          <span style="font-size:0.8rem;font-weight:800;color:var(--text-muted);text-transform:uppercase">Execution & Reasoning Pipeline</span>
-          <span style="font-size:0.72rem;color:var(--text-dim);font-family:var(--font-mono)">Branching DAG · 60 FPS Pulse</span>
-        </div>
-
-        <!-- SVG Bezier Mesh Overlay -->
-        <svg class="wire-canvas-svg" id="dag-svg-canvas">
-          <defs>
-            <linearGradient id="grad-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.85"/>
-              <stop offset="100%" stop-color="#c084fc" stop-opacity="0.85"/>
-            </linearGradient>
-            <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#c084fc" stop-opacity="0.85"/>
-              <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.85"/>
-            </linearGradient>
-            <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.85"/>
-              <stop offset="100%" stop-color="#10b981" stop-opacity="0.85"/>
-            </linearGradient>
-          </defs>
-        </svg>
-
-        <!-- Multi-Branching Grid Layout -->
-        <div class="dag-area">
-          <!-- Column 1: Triggers -->
-          <div class="dag-col">
-            <div class="node-card active-glow" id="node-trig-1" onclick="openFileViewer('mocs/operations')">
-              <span class="socket socket-out"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-trigger">Trigger</span>
-                <span class="node-latency">POST</span>
-              </div>
-              <div class="node-title">Webhook: Stripe</div>
-              <div class="node-desc">/hooks/stripe-payout</div>
-            </div>
-
-            <div class="node-card" id="node-trig-2" onclick="openFileViewer('strategy/award-marketing-plan')">
-              <span class="socket socket-out"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-trigger">Trigger</span>
-                <span class="node-latency">06:00 UTC</span>
-              </div>
-              <div class="node-title">Cron: Daily Sync</div>
-              <div class="node-desc">QBO Bank Ingest</div>
-            </div>
-          </div>
-
-          <!-- Column 2: AI Cognitive Ingest -->
-          <div class="dag-col">
-            <div class="node-card" id="node-brain-1" onclick="openFileViewer('skills/100x-desktop-ide-designer')">
-              <span class="socket socket-in"></span>
-              <span class="socket socket-out"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-brain">AI Brain</span>
-                <span class="node-latency">12ms · 98%</span>
-              </div>
-              <div class="node-title">Extract & OCR</div>
-              <div class="node-desc">Local [REDACTED-LOCAL-INFERENCE]-reason</div>
-            </div>
-
-            <div class="node-card" id="node-brain-2" onclick="openFileViewer('skills/100x-gtm-strategist')">
-              <span class="socket socket-in"></span>
-              <span class="socket socket-out"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-brain">Ambition</span>
-                <span class="node-latency">EV=0.95</span>
-              </div>
-              <div class="node-title">Governor Score</div>
-              <div class="node-desc">100x GTM Self-Learn</div>
-            </div>
-          </div>
-
-          <!-- Column 3: Deterministic Verify Gate (Opens Python Script) -->
-          <div class="dag-col">
-            <div class="node-card gate-locked" id="node-gate-1" onclick="openFileViewer('scripts/verify_balance.py')">
-              <span class="socket socket-in"></span>
-              <span class="socket socket-out"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-gate">Python Gate</span>
-                <span class="node-latency" id="node-gate-badge">FAIL-CLOSED</span>
-              </div>
-              <div class="node-title">Deterministic Math</div>
-              <div class="node-desc" id="node-gate-desc">verify_balance.py (Δ=0)</div>
-            </div>
-          </div>
-
-          <!-- Column 4: Outcomes -->
-          <div class="dag-col">
-            <div class="node-card" id="node-action-1" onclick="openFileViewer('mocs/operations')">
-              <span class="socket socket-in"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-action">Outcome</span>
-                <span class="node-latency">ATOMIC</span>
-              </div>
-              <div class="node-title">Commit QBO Ledger</div>
-              <div class="node-desc">runs.jsonl append</div>
-            </div>
-
-            <div class="node-card" id="node-action-2" onclick="openFileViewer('strategy/content-calendar')">
-              <span class="socket socket-in"></span>
-              <div class="node-meta-row">
-                <span class="node-tag tag-action">Outcome</span>
-                <span class="node-latency">VAULT</span>
-              </div>
-              <div class="node-title">GTM Launch Active</div>
-              <div class="node-desc">2-Week Calendar Set</div>
-            </div>
-          </div>
-        </div>
+      <!-- 100x Learned Skills -->
+      <div class="tree-section">🧠 100x Learned Skills</div>
+      <div class="tree-node" onclick="openFile('skills/100x-desktop-ide-designer', 'markdown')">
+        <span>✦ 100x-desktop-ide</span><span class="tree-pill">0.98</span>
+      </div>
+      <div class="tree-node" onclick="openFile('skills/100x-gtm-strategist', 'markdown')">
+        <span>✦ 100x-gtm-strategist</span><span class="tree-pill">0.98</span>
+      </div>
+      <div class="tree-node" onclick="openFile('skills/100x-pr-publicity-specialist', 'markdown')">
+        <span>✦ 100x-pr-publicity</span><span class="tree-pill">0.96</span>
       </div>
 
-      <!-- Right: Cognitive Research Stream & Decision HUD -->
-      <div class="studio-pane">
-        <!-- Research Stream HUD -->
-        <div class="research-hud">
-          <div class="research-title">🔍 Cognitive Research Stream</div>
-          <div class="thought-step"><span class="thought-dot"></span><span>Literature search: GTM sequencing</span></div>
-          <div class="thought-step"><span class="thought-dot"></span><span>Assumption audit: Zero spam press</span></div>
-          <div class="thought-step"><span class="thought-dot"></span><span>Sandbox trial: 100x-gtm exit 0</span></div>
-          <div class="thought-step"><span class="thought-dot"></span><span>Promotion: Linked in vault.db</span></div>
-        </div>
+      <!-- GTM Strategy Artifacts -->
+      <div class="tree-section">📑 Strategy Artifacts</div>
+      <div class="tree-node" onclick="openFile('strategy/award-marketing-plan', 'markdown')">
+        <span>📄 award-marketing-plan</span><span class="tree-pill">MD</span>
+      </div>
+      <div class="tree-node" onclick="openFile('strategy/content-calendar', 'markdown')">
+        <span>📅 content-calendar</span><span class="tree-pill">MD</span>
+      </div>
+      <div class="tree-node" onclick="openFile('strategy/pr-outreach-list', 'markdown')">
+        <span>📰 pr-outreach-list</span><span class="tree-pill">MD</span>
+      </div>
 
-        <div style="font-size:0.72rem;font-weight:800;color:var(--text-dim);text-transform:uppercase;margin-bottom:8px">Executive Decision HUD</div>
-        <div id="decision-hud-container">
-          <p style="font-size:0.78rem;color:var(--text-dim);text-align:center;padding:15px 0">All gates operating securely.</p>
-        </div>
-
-        <div style="font-size:0.72rem;font-weight:800;color:var(--text-dim);text-transform:uppercase;margin:12px 0 8px 0">Live Activity Feed</div>
-        <div id="live-activity-feed" style="display:flex;flex-direction:column;gap:8px;overflow-y:auto;flex:1"></div>
+      <!-- Views -->
+      <div class="tree-section">🌌 Spatial Views</div>
+      <div class="tree-node" onclick="open3DGraph()">
+        <span>🪐 3D Neural Second Brain</span><span class="tree-pill">GRAPH</span>
       </div>
     </div>
   </div>
 
-  <!-- TAB 2: 3D NEURAL SECOND BRAIN -->
-  <div id="tab-neural" class="tab-pane" style="display:none">
-    <div class="studio-pane" style="padding:0">
-      <div id="graph-container" style="width:100%;height:650px;background:var(--bg-canvas)"></div>
+  <!-- CENTER PANE: EDITOR & DOCUMENT BUFFER -->
+  <div class="editor-pane">
+    <!-- Multi-Tab Bar -->
+    <div class="editor-tabs" id="editor-tab-bar">
+      <div class="tab active" id="tab-primary" onclick="focusTab('primary')">
+        <span id="tab-primary-title">scripts/verify_balance.py</span>
+        <span class="tab-close">✕</span>
+      </div>
+    </div>
+
+    <!-- Content Buffers -->
+    <div class="editor-body">
+      <div id="monaco-container"></div>
+      <div id="markdown-container" class="md-view"></div>
+      <div id="graph-tab-container"></div>
     </div>
   </div>
 
-  <!-- TAB 3: TELEMETRY & LEDGER -->
-  <div id="tab-telemetry" class="tab-pane" style="display:none">
-    <div class="studio-pane">
-      <div style="font-size:0.85rem;font-weight:700;margin-bottom:12px">Execution & Audit Ledger (runs.jsonl)</div>
-      <table>
-        <thead>
-          <tr>
-            <th>Timestamp</th><th>Task</th><th>Exit Code</th><th>Flags</th><th>Model / Provider</th><th>Duration / Cost</th>
-          </tr>
-        </thead>
-        <tbody id="ledger-rows"></tbody>
-      </table>
+  <!-- RIGHT PANE: COWORKER AGENT & TRAJECTORY -->
+  <div class="sidecar-pane">
+    <div class="sidecar-header">
+      <span>Agent Coworker & Gates</span>
+      <span style="font-family:var(--font-mono);font-size:0.65rem">R1 FAILS-CLOSED</span>
     </div>
-  </div>
 
-  <!-- TAB 4: KEY VAULT -->
-  <div id="tab-wizard" class="tab-pane" style="display:none">
-    <div class="studio-pane" style="max-width:800px;margin:0 auto">
-      <h3 style="margin-bottom:16px">Capability Bridges & Key Vault (0600 POSIX)</h3>
-      <div style="display:flex;flex-direction:column;gap:14px">
-        <select id="wiz-provider" style="padding:10px;background:#181b24;border:1px solid var(--border);color:#fff;border-radius:8px">
-          <option value="openrouter">OpenRouter (Claude 3.5 Sonnet)</option>
-          <option value="anthropic">Anthropic Direct</option>
-          <option value="openai">OpenAI Direct</option>
-          <option value="ollama">Local Ollama</option>
-        </select>
-        <input type="password" id="wiz-key" placeholder="API Key..." style="padding:10px;background:#181b24;border:1px solid var(--border);color:#fff;border-radius:8px">
-        <button onclick="saveProviderKey()" class="btn-approve" style="padding:10px">Save to Vault</button>
+    <div class="chat-stream" id="agent-chat-stream">
+      <!-- Executive Decision Card -->
+      <div id="decision-hud-box">
+        <div class="decision-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:0.65rem;font-weight:800;color:#fbbf24;text-transform:uppercase">Approval Gate #108</span>
+            <span style="font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim)">7a3f89...</span>
+          </div>
+          <div style="font-size:0.85rem;font-weight:700;margin-bottom:4px">Action: Payout Reconcile ($14.50)</div>
+          <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:10px">Discrepancy caught by verify_balance.py. Halting at human boundary.</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn-approve" onclick="resolveApproval(108, 'approve')">✓ Approve (↵)</button>
+            <button class="btn-deny" onclick="resolveApproval(108, 'deny')">✗ Deny (⎋)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Execution Tool Cards (Goose / OpenHands style) -->
+      <div class="tool-card">
+        <div class="tool-card-header" onclick="toggleToolCard('tool-1')">
+          <span>⚡ tool: python3 scripts/verify_balance.py</span>
+          <span class="tool-badge" style="background:rgba(16,185,129,0.15);color:var(--success)">exit 0 · 0.005s ▾</span>
+        </div>
+        <div class="tool-card-body" id="tool-1">
+          Input: {"stripe_total": 1450.00, "qbo_total": 1450.00}<br>
+          Output: VERIFY PASSED. 0 tokens consumed. Zero hallucination.
+        </div>
+      </div>
+
+      <div class="tool-card">
+        <div class="tool-card-header" onclick="toggleToolCard('tool-2')">
+          <span>🧠 ambition: 2026 SaaS Award GTM</span>
+          <span class="tool-badge" style="background:rgba(192,132,252,0.15);color:var(--purple)">EV=0.95 · 100x-GTM ▾</span>
+        </div>
+        <div class="tool-card-body" id="tool-2">
+          Self-learned 100x-gtm-strategist in isolated sandbox container.<br>
+          Synthesized: award-marketing-plan.md, content-calendar.md, pr-outreach-list.md.
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Prompt Input -->
+    <div class="chat-input-wrapper">
+      <div class="chat-box">
+        <textarea id="chat-prompt-input" class="chat-textarea" placeholder="Ask Anton anything or instruct workflow... (↵ to send)"></textarea>
+        <div class="chat-actions">
+          <span class="model-pill">Local [REDACTED-LOCAL-INFERENCE] ➔ Cloud Fallback</span>
+          <button class="send-btn" onclick="sendChatPrompt()">Send ↵</button>
+        </div>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Floating Command Capsule (⌘K) -->
-<div class="command-capsule">
-  <span style="color:var(--primary);font-size:1.1rem">⚡</span>
-  <input type="text" id="cmd-input" class="command-input" placeholder="Ask Anton anything, trigger a recipe, or search Second Brain (⌘K)...">
-  <span style="background:#222634;border:1px solid rgba(255,255,255,0.1);padding:2px 6px;border-radius:6px;font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted)">⌘K</span>
-</div>
-
-<!-- Code & Markdown Reader Drawer -->
-<div class="markdown-drawer" id="md-drawer">
-  <div class="drawer-header">
-    <span class="drawer-title" id="drawer-file-title">Document Viewer</span>
-    <button class="drawer-close" onclick="closeFileViewer()">✕</button>
+<!-- 3. BOTTOM STATUS STRIP -->
+<div class="status-bar">
+  <div class="status-left">
+    <span>🌿 main (commit 7883b0a)</span>
+    <span>⚡ Gates: Fail-Closed Active</span>
+    <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
-  <div class="drawer-body" id="drawer-file-content">
-    Loading artifact...
+  <div class="status-right">
+    <span>Token Budget: $0.042 / $5.00 Cap</span>
+    <span id="clock-display">UTC --:--:--</span>
   </div>
 </div>
 
-<!-- Son of Anton Confirmation Modal -->
-<div class="modal-backdrop" id="son-modal">
-  <div class="modal-box">
-    <div style="font-size:1.1rem;font-weight:800;color:#fbbf24;margin-bottom:8px">⚡ Activate Son of Anton Mode?</div>
-    <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:20px;line-height:1.6">
-      Anton will autonomously execute all workflows with human approval gates without halting for manual confirmation.
-      All deterministic verify gates and token budgets remain in effect.
-    </div>
-    <div style="display:flex;justify-content:flex-end;gap:10px">
-      <button class="btn-deny" onclick="closeSonModal()">Cancel</button>
-      <button class="btn-approve" style="background:#f59e0b;color:#000" onclick="confirmSonOfAnton()">⚡ Engage</button>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toast-msg"></div>
-
+<!-- Monaco Loader -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
 <script>
-const $ = id => document.getElementById(id);
+let editorInstance = null;
+let currentFile = 'scripts/verify_balance.py';
 let sonOfAntonActive = false;
-let activeApprovalId = null;
 
-function showToast(msg, type='info') {
-  const t = $('toast-msg');
-  t.textContent = msg; t.style.display = 'block';
-  t.style.borderColor = type === 'success' ? '#10b981' : (type === 'error' ? '#ef4444' : '#f59e0b');
-  setTimeout(() => t.style.display = 'none', 3500);
-}
+require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }});
+
+require(['vs/editor/editor.main'], function() {
+  editorInstance = monaco.editor.create(document.getElementById('monaco-container'), {
+    value: '',
+    language: 'python',
+    theme: 'vs-dark',
+    automaticLayout: true,
+    fontSize: 13,
+    fontFamily: 'JetBrains Mono, Menlo, monospace',
+    minimap: { enabled: false },
+    lineNumbers: 'on',
+    renderLineHighlight: 'all',
+    scrollBeyondLastLine: false,
+    readOnly: false
+  });
+  openFile('scripts/verify_balance.py', 'python');
+});
+
+const $ = id => document.getElementById(id);
 
 function updateClock() {
   $('clock-display').textContent = 'UTC ' + new Date().toISOString().substring(11, 19);
 }
 setInterval(updateClock, 1000); updateClock();
 
-function switchTab(tab, e) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-pane').forEach(p => p.style.display = 'none');
-  e.target.classList.add('active');
-  $('tab-' + tab).style.display = 'block';
-  if (tab === 'neural' && !window.graphLoaded) initGraph();
-  if (tab === 'studio') setTimeout(renderSvgWires, 50);
-}
+async function openFile(path, type='markdown') {
+  currentFile = path;
+  $('tab-primary-title').textContent = path;
+  document.querySelectorAll('.tree-node').forEach(n => n.classList.remove('active'));
 
-// Render dynamic SVG Bezier connection wires
-function renderSvgWires() {
-  const svg = $('dag-svg-canvas');
-  if (!svg) return;
-  const container = $('canvas-container-elem');
-  const cRect = container.getBoundingClientRect();
+  const mContainer = $('monaco-container');
+  const mdContainer = $('markdown-container');
+  const gContainer = $('graph-tab-container');
 
-  const connections = [
-    { from: 'node-trig-1', to: 'node-brain-1', grad: 'url(#grad-cyan)' },
-    { from: 'node-trig-2', to: 'node-brain-1', grad: 'url(#grad-cyan)' },
-    { from: 'node-trig-2', to: 'node-brain-2', grad: 'url(#grad-cyan)' },
-    { from: 'node-brain-1', to: 'node-gate-1', grad: 'url(#grad-purple)' },
-    { from: 'node-brain-2', to: 'node-gate-1', grad: 'url(#grad-purple)' },
-    { from: 'node-gate-1', to: 'node-action-1', grad: 'url(#grad-emerald)' },
-    { from: 'node-gate-1', to: 'node-action-2', grad: 'url(#grad-emerald)' }
-  ];
+  gContainer.style.display = 'none';
 
-  let pathsHtml = `
-    <defs>
-      <linearGradient id="grad-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.85"/>
-        <stop offset="100%" stop-color="#c084fc" stop-opacity="0.85"/>
-      </linearGradient>
-      <linearGradient id="grad-purple" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stop-color="#c084fc" stop-opacity="0.85"/>
-        <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.85"/>
-      </linearGradient>
-      <linearGradient id="grad-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
-        <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.85"/>
-        <stop offset="100%" stop-color="#10b981" stop-opacity="0.85"/>
-      </linearGradient>
-    </defs>
-  `;
-
-  connections.forEach(c => {
-    const elFrom = $(c.from);
-    const elTo = $(c.to);
-    if (!elFrom || !elTo) return;
-
-    const r1 = elFrom.getBoundingClientRect();
-    const r2 = elTo.getBoundingClientRect();
-
-    const x1 = r1.right - cRect.left;
-    const y1 = r1.top + r1.height / 2 - cRect.top;
-    const x2 = r2.left - cRect.left;
-    const y2 = r2.top + r2.height / 2 - cRect.top;
-
-    const dx = (x2 - x1) * 0.5;
-    const pathD = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
-
-    pathsHtml += `
-      <path d="${pathD}" fill="none" stroke="${c.grad}" stroke-width="2.5" stroke-linecap="round"/>
-      <circle cx="${x1}" cy="${y1}" r="3.5" fill="#38bdf8"/>
-      <circle cx="${x2}" cy="${y2}" r="3.5" fill="#10b981"/>
-    `;
-  });
-
-  svg.innerHTML = pathsHtml;
-}
-
-window.addEventListener('resize', renderSvgWires);
-setTimeout(renderSvgWires, 200);
-
-async function openFileViewer(path) {
-  const drawer = $('md-drawer');
-  drawer.style.display = 'flex';
-  $('drawer-file-title').textContent = path;
-  $('drawer-file-content').innerHTML = '<p style="color:var(--text-dim)">Loading file from Anton...</p>';
   try {
     const res = await fetch(`/api/vault/note?path=${encodeURIComponent(path)}`);
     const data = await res.json();
-    if (data.content) {
-      if (path.endsWith('.py') || data.is_code) {
-        $('drawer-file-content').innerHTML = `
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <span style="font-size:0.72rem;font-weight:800;color:#10b981;background:rgba(16,185,129,0.15);padding:3px 8px;border-radius:6px">🐍 PYTHON 3.14 DETERMINISTIC GATE</span>
-            <span style="font-size:0.7rem;font-family:var(--font-mono);color:var(--text-dim)">0 Tokens Consumed · Zero Hallucination</span>
-          </div>
-          <pre><code class="language-python">${data.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>
-          <div style="margin-top:16px;padding:12px;background:#151822;border:1px solid var(--border);border-radius:8px">
-            <div style="font-size:0.75rem;font-weight:700;color:var(--text-main);margin-bottom:4px">Execution Contract</div>
-            <div style="font-size:0.72rem;color:var(--text-muted)">• Input: JSON payload via sys.argv[1]<br>• Return 0: Math balances exactly (Δ == 0.00)<br>• Return 4: Math mismatch detected (Fails Closed)</div>
-          </div>
-        `;
-      } else {
-        $('drawer-file-content').innerHTML = marked.parse(data.content);
+
+    if (data.is_code || path.endsWith('.py')) {
+      mdContainer.style.display = 'none';
+      mContainer.style.display = 'block';
+      if (editorInstance) {
+        editorInstance.setValue(data.content);
+        monaco.editor.setModelLanguage(editorInstance.getModel(), 'python');
       }
     } else {
-      $('drawer-file-content').innerHTML = '<p style="color:var(--danger)">Failed to load file.</p>';
+      mContainer.style.display = 'none';
+      mdContainer.style.display = 'block';
+      mdContainer.innerHTML = marked.parse(data.content);
     }
   } catch (e) {
-    $('drawer-file-content').innerHTML = '<p style="color:var(--danger)">Error: ' + e.message + '</p>';
+    mdContainer.style.display = 'block';
+    mdContainer.innerHTML = '<p style="color:var(--danger)">Error loading file: ' + e.message + '</p>';
   }
 }
 
-function closeFileViewer() { $('md-drawer').style.display = 'none'; }
+function open3DGraph() {
+  $('monaco-container').style.display = 'none';
+  $('markdown-container').style.display = 'none';
+  const gContainer = $('graph-tab-container');
+  gContainer.style.display = 'block';
+  $('tab-primary-title').textContent = '3D Second Brain Graph';
 
-async function checkMode() {
-  try {
-    const res = await fetch('/api/mode');
-    const data = await res.json();
-    sonOfAntonActive = !!data.son_of_anton_mode;
-    updateSonUI();
-  } catch (e) {}
-}
-
-function updateSonUI() {
-  const btn = $('son-toggle-btn');
-  const lbl = $('son-label');
-  const gateNode = $('node-gate-1');
-  const gateBadge = $('node-gate-badge');
-  const gateDesc = $('node-gate-desc');
-
-  if (sonOfAntonActive) {
-    btn.classList.add('active');
-    lbl.textContent = '⚡ SON OF ANTON [ACTIVE]';
-    if (gateNode) {
-      gateNode.classList.remove('gate-locked');
-      gateNode.classList.add('gate-bypassed');
-    }
-    if (gateBadge) {
-      gateBadge.textContent = 'AUTO-BYPASS ⚡';
-      gateBadge.style.color = '#10b981';
-    }
-    if (gateDesc) gateDesc.textContent = 'verify_balance.py (Auto-Approved)';
-  } else {
-    btn.classList.remove('active');
-    lbl.textContent = '⚡ SON OF ANTON [OFF]';
-    if (gateNode) {
-      gateNode.classList.remove('gate-bypassed');
-      gateNode.classList.add('gate-locked');
-    }
-    if (gateBadge) {
-      gateBadge.textContent = 'FAIL-CLOSED';
-      gateBadge.style.color = '#f59e0b';
-    }
-    if (gateDesc) gateDesc.textContent = 'verify_balance.py (Δ=0)';
+  if (!window.graphLoaded) {
+    window.graphLoaded = true;
+    fetch('/api/vault/graph').then(r => r.json()).then(gData => {
+      ForceGraph3D()(gContainer)
+        .graphData(gData)
+        .nodeLabel('title')
+        .nodeColor(n => n.type === 'moc' ? '#c084fc' : (n.type === 'skill' ? '#10b981' : '#38bdf8'))
+        .nodeVal('val')
+        .linkWidth(1.2)
+        .onNodeClick(n => openFile(n.id, 'markdown'));
+    });
   }
 }
 
-function toggleSonOfAnton() {
-  if (!sonOfAntonActive) {
-    $('son-modal').style.display = 'flex';
-  } else {
-    setSonMode(false);
-  }
+function toggleToolCard(id) {
+  const el = $(id);
+  el.style.display = el.style.display === 'block' ? 'none' : 'block';
 }
-function closeSonModal() { $('son-modal').style.display = 'none'; }
-async function confirmSonOfAnton() { closeSonModal(); await setSonMode(true); }
 
-async function setSonMode(active) {
+function focusSearch() { $('global-search').focus(); }
+
+async function toggleSonOfAnton() {
+  const nextState = !sonOfAntonActive;
   try {
     const res = await fetch('/api/mode/son-of-anton', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ son_of_anton_mode: active })
+      body: JSON.stringify({ son_of_anton_mode: nextState })
     });
     if (res.ok) {
-      sonOfAntonActive = active;
-      updateSonUI();
-      showToast(active ? '⚡ Son of Anton Mode ENGAGED' : '🛡️ Standard Safe Mode Restored', active ? 'warning' : 'success');
+      sonOfAntonActive = nextState;
+      const btn = $('son-toggle-btn');
+      const lbl = $('son-label');
+      const stat = $('active-mode-status');
+      if (sonOfAntonActive) {
+        btn.classList.add('active');
+        lbl.textContent = '⚡ SON OF ANTON [ACTIVE]';
+        stat.textContent = 'Mode: ⚡ Son of Anton (Overdrive)';
+        stat.style.color = '#fbbf24';
+      } else {
+        btn.classList.remove('active');
+        lbl.textContent = '⚡ SON OF ANTON [OFF]';
+        stat.textContent = 'Mode: Safe Standard';
+        stat.style.color = 'var(--text-dim)';
+      }
     }
-  } catch (e) { showToast('Mode change failed', 'error'); }
-}
-
-async function loadOps() {
-  try {
-    const [l, a] = await Promise.all([
-      fetch('/api/ledger').then(r => r.json()),
-      fetch('/api/approvals').then(r => r.json())
-    ]);
-
-    if (a.length > 0) {
-      const top = a[0];
-      activeApprovalId = top.id;
-      $('decision-hud-container').innerHTML = `
-        <div class="decision-card">
-          <div class="decision-header">
-            <span class="decision-badge">Approval #${top.id}</span>
-            <span style="font-size:0.65rem;font-family:var(--font-mono);color:var(--text-dim)">${top.nonce.substring(0,8)}...</span>
-          </div>
-          <div style="font-size:0.92rem;font-weight:700;margin-bottom:4px">${top.action}</div>
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:12px">Recipient: ${top.recipient || 'N/A'} · Amount: ${top.amount || '0.00'}</div>
-          <div style="display:flex;gap:8px">
-            <button class="btn-approve" onclick="resolveApproval(${top.id}, 'approve')">✓ Approve (↵)</button>
-            <button class="btn-deny" onclick="resolveApproval(${top.id}, 'deny')">✗ Deny (⎋)</button>
-          </div>
-        </div>
-      `;
-    } else {
-      activeApprovalId = null;
-      $('decision-hud-container').innerHTML = sonOfAntonActive 
-        ? '<div style="padding:14px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;text-align:center;font-size:0.75rem;color:#fbbf24">⚡ Son of Anton Mode Active<br>Human gates are auto-approved.</div>'
-        : '<p style="font-size:0.75rem;color:var(--text-dim);text-align:center;padding:15px 0">All gates operating securely.</p>';
-    }
-
-    $('live-activity-feed').innerHTML = l.slice(-5).reverse().map(r => `
-      <div style="padding:7px 10px;background:#141722;border:1px solid var(--border);border-radius:8px;font-size:0.75rem">
-        <div style="font-weight:600">${r.task} <span style="color:${r.exit===0?'#10b981':'#ef4444'}">(exit ${r.exit})</span></div>
-        <div style="font-size:0.68rem;color:var(--text-dim);font-family:var(--font-mono)">${r.flags || 'none'} · ${r.ts.substring(11,19)}</div>
-      </div>
-    `).join('');
-
-    $('ledger-rows').innerHTML = l.slice(-50).reverse().map(r => `
-      <tr>
-        <td style="font-family:var(--font-mono);font-size:0.75rem">${r.ts}</td>
-        <td style="font-weight:600">${r.task}</td>
-        <td><span style="color:${r.exit === 0 ? '#10b981' : '#ef4444'};font-weight:700">${r.exit}</span></td>
-        <td style="font-family:var(--font-mono);font-size:0.75rem">${r.flags || ''}</td>
-        <td style="font-size:0.75rem">${r.model || 'local'} (${r.provider || 'local'})</td>
-        <td style="font-family:var(--font-mono);font-size:0.75rem">${r.duration_ms || 0}ms / $${(r.cost_usd || 0).toFixed(4)}</td>
-      </tr>
-    `).join('');
   } catch (e) {}
 }
 
-async function resolveApproval(aid, decision) {
+async function sendChatPrompt() {
+  const input = $('chat-prompt-input');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+
+  const stream = $('agent-chat-stream');
+  stream.innerHTML += `
+    <div style="padding:8px 10px;background:#1e2436;border-radius:8px;font-size:0.78rem">
+      <div style="font-weight:700;color:var(--primary);margin-bottom:2px">You</div>
+      <div>${q}</div>
+    </div>
+  `;
+
   try {
-    const res = await fetch(`/api/approvals/${aid}/resolve`, {
+    const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision })
+      body: JSON.stringify({ prompt: q })
     });
-    if (res.ok) {
-      showToast(`Approval #${aid} marked as ${decision.toUpperCase()}`, 'success');
-      loadOps();
-    }
-  } catch (e) { showToast(e.message, 'error'); }
+    const data = await res.json();
+    stream.innerHTML += `
+      <div style="padding:8px 10px;background:#141722;border:1px solid var(--border);border-radius:8px;font-size:0.78rem">
+        <div style="font-weight:700;color:var(--purple);margin-bottom:2px">⚡ Anton</div>
+        <div>${data.reply}</div>
+      </div>
+    `;
+    if (data.note_path) openFile(data.note_path);
+    stream.scrollTop = stream.scrollHeight;
+  } catch (e) {}
 }
 
-$('cmd-input').addEventListener('keydown', async e => {
-  if (e.key === 'Enter') {
-    const q = $('cmd-input').value.trim();
-    if (!q) return;
-    $('cmd-input').value = 'Thinking...';
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: q })
-      });
-      const data = await res.json();
-      $('cmd-input').value = '';
-      if (data.note_path) openFileViewer(data.note_path);
-      showToast(data.reply, 'success');
-    } catch (err) {
-      $('cmd-input').value = '';
-      showToast('Execution error: ' + err.message, 'error');
-    }
+$('chat-prompt-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChatPrompt();
   }
 });
 
 window.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-    e.preventDefault(); $('cmd-input').focus();
-  } else if (e.key === 'Enter' && activeApprovalId && document.activeElement !== $('cmd-input')) {
-    resolveApproval(activeApprovalId, 'approve');
-  } else if (e.key === 'Escape') {
-    closeFileViewer();
-    if (activeApprovalId) resolveApproval(activeApprovalId, 'deny');
+    e.preventDefault();
+    $('global-search').focus();
   }
 });
-
-async function initGraph() {
-  window.graphLoaded = true;
-  try {
-    const gData = await fetch('/api/vault/graph').then(r => r.json());
-    const elem = $('graph-container');
-    ForceGraph3D()(elem)
-      .graphData(gData)
-      .nodeLabel('title')
-      .nodeColor(n => n.type === 'moc' ? '#c084fc' : (n.type === 'skill' ? '#10b981' : '#38bdf8'))
-      .nodeVal('val')
-      .linkWidth(1.2)
-      .linkOpacity(0.4)
-      .onNodeClick(node => {
-        openFileViewer(node.id);
-      });
-  } catch (e) {}
-}
-
-async function saveProviderKey() {
-  const prov = $('wiz-provider').value;
-  const key = $('wiz-key').value;
-  if (!key) return showToast('Please enter an API key', 'error');
-  const res = await fetch('/api/wizard/providers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ provider: prov, key })
-  });
-  if (res.ok) {
-    showToast(`Saved ${prov} key to 0600 vault`, 'success');
-    $('wiz-key').value = '';
-  }
-}
-
-checkMode(); loadOps(); setInterval(loadOps, 3500);
 </script>
 </body>
 </html>"""
@@ -1043,8 +704,8 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             }
         else:
             return {
-                "reply": f"Anton received: '{req.prompt}'. Second Brain knowledge query completed.",
-                "note_path": "mocs/strategy"
+                "reply": f"Anton processed: '{req.prompt}'. Second Brain query completed.",
+                "note_path": "strategy/award-marketing-plan"
             }
 
     @app.get("/api/canary")
