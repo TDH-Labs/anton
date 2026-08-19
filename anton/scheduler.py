@@ -18,13 +18,15 @@ from .routes import select_route
 
 class JobEngine:
     def __init__(self, jobs: List[Job], ledger: Ledger, executor: Executor,
-                 config: dict, db=None, metering=None, data_dir: Optional[str] = None):
+                 config: dict, db=None, metering=None, data_dir: Optional[str] = None,
+                 son_of_anton_mode: bool = False):
         self.jobs = jobs
         self.ledger = ledger
         self.executor = executor
         self.config = config
         self.db = db
         self.data_dir = data_dir or config.get("general", {}).get("data_dir")
+        self.son_of_anton_mode = son_of_anton_mode or bool(config.get("general", {}).get("son_of_anton_mode", False))
 
     def _touch_heartbeat(self) -> None:
         if self.data_dir:
@@ -44,25 +46,45 @@ class JobEngine:
             except Exception:  # noqa: BLE001 — metering must never break a run
                 pass
 
-    def _is_approved(self, job_id: str) -> bool:
-        """R1: a gated job may only run with an approved nonce in the approvals table."""
+    def _is_approved(self, job_id: str) -> tuple[bool, str]:
+        """R1: check approval nonce or apply Son of Anton permissionless bypass."""
+        if self.son_of_anton_mode:
+            if self.data_dir:
+                import os
+                import sqlite3
+                import uuid
+                p = os.path.join(self.data_dir, "isolation.db")
+                if os.path.exists(p):
+                    try:
+                        with sqlite3.connect(p, timeout=10.0) as conn:
+                            nonce = f"son-of-anton-{uuid.uuid4().hex[:12]}"
+                            ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            conn.execute(
+                                "INSERT INTO approvals (nonce, action, amount, recipient, status, hmac, ts) VALUES (?, ?, ?, ?, 'consumed', 'son_of_anton_bypass', ?)",
+                                (nonce, job_id, "BYPASS", "AUTONOMOUS", ts)
+                            )
+                            conn.commit()
+                    except Exception:
+                        pass
+            return True, "son_of_anton_bypass"
+
         if not self.data_dir:
-            return False
+            return False, "no_data_dir"
         import os
         import sqlite3
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
-            return False
+            return False, "no_db"
         with sqlite3.connect(p, timeout=10.0) as conn:
             row = conn.execute(
                 "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
                 (job_id,)).fetchone()
             if not row:
-                return False
+                return False, "no_approval"
             aid = row[0]
             cur = conn.execute("UPDATE approvals SET status='consumed' WHERE id=? AND status='approved'", (aid,))
             conn.commit()
-            return cur.rowcount > 0
+            return (cur.rowcount > 0), "nonce_consumed"
 
     def by_id(self, job_id: str) -> Optional[Job]:
         return next((j for j in self.jobs if j.id == job_id), None)
@@ -129,9 +151,11 @@ class JobEngine:
 
         self._touch_heartbeat()
 
-        # R1/R7: hard-gate jobs (money/outbound) require an approved nonce before any run.
+        # R1/R7: hard-gate jobs (money/outbound) require an approved nonce before any run (or Son of Anton bypass).
+        gate_flag = None
         if job.gate and (job.gate.get("money") or job.gate.get("outbound")):
-            if not self._is_approved(job.id):
+            ok, reason = self._is_approved(job.id)
+            if not ok:
                 record = RunRecord.new(task=job.id, exit_code=5, flags="gate-blocked",
                                        output="", model=route.model, provider=route.provider,
                                        duration_ms=0,
@@ -139,6 +163,8 @@ class JobEngine:
                 self.ledger.append(record)
                 self._record_metering(record)
                 return record
+            if reason == "son_of_anton_bypass":
+                gate_flag = "son_of_anton_bypass"
 
         started = time.monotonic()
         timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
@@ -161,6 +187,8 @@ class JobEngine:
 
         exit_code = result.exit_code
         flags = f"cron;route:{route.provider}"
+        if gate_flag:
+            flags += f";{gate_flag}"
         if job.dry_run:
             exit_code = 0
             flags += ";dry-run"

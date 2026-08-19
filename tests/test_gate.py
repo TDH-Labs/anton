@@ -59,10 +59,24 @@ class TestGate(unittest.TestCase):
         rec1 = self.engine.run_job(self.engine.by_id("email-client"),
                                    now=dt.datetime.now(dt.timezone.utc))
         self.assertEqual(rec1.exit, 0)
-
-        # Second run fails closed because approval is consumed
+        # Second run fails-closed: approval already consumed
         rec2 = self.engine.run_job(self.engine.by_id("email-client"),
                                    now=dt.datetime.now(dt.timezone.utc))
         self.assertEqual(rec2.exit, 5)
         self.assertIn("gate-blocked", rec2.flags)
 
+    def test_son_of_anton_mode_bypasses_human_gate(self):
+        # Enable Son of Anton permissionless mode
+        self.engine.son_of_anton_mode = True
+        # Gated job runs without manual approval
+        rec = self.engine.run_job(self.engine.by_id("email-client"),
+                                  now=dt.datetime.now(dt.timezone.utc))
+        self.assertEqual(rec.exit, 0)
+        self.assertIn("son_of_anton_bypass", rec.flags)
+        
+        # Verify auto-recorded approval row
+        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"), timeout=10.0) as conn:
+            row = conn.execute("SELECT status, hmac FROM approvals WHERE action='email-client'").fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], "consumed")
+            self.assertEqual(row[1], "son_of_anton_bypass")
