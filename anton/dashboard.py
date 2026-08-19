@@ -223,12 +223,15 @@ body {
 .stage-docked .hero-greeting { display: none; }
 
 .hero-logo-img {
-  width: 68px; height: 68px;
+  width: 72px; height: 72px;
   border-radius: 16px; object-fit: cover;
   border: 1px solid rgba(255, 255, 255, 0.22);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 30px rgba(56, 189, 248, 0.15);
   margin-bottom: 12px;
-  transition: all 0.3s ease;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
+}
+.hero-logo-img:hover {
+  transform: scale(1.05);
 }
 
 .prompt-box {
@@ -366,9 +369,10 @@ body {
   </div>
 
   <div class="top-actions">
+    <!-- Son of Anton Mode Button (No lightning bolt) -->
     <button class="son-toggle" id="son-toggle-btn" onclick="toggleSonOfAnton()">
       <span class="son-dot"></span>
-      <span id="son-label">⚡ SON OF ANTON [OFF]</span>
+      <span id="son-label">SON OF ANTON [OFF]</span>
     </button>
     <div style="font-size:0.75rem;color:var(--success);font-weight:700;display:flex;align-items:center;gap:6px">
       <span style="width:6px;height:6px;border-radius:50%;background:var(--success);box-shadow:0 0 6px var(--success)"></span>
@@ -442,7 +446,7 @@ body {
         <div class="hero-greeting" id="hero-greeting-box">
           <img src="/api/logo" id="hero-brand-logo" alt="Anton Logo" class="hero-logo-img">
           <div style="font-size:1.25rem;font-weight:800;letter-spacing:-0.02em;margin-bottom:6px" id="hero-headline">What would you like Anton to do?</div>
-          <div style="font-size:0.8rem;color:var(--text-muted)">Autonomous Coworker with Deterministic Gates & Second Brain Memory</div>
+          <div style="font-size:0.8rem;color:var(--text-muted)" id="hero-subheadline">Autonomous Coworker with Deterministic Gates & Second Brain Memory</div>
         </div>
 
         <div class="prompt-box">
@@ -525,7 +529,7 @@ body {
 <!-- 3. BOTTOM STATUS STRIP -->
 <div class="status-bar">
   <div class="status-left">
-    <span>🌿 main (commit d5372ee)</span>
+    <span>🌿 main (commit f29d8ab)</span>
     <span>⚡ Gates: Fail-Closed Active</span>
     <span id="active-mode-status">Mode: Safe Standard</span>
   </div>
@@ -785,6 +789,48 @@ function toggleToolCard(id) {
   el.style.display = (el.style.display === 'block') ? 'none' : 'block';
 }
 
+function updateSonUI() {
+  const btn = $('son-toggle-btn');
+  const lbl = $('son-label');
+  const stat = $('active-mode-status');
+  const topLogo = $('top-brand-logo');
+  const heroLogo = $('hero-brand-logo');
+  const brandName = $('top-brand-name');
+  const heroHead = $('hero-headline');
+  const heroSub = $('hero-subheadline');
+
+  if (sonOfAntonActive) {
+    btn.classList.add('active');
+    lbl.textContent = 'SON OF ANTON [ACTIVE]';
+    stat.textContent = 'Mode: Son of Anton (Overdrive)';
+    stat.style.color = '#fbbf24';
+    if (topLogo) topLogo.src = '/api/logo/son-of-anton';
+    if (heroLogo) heroLogo.src = '/api/logo/son-of-anton';
+    if (brandName) brandName.textContent = 'SON OF ANTON';
+    if (heroHead) heroHead.textContent = 'What should Son of Anton execute?';
+    if (heroSub) heroSub.textContent = 'Autonomous Overdrive · Zero Human Gate Delays';
+  } else {
+    btn.classList.remove('active');
+    lbl.textContent = 'SON OF ANTON [OFF]';
+    stat.textContent = 'Mode: Safe Standard';
+    stat.style.color = 'var(--text-dim)';
+    if (topLogo) topLogo.src = '/api/logo';
+    if (heroLogo) heroLogo.src = '/api/logo';
+    if (brandName) brandName.textContent = 'ANTON';
+    if (heroHead) heroHead.textContent = 'What would you like Anton to do?';
+    if (heroSub) heroSub.textContent = 'Autonomous Coworker with Deterministic Gates & Second Brain Memory';
+  }
+}
+
+async function checkMode() {
+  try {
+    const res = await fetch('/api/mode');
+    const data = await res.json();
+    sonOfAntonActive = !!data.son_of_anton_mode;
+    updateSonUI();
+  } catch (e) {}
+}
+
 async function toggleSonOfAnton() {
   const nextState = !sonOfAntonActive;
   try {
@@ -795,35 +841,8 @@ async function toggleSonOfAnton() {
     });
     if (res.ok) {
       sonOfAntonActive = nextState;
-      const btn = $('son-toggle-btn');
-      const lbl = $('son-label');
-      const stat = $('active-mode-status');
-      const topLogo = $('top-brand-logo');
-      const heroLogo = $('hero-brand-logo');
-      const brandName = $('top-brand-name');
-      const heroHead = $('hero-headline');
-
-      if (sonOfAntonActive) {
-        btn.classList.add('active');
-        lbl.textContent = '⚡ SON OF ANTON [ACTIVE]';
-        stat.textContent = 'Mode: ⚡ Son of Anton (Overdrive)';
-        stat.style.color = '#fbbf24';
-        if (topLogo) topLogo.src = '/api/logo/son-of-anton';
-        if (heroLogo) heroLogo.src = '/api/logo/son-of-anton';
-        if (brandName) brandName.textContent = 'SON OF ANTON';
-        if (heroHead) heroHead.textContent = 'What should Son of Anton execute?';
-        showToast('⚡ Son of Anton Mode ENGAGED', 'warning');
-      } else {
-        btn.classList.remove('active');
-        lbl.textContent = '⚡ SON OF ANTON [OFF]';
-        stat.textContent = 'Mode: Safe Standard';
-        stat.style.color = 'var(--text-dim)';
-        if (topLogo) topLogo.src = '/api/logo';
-        if (heroLogo) heroLogo.src = '/api/logo';
-        if (brandName) brandName.textContent = 'ANTON';
-        if (heroHead) heroHead.textContent = 'What would you like Anton to do?';
-        showToast('🛡️ Standard Safe Mode Restored', 'success');
-      }
+      updateSonUI();
+      showToast(sonOfAntonActive ? 'Son of Anton Mode ENGAGED' : 'Standard Safe Mode Restored', sonOfAntonActive ? 'warning' : 'success');
     }
   } catch (e) {
     showToast('Failed to toggle mode', 'error');
@@ -859,6 +878,8 @@ window.addEventListener('keydown', e => {
     resolveApproval(108, 'deny');
   }
 });
+
+checkMode();
 </script>
 </body>
 </html>"""
