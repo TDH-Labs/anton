@@ -4,7 +4,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Optional
 
-DEFAULT_LOCAL_MODEL = "[REDACTED-LOCAL-MODEL]"  # reference default; configurable
+DEFAULT_LOCAL_MODEL = "ollama/llama3.1:8b"  # reference default; configurable
 DEFAULT_CLOUD_MODEL = "openrouter/anthropic/claude-3.5-sonnet"
 
 

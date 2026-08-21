@@ -4,7 +4,7 @@ from anton.models import RunRecord
 
 class TestRunRecord(unittest.TestCase):
     def test_local_provider_never_records_tokens(self):
-        r = RunRecord.new(task="t", exit_code=0, model="[REDACTED-LOCAL-INFERENCE]/qwen", provider="[REDACTED-LOCAL-INFERENCE]",
+        r = RunRecord.new(task="t", exit_code=0, model="ollama/llama3.1:8b", provider="ollama",
                           tokens_in=999, tokens_out=999, cost_usd=1.5)
         self.assertEqual(r.token_accounting, "local")
         self.assertIsNone(r.tokens_in)

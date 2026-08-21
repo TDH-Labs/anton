@@ -6,7 +6,7 @@ class TestRoutes(unittest.TestCase):
     def test_local_first_default(self):
         r = select_route()
         self.assertEqual(r.provider, "local")
-        self.assertIn("[REDACTED-LOCAL-INFERENCE]", r.model)
+        self.assertIn("ollama", r.model)
         self.assertIn("openrouter", r.fallback)
 
     def test_cloud_preference(self):

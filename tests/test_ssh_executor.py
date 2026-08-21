@@ -20,7 +20,7 @@ class TestSSHExecutor(unittest.TestCase):
     def test_builds_ssh_command(self):
         exe = SSHExecutor(host="10.9.9.9", user="umbrel", key="/keys/id",
                           command="run-local-recipe.sh <recipe>", ssh_bin=self.ssh)
-        res = exe.run("bill-capture", model="[REDACTED-LOCAL-INFERENCE]/q", provider="local")
+        res = exe.run("bill-capture", model="ollama/q", provider="local")
         self.assertEqual(res.exit_code, 0)
         self.assertIn("-i", res.output.splitlines()[0] if res.output else "")
         joined = " ".join(res.output.splitlines())

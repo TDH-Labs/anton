@@ -4,9 +4,9 @@ DEFAULT_JOBS_YAML = """- id: e2e-canary
   trigger: { type: cron, expr: "*/15 * * * *" }
   recipe: e2e-canary
   expected_cadence_min: 15
-- id: control-plane-digest
+- id: daily-digest
   trigger: { type: cron, expr: "0 * * * *" }
-  recipe: control-plane-digest
+  recipe: daily-digest
   expected_cadence_min: 60
 - id: smoke-hook
   trigger: { type: webhook }
@@ -18,12 +18,13 @@ DEFAULT_CONFIG_YAML = """general:
   data_dir: data
   host: 0.0.0.0
   port: 8799
-  executor: fake          # fake | pi | oi | ssh
+  executor: pi            # fake | pi | oi | ssh
+  pi_tools: "read,grep,find,ls"  # read-only by default; see executor/pi_executor.py
   dashboard_token: ""      # set before exposing the dashboard port (bearer on writes)
   poll_seconds: 15
   org_id: default
 routes:
-  local_model: [REDACTED-LOCAL-MODEL]
+  local_model: ollama/llama3.1:8b
   cloud_model: openrouter/anthropic/claude-3.5-sonnet
   prefer: local
 budgets:

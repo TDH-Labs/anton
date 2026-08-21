@@ -56,7 +56,7 @@ class TestScheduler(unittest.TestCase):
         rec = self.engine.run_job(job)
         self.assertEqual(rec.exit, 0)
         row = self.ledger.last_run("e2e-canary")
-        self.assertEqual(row["model"], "[REDACTED-LOCAL-MODEL]")
+        self.assertEqual(row["model"], "ollama/llama3.1:8b")
         self.assertEqual(row["provider"], "local")
         self.assertIn("duration_ms", row)
 

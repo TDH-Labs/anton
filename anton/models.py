@@ -54,7 +54,7 @@ class RunRecord:
         session_id: Optional[str] = None,
         org_id: str = "default",
     ) -> "RunRecord":
-        accounting = "cloud" if provider not in ("local", "[REDACTED-LOCAL-INFERENCE]", "ollama", "lmstudio") else "local"
+        accounting = "cloud" if provider not in ("local", "ollama", "lmstudio") else "local"
         if accounting == "local":
             tokens_in = tokens_out = None
             cost_usd = None

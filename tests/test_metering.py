@@ -16,8 +16,8 @@ class TestMetering(unittest.TestCase):
         self.dir.cleanup()
 
     def test_local_runs_not_metered(self):
-        record(self.conn, RunRecord.new(task="t", exit_code=0, model="[REDACTED-LOCAL-INFERENCE]/q",
-                                        provider="[REDACTED-LOCAL-INFERENCE]", tokens_in=999))
+        record(self.conn, RunRecord.new(task="t", exit_code=0, model="ollama/q",
+                                        provider="ollama", tokens_in=999))
         self.assertEqual(lifetime_totals(self.conn)["runs"], 0)
 
     def test_cloud_runs_metered(self):

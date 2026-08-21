@@ -12,12 +12,23 @@ DEFAULTS = {
         "data_dir": ".dev-data",
         "host": "0.0.0.0",
         "port": 8799,
-        "executor": "fake",  # fake | pi | oi
+        "executor": "pi",  # fake | pi | oi | ssh
+        # Tool allowlist passed to PiExecutor's `pi --tools <value>` invocation
+        # (see executor/pi_executor.py). Read-only by default: nothing upstream
+        # of PiExecutor restricts what a dispatched task can do, so widening
+        # this to include edit/write/bash is a deliberate, informed choice for
+        # deployments that need it, not a default.
+        "pi_tools": "read,grep,find,ls",
         "poll_seconds": 15,
         "org_id": "default",
+        # How often the proactive opportunity scanner (opportunity.py)
+        # surveys connected sources (vault + mcp_servers) for things worth
+        # upskilling toward before anything breaks. Real dispatch cost, so
+        # this is hours, not the poll_seconds cadence.
+        "opportunity_scan_hours": 24,
     },
     "routes": {
-        "local_model": "[REDACTED-LOCAL-MODEL]",
+        "local_model": "ollama/llama3.1:8b",
         "cloud_model": "openrouter/anthropic/claude-3.5-sonnet",
         "prefer": "local",
     },
