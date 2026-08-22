@@ -40,3 +40,12 @@ design — checking we're not missing table-stakes.
 1. Session surface with live job logs/files (closes #1, biggest daily-use gap)
 2. Per-run cost badge using existing metering data (cheap, high visibility)
 3. Git toolchain for code jobs (only if dev use-case matters to owners)
+
+## NEXT SESSION QUEUE (2026-08-22)
+1. QBO OAuth: reuse creds in ~/secrets/harwell/secrets.env (QBO_CLIENT_ID/SECRET);
+   read REDIRECT_URI from qbo_connect.py, pin Anton callback to it; set
+   config.yaml oauth.quickbooks.*; test end-to-end.
+2. Bug C: pull latest image on Umbrel, GET /api/connections/catalog ->
+   registry_error field names exact failure (suspect gzip body breaking json.loads).
+3. Bug A: tor container can't resolve app_proxy_anton — check docker network
+   membership (umbreld tor network vs anton compose network); connect networks.
