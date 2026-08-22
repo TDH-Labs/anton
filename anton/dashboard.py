@@ -143,6 +143,11 @@ class MCPReq(BaseModel):
     # mcp:<id> namespace so it never collides with a real AI provider name.
     api_key: str = ""
 
+class ModelsReq(BaseModel):
+    provider: str
+    key: str = ""
+    base_url: str = ""
+
 class ConnectReq(BaseModel):
     id: str
     name: str = ""
@@ -610,12 +615,22 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             chosen_model = str(routes.get("cloud_model") or "")
         return {"have_key": have, "cloud_model": chosen_model}
 
+    @app.post("/api/wizard/models")
+    def wizard_models_post(req: ModelsReq, request: Request):
+        """Preferred form: key rides in the JSON body, never in URLs/logs."""
+        _require_token(request, token)
+        return _wizard_models_impl(req.provider, req.key, req.base_url)
+
     @app.get("/api/wizard/models")
     def wizard_models(request: Request, provider: str, key: str = "", base_url: str = ""):
+        """DEPRECATED: key in query string leaks into logs/history. Kept for
+        the current wizard bundle; remove once clients use POST."""
         """Live-list models for a provider key. Errors are explicit strings,
         never silent empties: an empty list with no error means the provider
         genuinely returned zero models."""
-        _require_token(request, token)
+        return _wizard_models_impl(provider, key, base_url)
+
+    def _wizard_models_impl(provider: str, key: str = "", base_url: str = ""):
         if not key:
             # Fall back to whatever key was already saved for this provider.
             secrets_path = os.path.join(os.path.dirname(data_dir), "secrets.yaml")

@@ -120,10 +120,11 @@ def registry_servers(data_dir: str, force: bool = False) -> list[dict[str, Any]]
                 "what": (entry.get("description") or "")[:140],
                 "source": "registry",
             })
-        tmp = cache_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"ts": time.time(), "servers": servers}, f)
-        os.replace(tmp, cache_path)
+        if servers:  # never cache an empty result -- a boot-time DNS failure
+            tmp = cache_path + ".tmp"   # would poison the catalog for 6h
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"ts": time.time(), "servers": servers}, f)
+            os.replace(tmp, cache_path)
         return servers
     except Exception:
         # stale cache is better than nothing
