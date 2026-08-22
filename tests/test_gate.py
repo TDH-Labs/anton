@@ -66,7 +66,10 @@ class TestGate(unittest.TestCase):
         self.assertIn("gate-blocked", rec2.flags)
 
     def test_son_of_anton_mode_bypasses_human_gate(self):
-        # Enable Son of Anton permissionless mode
+        # Enable Son of Anton permissionless mode — via the persisted setting,
+        # since _is_approved treats isolation.db as cross-process truth
+        from anton.scheduler import set_son_of_anton_mode
+        set_son_of_anton_mode(self.dir.name, True)
         self.engine.son_of_anton_mode = True
         # Gated job runs without manual approval
         rec = self.engine.run_job(self.engine.by_id("email-client"),

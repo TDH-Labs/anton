@@ -1,4 +1,4 @@
-"""isolation.db — control-plane state. Tenant-ready: org_id on every table (Q4)."""
+"""isolation.db — agent-harness state. Tenant-ready: org_id on every table (Q4)."""
 from __future__ import annotations
 
 import sqlite3
@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS sandbox_log (
 CREATE TABLE IF NOT EXISTS playbooks (
     slug TEXT PRIMARY KEY, org_id TEXT DEFAULT 'default',
     method TEXT, source_initiative TEXT, ts TEXT
+);
+CREATE TABLE IF NOT EXISTS upskill_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
+    slug TEXT, subject TEXT, stage TEXT, attempt INTEGER, ok INTEGER, detail TEXT, ts TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
+    skill_slug TEXT, kind TEXT, text TEXT, source TEXT, consumed_at TEXT, ts TEXT
 );
 """
 

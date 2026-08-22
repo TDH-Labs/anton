@@ -16,10 +16,13 @@ class TestLearning(unittest.TestCase):
             self.assertEqual(slug, "optimal-stopping-decider")
             with open(os.path.join(d, "SKILL.md")) as f:
                 content = f.read()
-            for field in ("name:", "description:", "author: Hyperagent-Autonomous-Builder",
-                          "compatibility:", "room_scope:", "Operational Directive",
+            for field in ("name:", "description:", "author: anton-autonomous",
+                          "compatibility:", "Operational Directive",
                           "Algorithmic Procedure", "Execution Artifact"):
                 self.assertIn(field, content)
+            # room_scope was a personal-Harbor-shaped leak (no room concept
+            # anywhere in anton) -- dropped, not renamed.
+            self.assertNotIn("room_scope", content)
             ev = os.path.join(d, "scripts", f"{slug}_evaluator.py")
             self.assertTrue(os.path.exists(ev))
             import subprocess

@@ -55,7 +55,7 @@ def build_digest(engine, vault_dir: str, config: dict,
     status = "PASS" if not tripwires else "ATTENTION"
 
     lines = [
-        "# Control Plane Digest",
+        "# Daily Digest",
         "",
         f"Generated: {now_iso}  ·  Status: **{status}**",
         "",

@@ -1,0 +1,64 @@
+# Real HTTPS for a VPS install (a public IP, not Umbrel). Caddy is the only
+# published service -- it auto-provisions and renews a real Let's Encrypt
+# certificate for $DOMAIN, then reverse-proxies to the anton container over
+# the compose network's internal DNS. anton itself publishes no ports at
+# all here (contrast umbrel/anton/docker-compose.yml, which publishes 3080
+# directly -- Umbrel has its own remote-access story; a bare VPS doesn't).
+#
+# Requires: a domain name whose DNS A record points at this VPS's IP, and
+# ports 80+443 open in whatever cloud firewall sits in front of it (Caddy
+# needs 80 for the ACME HTTP-01 challenge and the HTTP->HTTPS redirect, 443
+# for HTTPS itself). Usage:
+#   DOMAIN=yourdomain.com docker compose -f vps/docker-compose.yml up -d
+services:
+  anton:
+    image: ghcr.io/tdh-labs/anton:latest
+    container_name: anton
+    restart: unless-stopped
+    volumes:
+      - anton_data:/data
+    environment:
+      - ANTON_EXECUTOR=${ANTON_EXECUTOR:-pi}
+      - ANTON_DATA_DIR=/data
+      - ANTON_PORT=8799
+      - ANTON_SERVE_PORT=8798
+      - ANTON_WEB_INTERNAL_PORT=3079
+      - ANTON_WEB_PORT=3080
+      # Login password for the published UI. Leave unset to auto-generate one
+      # on first boot (shown once on the login page, then persisted to the
+      # data volume) — set it explicitly only if you need a known value.
+      - ANTON_WEB_TOKEN=${ANTON_WEB_TOKEN:-}
+      - ANTON_DASHBOARD_TOKEN=${ANTON_DASHBOARD_TOKEN:-}
+      - ANTON_SSH_HOST=${ANTON_SSH_HOST:-}
+      - ANTON_SSH_USER=${ANTON_SSH_USER:-}
+      - ANTON_SSH_KEY=${ANTON_SSH_KEY:-}
+      - ANTON_SSH_COMMAND=${ANTON_SSH_COMMAND:-}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8799/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  caddy:
+    image: caddy:2.9
+    container_name: anton-caddy
+    restart: unless-stopped
+    depends_on:
+      - anton
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?Set DOMAIN to your domain name, e.g. DOMAIN=yourdomain.com docker compose -f vps/docker-compose.yml up -d}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Cert/state persistence -- without these, every recreate re-requests
+      # a certificate from Let's Encrypt, risking their real rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  anton_data:
+  caddy_data:
+  caddy_config:

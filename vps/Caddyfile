@@ -1,0 +1,6 @@
+# Real, automatic HTTPS for a VPS install -- Caddy handles the ACME
+# challenge, certificate issuance, and renewal on its own. Nothing else to
+# configure here; that's the entire point of using Caddy for this.
+{$DOMAIN} {
+	reverse_proxy anton:3080
+}

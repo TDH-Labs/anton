@@ -114,3 +114,81 @@ class TestScheduler(unittest.TestCase):
         engine.run_job(engine.by_id("e2e-canary"))
         self.assertEqual(texe.received_timeout, 42)
 
+
+
+class TestJobsHotReload(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.jobs_path = os.path.join(self.dir.name, "jobs.yaml")
+        with open(self.jobs_path, "w") as f:
+            f.write("- id: a\n  trigger: { type: webhook }\n  recipe: r1\n")
+        init_db(os.path.join(self.dir.name, "isolation.db"))
+        cfg = load_config()
+        self.engine = JobEngine(load_jobs(self.jobs_path), Ledger(
+            os.path.join(self.dir.name, "runs.jsonl")),
+            FakeExecutor(), cfg, data_dir=self.dir.name)
+
+    def test_reload_picks_up_new_job_without_restart(self):
+        self.assertIsNone(self.engine.by_id("b"))
+        # bump mtime (some filesystems have 1s resolution)
+        import time as _t
+        _t.sleep(0.05)
+        with open(self.jobs_path, "a") as f:
+            f.write("- id: b\n  trigger: { type: webhook }\n  recipe: r2\n")
+        os.utime(self.jobs_path, (_t.time() + 2, _t.time() + 2))
+        changed = self.engine.reload_jobs_if_changed()
+        self.assertTrue(changed)
+        self.assertIsNotNone(self.engine.by_id("b"))
+
+    def test_no_reload_when_unchanged(self):
+        self.assertFalse(self.engine.reload_jobs_if_changed())
+
+
+class TestSonOfAntonPersistence(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        init_db(os.path.join(self.dir.name, "isolation.db"))
+
+    def test_mode_roundtrip_across_processes(self):
+        from anton.scheduler import get_son_of_anton_mode, set_son_of_anton_mode
+        self.assertFalse(get_son_of_anton_mode(self.dir.name))
+        set_son_of_anton_mode(self.dir.name, True)
+        # a fresh engine in a *different process* would read the same DB
+        self.assertTrue(get_son_of_anton_mode(self.dir.name))
+        set_son_of_anton_mode(self.dir.name, False)
+        self.assertFalse(get_son_of_anton_mode(self.dir.name))
+
+    def test_gated_job_runs_when_mode_persisted_true(self):
+        from anton.scheduler import set_son_of_anton_mode
+        set_son_of_anton_mode(self.dir.name, True)
+        with open(self.jobs_path if hasattr(self, "jobs_path") else
+                  os.path.join(self.dir.name, "jobs.yaml"), "w") as f:
+            f.write("- id: gated\n  trigger: { type: webhook }\n  recipe: money\n"
+                    "  gate: { money: true }\n")
+        engine = JobEngine(load_jobs(os.path.join(self.dir.name, "jobs.yaml")),
+                           Ledger(os.path.join(self.dir.name, "runs.jsonl")),
+                           FakeExecutor(), load_config(), data_dir=self.dir.name)
+        rec = engine.run_job(engine.by_id("gated"))
+        self.assertEqual(rec.exit, 0)
+
+
+class TestSonOfAntonToggleOff(unittest.TestCase):
+    def test_stale_true_resyncs_to_false(self):
+        import tempfile
+        from anton.scheduler import get_son_of_anton_mode, set_son_of_anton_mode
+        d = tempfile.TemporaryDirectory()
+        init_db(os.path.join(d.name, "isolation.db"))
+        set_son_of_anton_mode(d.name, True)
+        jp = os.path.join(d.name, "jobs.yaml")
+        with open(jp, "w") as f:
+            f.write("- id: gated\n  trigger: { type: webhook }\n  recipe: money\n"
+                    "  gate: { money: true }\n")
+        cfg = load_config()
+        eng = JobEngine(load_jobs(jp), Ledger(os.path.join(d.name, "runs.jsonl")),
+                        FakeExecutor(), cfg, data_dir=d.name)
+        self.assertEqual(eng.run_job(eng.by_id("gated")).exit, 0)   # bypass runs
+        set_son_of_anton_mode(d.name, False)
+        # engine's in-memory flag was left True by the bypass run — the next
+        # gated run must re-read the DB and block again
+        rec = eng.run_job(eng.by_id("gated"))
+        self.assertEqual(rec.exit, 5)

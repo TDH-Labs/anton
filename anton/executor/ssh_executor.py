@@ -1,6 +1,6 @@
 """Host-side executor over SSH (the n8n->SSH->Mac pattern, containerized).
 
-The container runs the control plane; the executor runs recipes on a host machine
+The container runs the harness; the executor runs recipes on a host machine
 (Mac or otherwise) that has pi/OI + credentials. Config via env:
   ANTON_SSH_HOST        e.g. 10.0.0.0 or mac-studio.local
   ANTON_SSH_USER        ssh user

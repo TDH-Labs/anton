@@ -1,0 +1,47 @@
+name: Publish Docker image
+
+# Nothing published this image before this workflow existed -- README's
+# `docker run ... ghcr.io/tdh-labs/anton:latest` pointed at nothing real
+# until a build actually runs and pushes here.
+#
+# amd64 only for now, deliberately: this image is large (Chromium + Node +
+# Python, ~5GB) and an arm64 build under QEMU emulation on a GitHub-hosted
+# runner would be slow and a fragile place to debug a first release. Get a
+# working, reliably-published amd64 image first; add arm64 as a real,
+# separate follow-up once this pipeline is proven, not bundled into the
+# same first attempt.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/tdh-labs/anton:latest
+            ghcr.io/tdh-labs/anton:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

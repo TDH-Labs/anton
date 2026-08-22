@@ -21,6 +21,13 @@ class Job:
     dry_run: bool = False
     gate: Optional[dict] = None
     cron: Optional[Cron] = None
+    # Overrides JobEngine's default executor for just this job, e.g.
+    # {name: opencode, mcp_profile: quickbooks} to dispatch through
+    # OpenCodeExecutor with @playwright/mcp attached to a stored-login
+    # session's persistent profile (browser_login.py). None means "use the
+    # engine's default executor," the only behavior that existed before this
+    # field -- everything else is opt-in.
+    executor: Optional[dict] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Job":
@@ -39,6 +46,7 @@ class Job:
             dry_run=bool(d.get("dry_run", False)),
             gate=d.get("gate"),
             cron=cron,
+            executor=d.get("executor"),
         )
 
     def next_fire(self, now):

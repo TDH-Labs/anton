@@ -1,0 +1,43 @@
+# Python side (harbor-sas root)
+__pycache__/
+*.pyc
+.venv/
+.dev-data/
+.demo-data/
+.anton_backups/
+.pytest_cache/
+*.egg-info/
+.git/
+*.db
+
+# anton-studio (Node side) — kept in the build context for the node-build
+# stage, but its own build output/dependency caches are regenerated inside
+# that stage, not reused from the host. anton-studio/.git/ stays IN the
+# context: scripts/build.ts shells out to `git rev-parse HEAD` to stamp the
+# build revision, so the node-build stage needs a real .git to read.
+anton-studio/node_modules/
+anton-studio/**/node_modules/
+anton-studio/**/lib/
+anton-studio/**/dist/
+anton-studio/**/coverage/
+anton-studio/.pnpm-store/
+anton-studio/**/*.tsbuildinfo
+
+# Local-only artifacts that must never enter the image
+secrets.yaml
+*.cast
+*.mp4
+notes/
+assets/
+docs/
+tests/
+umbrel/
+vps/
+packaging/
+install.sh
+.DS_Store
+.env*
+.opencode/
+.playwright-mcp/
+.swarm/
+.github/

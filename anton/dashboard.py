@@ -1,7 +1,8 @@
-"""FastAPI control plane dashboard + approvals API for Anton (M4)."""
+"""FastAPI agent dashboard + approvals API for Anton (M4)."""
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import secrets
 from typing import List, Optional
@@ -11,671 +12,75 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 
 from .canary import compute_tripwires
 from .digest import build_digest
-from .scheduler import JobEngine
+from .models import RunRecord
+from .ops_api import open_isolation_db, register_ops_routes
+from .ops_schema import ensure_ops_schema, ensure_vault_ops_schema
+from .routes import select_route
+from .scheduler import JobEngine, get_son_of_anton_mode, set_son_of_anton_mode
 
-PAGE = r"""<!doctype html>
-<html lang="en" data-theme="system">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ANTON — Autonomous Workbench</title>
-<link rel="icon" type="image/jpeg" href="/api/logo">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" data-name="vs/editor/editor.main" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/editor/editor.main.min.css">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://unpkg.com/3d-force-graph"></script>
+# This port (8799) is never published in the real Docker deployment -- the
+# Ops Center at :3080 (auth-gate -> dsh web) is the actual product surface a
+# customer uses. This used to serve a full standalone chat-UI prototype
+# seeded with fabricated demo content (a fake approval gate, fake tool-call
+# output, a fake award-campaign artifact) and backed by a keyword-matching
+# /api/chat stub, not a real model. Removed: a fake "AI chat" that returns
+# canned text indistinguishable from a real response is a trust problem, not
+# a placeholder, and this page was never real functionality to begin with.
+# What's left below is a minimal, honest landing page for anyone who reaches
+# this port directly (e.g. running natively without Docker) -- the real
+# routes this file serves (/api/wizard/*, /api/logo, /api/approvals, etc.)
+# are unaffected.
+PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Anton</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500&family=Barlow+Condensed:wght@600&display=swap" rel="stylesheet">
 <style>
-/* === THEME VARIABLES === */
-:root {
-  --primary:#38bdf8; --primary-hover:#0284c7; --accent:#818cf8;
-  --success:#10b981; --warning:#f59e0b; --danger:#ef4444; --purple:#c084fc;
-  --font-sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-  --font-mono:'JetBrains Mono',ui-monospace,Menlo,monospace;
-}
-/* Light (default for system) */
-[data-theme="light"],[data-theme="system"]{
-  --bg-app:#f8fafc; --bg-sidebar:#f1f5f9; --bg-surface:#fff; --bg-card:#fff;
-  --bg-card-hover:#f1f5f9; --bg-input:#fff; --border:#e2e8f0;
-  --border-focus:#38bdf8; --text-main:#0f172a; --text-muted:#475569;
-  --text-dim:#94a3b8; --shadow-sm:0 1px 3px rgba(0,0,0,.06);
-  --shadow-lg:0 12px 32px rgba(0,0,0,.08); --code-bg:#f1f5f9;
-}
-@media(prefers-color-scheme:dark){
-  [data-theme="system"]{
-    --bg-app:#090b10; --bg-sidebar:#0e1117; --bg-surface:#131620;
-    --bg-card:#181c28; --bg-card-hover:#202636; --bg-input:#141722;
-    --border:rgba(255,255,255,.08); --border-focus:rgba(56,189,248,.5);
-    --text-main:#f8fafc; --text-muted:#94a3b8; --text-dim:#64748b;
-    --shadow-sm:0 1px 3px rgba(0,0,0,.4); --shadow-lg:0 16px 48px rgba(0,0,0,.6);
-    --code-bg:#0c0e14;
+  body {
+    font-family: 'Barlow', system-ui, sans-serif; background: #f2f2f3; color: #1d1f20;
+    max-width: 460px; margin: 16vh auto 0; padding: 0 20px;
   }
-}
-[data-theme="dark"]{
-  --bg-app:#090b10; --bg-sidebar:#0e1117; --bg-surface:#131620;
-  --bg-card:#181c28; --bg-card-hover:#202636; --bg-input:#141722;
-  --border:rgba(255,255,255,.08); --border-focus:rgba(56,189,248,.5);
-  --text-main:#f8fafc; --text-muted:#94a3b8; --text-dim:#64748b;
-  --shadow-sm:0 1px 3px rgba(0,0,0,.4); --shadow-lg:0 16px 48px rgba(0,0,0,.6);
-  --code-bg:#0c0e14;
-}
-
-/* === RESET & BODY === */
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--font-sans);background:var(--bg-app);color:var(--text-main);
-  height:100vh;overflow:hidden;display:flex;flex-direction:column;
-  transition:background .2s,color .2s}
-
-/* === TOP BAR (48px) === */
-.top-bar{height:48px;background:var(--bg-sidebar);border-bottom:1px solid var(--border);
-  display:flex;align-items:center;justify-content:space-between;padding:0 14px;
-  flex-shrink:0;z-index:100}
-.brand-group{display:flex;align-items:center;gap:10px;cursor:pointer}
-.brand-logo{width:28px;height:28px;border-radius:6px;object-fit:cover;
-  border:1px solid var(--border);box-shadow:var(--shadow-sm)}
-.brand-name{font-size:.92rem;font-weight:800;letter-spacing:-.02em}
-.breadcrumb{font-size:.72rem;color:var(--text-dim);font-family:var(--font-mono)}
-.top-actions{display:flex;align-items:center;gap:10px}
-.son-toggle{display:flex;align-items:center;gap:6px;padding:4px 12px;
-  background:var(--bg-card);border:1px solid var(--border);border-radius:20px;
-  cursor:pointer;font-size:.68rem;font-weight:800;text-transform:uppercase;
-  color:var(--text-muted);transition:all .2s}
-.son-toggle:hover{border-color:var(--border-focus)}
-.son-toggle.active{background:rgba(245,158,11,.15);border-color:rgba(245,158,11,.6);
-  color:#fbbf24;box-shadow:0 0 14px rgba(245,158,11,.25)}
-.son-dot{width:7px;height:7px;border-radius:50%;background:var(--text-dim)}
-.son-toggle.active .son-dot{background:#fbbf24;box-shadow:0 0 8px #fbbf24}
-.icon-btn{background:var(--bg-card);border:1px solid var(--border);color:var(--text-muted);
-  padding:5px 10px;border-radius:8px;cursor:pointer;font-size:.8rem;font-weight:600;
-  display:flex;align-items:center;gap:6px;transition:all .15s}
-.icon-btn:hover{background:var(--bg-card-hover);color:var(--text-main)}
-.status-dot{width:6px;height:6px;border-radius:50%;background:var(--success);
-  box-shadow:0 0 6px var(--success)}
-
-/* === WORKBENCH (flex:1, horizontal 3-panel) === */
-.workbench{flex:1;display:flex;overflow:hidden}
-
-/* === LEFT SIDEBAR (260px → 48px icon rail) === */
-.left-sidebar{width:260px;background:var(--bg-sidebar);border-right:1px solid var(--border);
-  display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;
-  transition:width .25s cubic-bezier(.16,1,.3,1)}
-.left-sidebar.collapsed{width:48px}
-.sidebar-top{display:flex;align-items:center;justify-content:space-between;
-  padding:10px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
-.sidebar-title{font-size:.7rem;font-weight:800;text-transform:uppercase;
-  color:var(--text-dim);letter-spacing:.04em;white-space:nowrap;overflow:hidden}
-.left-sidebar.collapsed .sidebar-title{display:none}
-.sidebar-collapse-btn{background:none;border:none;color:var(--text-dim);cursor:pointer;
-  font-size:.85rem;padding:4px;border-radius:4px;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;width:24px;height:24px}
-.sidebar-collapse-btn:hover{background:var(--bg-card-hover);color:var(--text-main)}
-.sidebar-body{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px}
-.left-sidebar.collapsed .sidebar-body{display:none}
-.tree-section{font-size:.68rem;font-weight:700;color:var(--text-dim);
-  text-transform:uppercase;padding:10px 6px 4px 6px;white-space:nowrap}
-.tree-node{display:flex;align-items:center;justify-content:space-between;
-  padding:6px 8px;border-radius:6px;font-size:.78rem;cursor:pointer;
-  color:var(--text-muted);transition:all .12s;user-select:none;white-space:nowrap}
-.tree-node:hover{background:var(--bg-card-hover);color:var(--text-main)}
-.tree-node.active{background:var(--bg-card);color:var(--primary);font-weight:600}
-.tree-pill{font-size:.62rem;font-family:var(--font-mono);padding:1px 5px;
-  border-radius:4px;background:rgba(0,0,0,.06)}
-
-/* === CENTER WORKSPACE (flex:1, vertical column) === */
-.center-ws{flex:1;min-width:0;display:flex;flex-direction:column;
-  background:var(--bg-app);overflow:hidden}
-
-/* Messages scroll area — takes all available vertical space */
-.msg-scroll{flex:1;overflow-y:auto;overflow-x:hidden;display:flex;
-  flex-direction:column;padding:0}
-/* When empty, center the hero via inner wrapper */
-.msg-inner{display:flex;flex-direction:column;min-height:100%;padding:20px 28px 20px 28px}
-
-/* Zero-state hero — centered in available space */
-.zero-state{flex:1;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;text-align:center;gap:8px;padding-bottom:40px}
-.zero-state.hidden{display:none}
-.hero-logo{width:72px;height:72px;border-radius:16px;object-fit:cover;
-  border:1px solid var(--border);box-shadow:var(--shadow-lg);margin-bottom:8px}
-.hero-title{font-size:1.3rem;font-weight:800;letter-spacing:-.02em}
-.hero-sub{font-size:.82rem;color:var(--text-muted)}
-.hero-chips{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:16px}
-.chip{padding:6px 12px;background:var(--bg-surface);border:1px solid var(--border);
-  border-radius:20px;font-size:.72rem;color:var(--text-muted);cursor:pointer;
-  transition:all .15s}
-.chip:hover{background:var(--bg-card-hover);border-color:var(--border-focus);
-  color:var(--text-main)}
-
-/* Conversation cards (messages, tool cards, approval cards) */
-.msg-card{padding:12px 16px;border:1px solid var(--border);border-radius:10px;
-  font-size:.85rem;margin-bottom:12px}
-.msg-card.user{background:var(--bg-card)}
-.msg-card.agent{background:var(--bg-surface)}
-.msg-sender{font-weight:700;margin-bottom:3px}
-.msg-sender.user-name{color:var(--primary)}
-.msg-sender.agent-name{color:var(--purple)}
-.tool-card{background:var(--bg-surface);border:1px solid var(--border);
-  border-radius:8px;overflow:hidden;font-size:.75rem;box-shadow:var(--shadow-sm);
-  margin-bottom:12px}
-.tool-card-hdr{padding:8px 12px;background:var(--bg-card);cursor:pointer;
-  display:flex;align-items:center;justify-content:space-between;font-weight:600;
-  user-select:none}
-.tool-card-hdr:hover{background:var(--bg-card-hover)}
-.tool-badge{font-size:.62rem;font-family:var(--font-mono);padding:2px 6px;
-  border-radius:4px}
-.tool-card-body{padding:12px;font-family:var(--font-mono);font-size:.72rem;
-  background:var(--code-bg);color:var(--text-muted);display:none;line-height:1.6;
-  border-top:1px solid var(--border)}
-.decision-card{background:var(--bg-surface);border:1px solid rgba(245,158,11,.5);
-  box-shadow:var(--shadow-sm);border-radius:10px;padding:14px;margin-bottom:12px}
-.btn-approve{background:var(--success);color:#fff;font-weight:700;font-size:.75rem;
-  padding:8px 14px;border-radius:6px;border:none;cursor:pointer;flex:1}
-.btn-approve:hover{background:#059669}
-.btn-deny{background:rgba(239,68,68,.12);color:#ef4444;font-weight:700;font-size:.75rem;
-  padding:8px 14px;border-radius:6px;border:1px solid rgba(239,68,68,.25);
-  cursor:pointer;flex:1}
-.btn-deny:hover{background:rgba(239,68,68,.2)}
-.inspect-link{color:var(--primary);text-decoration:underline;cursor:pointer;
-  font-size:.75rem;margin-top:6px;display:inline-block}
-
-/* Prompt input bar — PINNED TO BOTTOM via flex-shrink:0, NOT position:absolute */
-.prompt-bar{flex-shrink:0;padding:12px 28px 16px 28px;background:var(--bg-app);
-  border-top:1px solid var(--border)}
-.prompt-box{background:var(--bg-surface);border:1px solid var(--border);
-  border-radius:14px;padding:12px 16px;display:flex;flex-direction:column;gap:8px;
-  box-shadow:var(--shadow-sm);transition:border-color .2s,box-shadow .2s}
-.prompt-box:focus-within{border-color:var(--border-focus);
-  box-shadow:0 0 16px rgba(56,189,248,.15)}
-.prompt-textarea{background:transparent;border:none;outline:none;color:var(--text-main);
-  font-family:var(--font-sans);font-size:.9rem;resize:none;min-height:44px;
-  max-height:140px;line-height:1.5}
-.prompt-textarea::placeholder{color:var(--text-dim)}
-.prompt-footer{display:flex;justify-content:space-between;align-items:center}
-.model-badge{font-size:.68rem;font-family:var(--font-mono);color:var(--text-dim);
-  background:var(--bg-card);padding:2px 8px;border-radius:10px;
-  border:1px solid var(--border)}
-.run-btn{background:var(--primary);color:#082f49;font-weight:700;font-size:.75rem;
-  padding:5px 14px;border-radius:6px;border:none;cursor:pointer}
-.run-btn:hover{background:var(--primary-hover)}
-
-/* === RIGHT VIEWER (width:0 → 50%, animated) === */
-.right-viewer{width:0;background:var(--bg-surface);border-left:1px solid var(--border);
-  display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;
-  transition:width .3s cubic-bezier(.16,1,.3,1)}
-.right-viewer.open{width:50%}
-.viewer-header{display:flex;align-items:center;height:38px;background:var(--bg-sidebar);
-  border-bottom:1px solid var(--border);flex-shrink:0;overflow-x:auto}
-.viewer-tabs{display:flex;align-items:center;flex:1;overflow-x:auto;height:100%}
-.tab{display:flex;align-items:center;gap:8px;padding:0 12px;height:100%;
-  font-size:.78rem;color:var(--text-muted);border-right:1px solid var(--border);
-  cursor:pointer;background:var(--bg-sidebar);user-select:none;white-space:nowrap}
-.tab:hover{background:var(--bg-card-hover);color:var(--text-main)}
-.tab.active{background:var(--bg-surface);color:var(--text-main);font-weight:600;
-  border-bottom:2px solid var(--primary)}
-.tab-x{font-size:.72rem;color:var(--text-dim);border-radius:4px;padding:2px 4px;
-  cursor:pointer}
-.tab-x:hover{background:rgba(239,68,68,.15);color:#ef4444}
-.viewer-close{background:none;border:none;font-size:.9rem;color:var(--text-dim);
-  cursor:pointer;padding:4px 10px;flex-shrink:0}
-.viewer-close:hover{color:var(--text-main)}
-.viewer-body{flex:1;position:relative;overflow:hidden}
-#monaco-box{width:100%;height:100%;display:none}
-#md-box{width:100%;height:100%;overflow-y:auto;padding:24px 32px;display:none}
-#graph-box{width:100%;height:100%;display:none;background:#0c0e14}
-.md-view h1,.md-view h2,.md-view h3{color:var(--text-main);margin:18px 0 10px 0}
-.md-view p{color:var(--text-muted);line-height:1.7;margin-bottom:12px;font-size:.88rem}
-.md-view table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.8rem}
-.md-view th,.md-view td{border:1px solid var(--border);padding:8px 12px;text-align:left}
-.md-view pre{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;
-  padding:12px;overflow-x:auto;margin:12px 0}
-.md-view code{font-family:var(--font-mono);color:var(--primary);font-size:.8rem}
-
-/* === STATUS BAR (28px) === */
-.status-bar{height:28px;background:var(--bg-sidebar);border-top:1px solid var(--border);
-  display:flex;align-items:center;justify-content:space-between;padding:0 14px;
-  font-size:.68rem;font-family:var(--font-mono);color:var(--text-dim);flex-shrink:0}
-.status-left,.status-right{display:flex;align-items:center;gap:14px}
-
-/* === SETTINGS MODAL === */
-.modal-bg{position:fixed;top:0;left:0;width:100vw;height:100vh;
-  background:rgba(0,0,0,.6);backdrop-filter:blur(4px);
-  display:none;align-items:center;justify-content:center;z-index:500}
-.modal-box{background:var(--bg-surface);border:1px solid var(--border);
-  box-shadow:var(--shadow-lg);border-radius:14px;padding:24px;max-width:520px;width:90%}
-.modal-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
-.modal-title{font-size:1.1rem;font-weight:700;color:var(--text-main)}
-.modal-close{background:transparent;border:none;font-size:1.2rem;color:var(--text-dim);
-  cursor:pointer}
-.settings-group{margin-bottom:16px}
-.settings-label{font-size:.8rem;font-weight:600;margin-bottom:6px;color:var(--text-main)}
-.s-select,.s-input{width:100%;padding:8px 12px;background:var(--bg-input);
-  border:1px solid var(--border);border-radius:8px;color:var(--text-main);
-  font-size:.85rem;outline:none}
-.toast{position:fixed;bottom:45px;right:24px;background:var(--bg-surface);
-  border:1px solid var(--border);box-shadow:var(--shadow-lg);padding:10px 16px;
-  border-radius:8px;font-size:.78rem;font-weight:600;display:none;z-index:600}
-</style>
-</head>
+  h1 { font-family: 'Barlow Condensed', system-ui, sans-serif; font-weight: 600; font-size: 30px; margin: 0 0 10px; }
+  p { color: rgba(29,31,32,.65); font-size: 14px; line-height: 1.6; }
+  code { font-family: ui-monospace, Menlo, monospace; background: #e9e9ea; padding: .1em .4em; }
+</style></head>
 <body>
+  <h1>Anton</h1>
+  <p>This is the internal API server (port 8799) -- not the Ops Center. If you're
+  looking for the app itself, that's served on port 3080.</p>
+  <p>Real routes on this server: <code>/api/wizard/*</code>, <code>/api/approvals</code>,
+  <code>/api/ledger</code>, <code>/api/canary</code>, and the others the Ops Center
+  UI calls directly.</p>
+</body></html>"""
 
-<!-- ===== TOP BAR ===== -->
-<div class="top-bar">
-  <div class="brand-group" onclick="goHome()">
-    <img src="/api/logo" id="top-logo" class="brand-logo" alt="Logo">
-    <span class="brand-name" id="top-name">ANTON</span>
-    <span class="breadcrumb">workspace / devops / vault</span>
-  </div>
-  <div class="top-actions">
-    <button class="son-toggle" id="son-btn" onclick="toggleSonMode()">
-      <span class="son-dot"></span>
-      <span id="son-label">SON OF ANTON [OFF]</span>
-    </button>
-    <button class="icon-btn" onclick="openSettings()">⚙ Settings</button>
-    <div style="display:flex;align-items:center;gap:6px;font-size:.75rem;font-weight:700;color:var(--success);margin-left:4px">
-      <span class="status-dot"></span>ONLINE
-    </div>
-  </div>
-</div>
 
-<!-- ===== WORKBENCH (3-panel flex row) ===== -->
-<div class="workbench">
-
-  <!-- LEFT SIDEBAR (260px → 48px) -->
-  <div class="left-sidebar" id="left-sb">
-    <div class="sidebar-top">
-      <span class="sidebar-title">Knowledge & Code</span>
-      <button class="sidebar-collapse-btn" id="sb-toggle" onclick="toggleSidebar()" title="⌘B">◀</button>
-    </div>
-    <div class="sidebar-body">
-      <div class="tree-section">⚡ Python Verify Gates</div>
-      <div class="tree-node" onclick="openInViewer('scripts/verify_balance.py')">
-        <span>🐍 verify_balance.py</span><span class="tree-pill">0-LLM</span>
-      </div>
-      <div class="tree-node" onclick="openInViewer('anton/scheduler.py')">
-        <span>🐍 scheduler.py</span><span class="tree-pill">ENGINE</span>
-      </div>
-      <div class="tree-section">🧠 100x Learned Skills</div>
-      <div class="tree-node" onclick="openInViewer('skills/100x-desktop-ide-designer')">
-        <span>✦ 100x-desktop-ide</span><span class="tree-pill">0.98</span>
-      </div>
-      <div class="tree-node" onclick="openInViewer('skills/100x-gtm-strategist')">
-        <span>✦ 100x-gtm-strategist</span><span class="tree-pill">0.98</span>
-      </div>
-      <div class="tree-node" onclick="openInViewer('skills/100x-pr-publicity-specialist')">
-        <span>✦ 100x-pr-publicity</span><span class="tree-pill">0.96</span>
-      </div>
-      <div class="tree-section">📑 Strategy Artifacts</div>
-      <div class="tree-node" onclick="openInViewer('strategy/award-marketing-plan')">
-        <span>📄 award-marketing-plan</span><span class="tree-pill">MD</span>
-      </div>
-      <div class="tree-node" onclick="openInViewer('strategy/content-calendar')">
-        <span>📅 content-calendar</span><span class="tree-pill">MD</span>
-      </div>
-      <div class="tree-node" onclick="openInViewer('strategy/pr-outreach-list')">
-        <span>📰 pr-outreach-list</span><span class="tree-pill">MD</span>
-      </div>
-      <div class="tree-section">🌌 Spatial Views</div>
-      <div class="tree-node" onclick="openGraphViewer()">
-        <span>🪐 3D Neural Second Brain</span><span class="tree-pill">GRAPH</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- CENTER WORKSPACE -->
-  <div class="center-ws">
-    <!-- Scrollable message area -->
-    <div class="msg-scroll" id="msg-scroll">
-      <div class="msg-inner" id="msg-inner">
-
-        <!-- Zero-state hero (visible when no messages) -->
-        <div class="zero-state" id="zero-state">
-          <img src="/api/logo" id="hero-logo" class="hero-logo" alt="Logo">
-          <div class="hero-title" id="hero-title">What would you like Anton to do?</div>
-          <div class="hero-sub" id="hero-sub">Autonomous Coworker with Deterministic Gates &amp; Second Brain Memory</div>
-          <div class="hero-chips">
-            <div class="chip" onclick="useChip('Reconcile Stripe payouts and QuickBooks ledger with $0.00 hard gate')">⚡ Reconcile Stripe & QBO</div>
-            <div class="chip" onclick="useChip('Synthesize GTM launch plan and 2-week content calendar for SaaS award')">🏆 SaaS Award GTM Campaign</div>
-            <div class="chip" onclick="useChip('Inspect 100x desktop IDE designer skill protocol')">🧠 100x Desktop IDE Skill</div>
-          </div>
-        </div>
-
-        <!-- Messages stream (appended dynamically) -->
-        <div id="msg-stream"></div>
-      </div>
-    </div>
-
-    <!-- Prompt bar — PINNED TO BOTTOM (flex-shrink:0, NOT absolute) -->
-    <div class="prompt-bar">
-      <div class="prompt-box">
-        <textarea id="prompt-input" class="prompt-textarea" rows="1"
-          placeholder="Ask Anton anything, run a workflow, or search the Second Brain..."></textarea>
-        <div class="prompt-footer">
-          <span class="model-badge">Local [REDACTED-LOCAL-INFERENCE] → Cloud Fallback</span>
-          <button class="run-btn" onclick="submitPrompt()">Run ↵</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- RIGHT VIEWER (width:0 → 50%) -->
-  <div class="right-viewer" id="right-viewer">
-    <div class="viewer-header">
-      <div class="viewer-tabs" id="vtab-bar"></div>
-      <button class="viewer-close" onclick="closeViewer()" title="Esc">✕</button>
-    </div>
-    <div class="viewer-body">
-      <div id="monaco-box"></div>
-      <div id="md-box" class="md-view"></div>
-      <div id="graph-box"></div>
-    </div>
-  </div>
-</div>
-
-<!-- ===== STATUS BAR ===== -->
-<div class="status-bar">
-  <div class="status-left">
-    <span>🌿 main</span>
-    <span>⚡ Gates: Fail-Closed</span>
-    <span id="mode-status">Mode: Safe Standard</span>
-  </div>
-  <div class="status-right">
-    <span>Theme: <span id="theme-label">System</span></span>
-    <span>Budget: $0.042 / $5.00</span>
-    <span id="clock">UTC --:--:--</span>
-  </div>
-</div>
-
-<!-- ===== SETTINGS MODAL ===== -->
-<div class="modal-bg" id="settings-modal">
-  <div class="modal-box">
-    <div class="modal-hdr">
-      <div class="modal-title">⚙ Anton Settings</div>
-      <button class="modal-close" onclick="closeSettings()">✕</button>
-    </div>
-    <div class="settings-group">
-      <div class="settings-label">Theme Appearance</div>
-      <select id="theme-sel" class="s-select" onchange="setTheme(this.value)">
-        <option value="system">🖥 System Default</option>
-        <option value="light">☀ Light Mode</option>
-        <option value="dark">🌙 Dark Mode</option>
-      </select>
-    </div>
-    <div class="settings-group">
-      <div class="settings-label">LLM Provider Keys</div>
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <select id="prov-sel" class="s-select" style="flex:1">
-          <option value="openrouter">OpenRouter</option>
-          <option value="anthropic">Anthropic</option>
-          <option value="openai">OpenAI</option>
-          <option value="ollama">Local Ollama</option>
-        </select>
-        <input type="password" id="prov-key" class="s-input" placeholder="API Key…" style="flex:1.5">
-      </div>
-      <button onclick="saveKey()" class="btn-approve" style="padding:7px;width:100%">Save Key</button>
-    </div>
-    <div style="display:flex;justify-content:flex-end;margin-top:20px">
-      <button class="btn-approve" onclick="closeSettings()" style="flex:none;padding:8px 18px">Done</button>
-    </div>
-  </div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<!-- ===== SCRIPTS ===== -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
-<script>
-const $=id=>document.getElementById(id);
-let editor=null, sonMode=false, hasMessages=false;
-let tabs=[], activeTab=null;
-
-/* --- Utility --- */
-function toast(msg,type){const t=$('toast');t.textContent=msg;t.style.display='block';
-  t.style.borderColor=type==='success'?'#10b981':type==='error'?'#ef4444':'#f59e0b';
-  setTimeout(()=>t.style.display='none',3000)}
-function tick(){$('clock').textContent='UTC '+new Date().toISOString().slice(11,19)}
-setInterval(tick,1000);tick();
-
-/* --- Theme --- */
-function initTheme(){setTheme(localStorage.getItem('anton_theme')||'system',false)}
-function setTheme(t,save){
-  document.documentElement.setAttribute('data-theme',t);
-  $('theme-label').textContent=t[0].toUpperCase()+t.slice(1);
-  if($('theme-sel'))$('theme-sel').value=t;
-  if(save!==false)localStorage.setItem('anton_theme',t);
-  if(editor){const dk=t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches);
-    monaco.editor.setTheme(dk?'vs-dark':'vs')}
+# Known OAuth authorize-URL templates, keyed by provider id. Extending to a
+# new service means adding an entry here (and the operator registering a
+# real OAuth app for it in config.yaml's oauth.<provider>.client_id) -- not
+# hardcoding a new single-provider flow the way this used to work.
+OAUTH_AUTHORIZE_URLS: dict = {
+    "google": ("https://accounts.google.com/o/oauth2/v2/auth", "email"),
+    "quickbooks": ("https://appcenter.intuit.com/connect/oauth2", "com.intuit.quickbooks.accounting"),
+    "slack": ("https://slack.com/oauth/v2/authorize", "channels:read"),
+    "github": ("https://github.com/login/oauth/authorize", "repo"),
 }
 
-/* --- Sidebar --- */
-let sbOpen=true;
-function toggleSidebar(){
-  const sb=$('left-sb'),btn=$('sb-toggle');
-  sbOpen=!sbOpen;
-  sb.classList.toggle('collapsed',!sbOpen);
-  btn.textContent=sbOpen?'◀':'▶';
-}
 
-/* --- Monaco --- */
-require.config({paths:{'vs':'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs'}});
-require(['vs/editor/editor.main'],function(){
-  const dk=document.documentElement.getAttribute('data-theme')==='dark'||
-    (document.documentElement.getAttribute('data-theme')==='system'&&matchMedia('(prefers-color-scheme:dark)').matches);
-  editor=monaco.editor.create($('monaco-box'),{
-    value:'',language:'python',theme:dk?'vs-dark':'vs',automaticLayout:true,
-    fontSize:13,fontFamily:'JetBrains Mono,Menlo,monospace',
-    minimap:{enabled:false},lineNumbers:'on',renderLineHighlight:'all',
-    scrollBeyondLastLine:false
-  });
-});
-
-/* --- Zero State --- */
-function hideZeroState(){
-  const z=$('zero-state');
-  if(z)z.classList.add('hidden');
-  hasMessages=true;
-}
-
-/* --- Right Viewer --- */
-function showViewer(){$('right-viewer').classList.add('open')}
-function closeViewer(){$('right-viewer').classList.remove('open')}
-
-function renderTabs(){
-  const bar=$('vtab-bar');
-  if(!tabs.length){bar.innerHTML='';closeViewer();return}
-  bar.innerHTML=tabs.map(t=>`<div class="tab ${t.id===activeTab?'active':''}"
-    onclick="switchTab('${t.id}')"><span>${t.title}</span>
-    <span class="tab-x" onclick="closeTab('${t.id}',event)">✕</span></div>`).join('');
-  const at=tabs.find(t=>t.id===activeTab);
-  if(at)showBuffer(at.type,at.content);
-}
-
-function showBuffer(type,content){
-  $('monaco-box').style.display='none';
-  $('md-box').style.display='none';
-  $('graph-box').style.display='none';
-  if(type==='code'){$('monaco-box').style.display='block';
-    if(editor){editor.setValue(content||'');editor.layout()}}
-  else if(type==='markdown'){$('md-box').style.display='block';
-    $('md-box').innerHTML=marked.parse(content||'')}
-  else if(type==='graph'){$('graph-box').style.display='block';loadGraph()}
-}
-
-async function openInViewer(path){
-  showViewer();
-  const bn=path.split('/').pop();
-  if(tabs.find(t=>t.id===path)){activeTab=path;renderTabs();return}
-  try{
-    const r=await fetch('/api/vault/note?path='+encodeURIComponent(path));
-    const d=await r.json();
-    const isCode=d.is_code||path.endsWith('.py');
-    tabs.push({id:path,title:bn,type:isCode?'code':'markdown',content:d.content||''});
-    activeTab=path;renderTabs();
-  }catch(e){toast('Failed to open: '+e.message,'error')}
-}
-
-function openGraphViewer(){
-  showViewer();
-  if(tabs.find(t=>t.id==='3d-graph')){activeTab='3d-graph';renderTabs();return}
-  tabs.push({id:'3d-graph',title:'🪐 3D Brain',type:'graph',content:''});
-  activeTab='3d-graph';renderTabs();
-}
-
-function switchTab(id){activeTab=id;renderTabs()}
-function closeTab(id,ev){
-  if(ev)ev.stopPropagation();
-  const i=tabs.findIndex(t=>t.id===id);if(i<0)return;
-  tabs.splice(i,1);
-  if(activeTab===id){
-    if(tabs.length)activeTab=tabs[Math.max(0,i-1)].id;
-    else{activeTab=null;closeViewer()}
-  }
-  renderTabs();
-}
-
-let graphDone=false;
-function loadGraph(){if(graphDone)return;graphDone=true;
-  fetch('/api/vault/graph').then(r=>r.json()).then(d=>{
-    ForceGraph3D()($('graph-box')).graphData(d).nodeLabel('title')
-      .nodeColor(n=>n.type==='moc'?'#c084fc':n.type==='skill'?'#10b981':'#38bdf8')
-      .nodeVal('val').linkWidth(1.2).onNodeClick(n=>openInViewer(n.id));
-  });
-}
-
-/* --- Prompt & Chat --- */
-function useChip(t){$('prompt-input').value=t;submitPrompt()}
-
-async function submitPrompt(){
-  const inp=$('prompt-input'),q=inp.value.trim();if(!q)return;
-  hideZeroState();inp.value='';
-  const stream=$('msg-stream');
-  stream.innerHTML+=`<div class="msg-card user"><div class="msg-sender user-name">You</div><div>${q}</div></div>`;
-  try{
-    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({prompt:q})});
-    const d=await r.json();
-    stream.innerHTML+=`<div class="msg-card agent"><div class="msg-sender agent-name">⚡ Anton</div>
-      <div>${d.reply}</div>${d.note_path?`<a class="inspect-link" onclick="openInViewer('${d.note_path}')">Inspect ${d.note_path} →</a>`:''}</div>`;
-    if(d.note_path)openInViewer(d.note_path);
-    $('msg-scroll').scrollTop=$('msg-scroll').scrollHeight;
-  }catch(e){toast('Error: '+e.message,'error')}
-}
-
-$('prompt-input').addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();submitPrompt()}});
-
-/* Auto-resize textarea */
-$('prompt-input').addEventListener('input',function(){
-  this.style.height='auto';this.style.height=Math.min(this.scrollHeight,140)+'px'});
-
-function toggleToolCard(id){const el=$(id);el.style.display=el.style.display==='block'?'none':'block'}
-
-/* --- Son of Anton Mode --- */
-function updateSonUI(){
-  const btn=$('son-btn'),lbl=$('son-label'),st=$('mode-status');
-  const tl=$('top-logo'),hl=$('hero-logo'),tn=$('top-name');
-  const ht=$('hero-title'),hs=$('hero-sub');
-  if(sonMode){
-    btn.classList.add('active');lbl.textContent='SON OF ANTON [ACTIVE]';
-    st.textContent='Mode: Son of Anton (Overdrive)';st.style.color='#fbbf24';
-    if(tl)tl.src='/api/logo/son-of-anton';if(hl)hl.src='/api/logo/son-of-anton';
-    if(tn)tn.textContent='SON OF ANTON';
-    if(ht)ht.textContent='What should Son of Anton execute?';
-    if(hs)hs.textContent='Autonomous Overdrive · Zero Human Gate Delays';
-  }else{
-    btn.classList.remove('active');lbl.textContent='SON OF ANTON [OFF]';
-    st.textContent='Mode: Safe Standard';st.style.color='var(--text-dim)';
-    if(tl)tl.src='/api/logo';if(hl)hl.src='/api/logo';
-    if(tn)tn.textContent='ANTON';
-    if(ht)ht.textContent='What would you like Anton to do?';
-    if(hs)hs.textContent='Autonomous Coworker with Deterministic Gates & Second Brain Memory';
-  }
-}
-async function checkMode(){try{const r=await fetch('/api/mode');const d=await r.json();
-  sonMode=!!d.son_of_anton_mode;updateSonUI()}catch(e){}}
-async function toggleSonMode(){
-  const next=!sonMode;
-  try{const r=await fetch('/api/mode/son-of-anton',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({son_of_anton_mode:next})});
-    if(r.ok){sonMode=next;updateSonUI();toast(sonMode?'Son of Anton ENGAGED':'Safe Mode Restored',sonMode?'warning':'success')}
-  }catch(e){toast('Toggle failed','error')}
-}
-
-/* --- Approvals --- */
-async function resolveApproval(aid,dec){
-  try{const r=await fetch('/api/approvals/'+aid+'/resolve',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({decision:dec})});
-    if(r.ok){toast('Gate #'+aid+' '+dec.toUpperCase(),'success');
-      const b=$('decision-box');if(b)b.innerHTML='<div style="padding:10px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:8px;font-size:.75rem;color:#34d399;text-align:center">✓ Resolved ('+dec.toUpperCase()+')</div>'}
-  }catch(e){toast(e.message,'error')}
-}
-
-/* --- Home Reset --- */
-function goHome(){
-  $('zero-state').classList.remove('hidden');
-  $('msg-stream').innerHTML='';hasMessages=false;closeViewer();
-  $('prompt-input').focus();
-}
-
-/* --- Settings --- */
-function openSettings(){$('settings-modal').style.display='flex'}
-function closeSettings(){$('settings-modal').style.display='none'}
-async function saveKey(){
-  const p=$('prov-sel').value,k=$('prov-key').value;
-  if(!k)return toast('Enter a key','error');
-  const r=await fetch('/api/wizard/providers',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:p,key:k})});
-  if(r.ok){toast('Saved '+p+' key','success');$('prov-key').value=''}
-}
-
-/* --- Keyboard Shortcuts --- */
-addEventListener('keydown',e=>{
-  if((e.metaKey||e.ctrlKey)&&e.key==='b'){e.preventDefault();toggleSidebar()}
-  else if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();$('prompt-input').focus()}
-  else if(e.key==='Escape'){closeViewer();closeSettings()}
-});
-
-/* --- Seed initial demo content (approval gate + tool cards) --- */
-function seedDemo(){
-  const s=$('msg-stream');
-  s.innerHTML=`
-  <div class="decision-card" id="decision-box">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-      <span style="font-size:.65rem;font-weight:800;color:#fbbf24;text-transform:uppercase">Approval Gate #108</span>
-      <span style="font-size:.65rem;font-family:var(--font-mono);color:var(--text-dim)">7a3f89…</span>
-    </div>
-    <div style="font-size:.85rem;font-weight:700;margin-bottom:4px">Action: Payout Reconcile ($14.50)</div>
-    <div style="font-size:.75rem;color:var(--text-muted);margin-bottom:10px">Discrepancy caught by verify_balance.py. Halting at human boundary.</div>
-    <div style="display:flex;gap:8px">
-      <button class="btn-approve" onclick="resolveApproval(108,'approve')">✓ Approve (↵)</button>
-      <button class="btn-deny" onclick="resolveApproval(108,'deny')">✗ Deny (⎋)</button>
-    </div>
-  </div>
-  <div class="tool-card">
-    <div class="tool-card-hdr" onclick="toggleToolCard('tc1')">
-      <span>⚡ tool: python3 scripts/verify_balance.py</span>
-      <span class="tool-badge" style="background:rgba(16,185,129,.15);color:var(--success)">exit 0 · 0.005s ▾</span>
-    </div>
-    <div class="tool-card-body" id="tc1">Input: {"stripe_total":1450.00,"qbo_total":1450.00}<br>
-      Output: VERIFY PASSED. 0 tokens consumed.<br>
-      <a class="inspect-link" onclick="openInViewer('scripts/verify_balance.py')">Inspect script →</a></div>
-  </div>
-  <div class="tool-card">
-    <div class="tool-card-hdr" onclick="toggleToolCard('tc2')">
-      <span>🧠 ambition: 2026 SaaS Award GTM</span>
-      <span class="tool-badge" style="background:rgba(192,132,252,.15);color:var(--purple)">EV=0.95 · 100x-GTM ▾</span>
-    </div>
-    <div class="tool-card-body" id="tc2">Self-learned 100x-gtm-strategist in sandbox.<br>
-      Synthesized: award-marketing-plan.md, content-calendar.md, pr-outreach-list.md.<br>
-      <a class="inspect-link" onclick="openInViewer('strategy/award-marketing-plan')">Open GTM artifacts →</a></div>
-  </div>`;
-}
-
-/* --- Init --- */
-initTheme();checkMode();seedDemo();
-</script>
-</body>
-</html>"""
+def _save_secret(install_dir: str, key_name: str, value: str) -> None:
+    """Shared by the provider-key wizard step and the Add-ons "API key"
+    connection type -- same file, same merge-then-write-0600 discipline,
+    distinguished by key_name (an AI provider name like "openai", or
+    "mcp:<id>" for an arbitrary connected service's token)."""
+    import yaml
+    secrets_path = os.path.join(install_dir, "secrets.yaml")
+    current_secrets = {}
+    if os.path.exists(secrets_path):
+        with open(secrets_path, "r", encoding="utf-8") as f:
+            current_secrets = yaml.safe_load(f) or {}
+    current_secrets[key_name] = value
+    content = yaml.safe_dump(current_secrets)
+    fd = os.open(secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with open(fd, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 class ApprovalReq(BaseModel):
@@ -686,6 +91,9 @@ class ApprovalReq(BaseModel):
 class ResolveReq(BaseModel):
     decision: str
 
+class ApprovalDecisionReq(BaseModel):
+    decision: str
+
 class ProviderReq(BaseModel):
     provider: str
     key: str
@@ -693,15 +101,45 @@ class ProviderReq(BaseModel):
 class MCPReq(BaseModel):
     name: str
     command: str
-    room: str = "devops"
+    room: str = ""
+    what: str = ""
+    permissions: List[str] = []
+    # Present only for the "API key" connection type (Add-ons "connect
+    # something new" -> a service with no OAuth/MCP, just a token). Stored
+    # the same way provider keys are (secrets.yaml, 0600), under a
+    # mcp:<id> namespace so it never collides with a real AI provider name.
+    api_key: str = ""
+
+class BrowserLoginReq(BaseModel):
+    """The 4th Add-ons connection type: a service with no OAuth, MCP, or API
+    key, so Anton signs in like a person would. No universal login form
+    exists to detect safely, so the operator supplies the selectors --
+    same "operator supplies the last-mile detail" pattern as OAuth's
+    client_id."""
+    name: str
+    login_url: str
+    username: str
+    password: str
+    what: str = ""
+    username_selector: str = "input[type=email], input[type=text]"
+    password_selector: str = "input[type=password]"
+    submit_selector: str = "button[type=submit]"
+    success_selector: str
 
 class ModeReq(BaseModel):
-    son_of_anton_mode: bool
+    # Default True, not required: the Ops Center UI's two calling sites
+    # (SidebarRoot.tsx, Brand.tsx) POST here with no body at all -- the
+    # endpoint name alone implies the direction, matching /api/mode/standard's
+    # fixed-false sibling below.
+    son_of_anton_mode: bool = True
 
 class ChatReq(BaseModel):
     prompt: str
 
 def _require_token(request, token: str) -> None:
+    # An empty token means the operator explicitly opted out (create_app warns
+    # loudly at startup); it must never silently disable auth on a deployment
+    # that was expected to have one.
     if not token:
         return
     auth = request.headers.get("authorization", "")
@@ -714,69 +152,106 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     import os as _os
     import sqlite3
     global _active_oauth_server
-    app = FastAPI(title="anton control plane")
+    app = FastAPI(title="anton")
     ledger = engine.ledger
     token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("ANTON_DASHBOARD_TOKEN") or _os.environ.get("HARBOR_DASHBOARD_TOKEN") or ""
     if token:
         app.state.dashboard_token = token
+    else:
+        import sys as _sys
+        print(
+            "WARNING: no dashboard_token configured — every write/approval endpoint "
+            "is UNAUTHENTICATED. Set general.dashboard_token (or ANTON_DASHBOARD_TOKEN) "
+            "and never expose this port beyond loopback without the auth-gate.",
+            file=_sys.stderr,
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index():
         return PAGE
 
+    @app.get("/health")
+    def health():
+        """Container/Umbrel healthcheck target for the dashboard's own port (distinct
+        from `anton serve`'s webhook-server /health on its own port)."""
+        return {"ok": True, "jobs": len(engine.jobs)}
+
     @app.get("/api/logo")
     def get_logo():
-        """Serves the approved classic Anton logo image."""
+        """Serves the classic Anton logo image, if this install has one."""
         install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
-        logo_paths = [
-            os.path.join(install_dir, "assets", "logos", "anton_logo.jpg"),
-            "/Users/ai/rooms/devops/assets/logos/anton_dark_bw_icon_1787167963726.jpg",
-            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/anton_logo.jpg"
-        ]
-        for p in logo_paths:
-            if os.path.exists(p):
-                return FileResponse(p, media_type="image/jpeg")
+        logo_path = os.path.join(install_dir, "assets", "logos", "anton_logo.jpg")
+        if os.path.exists(logo_path):
+            return FileResponse(logo_path, media_type="image/jpeg")
         raise HTTPException(404, "logo image not found")
 
     @app.get("/api/logo/son-of-anton")
     def get_son_of_anton_logo():
-        """Serves the young & reckless Son of Anton logo."""
+        """Serves the alternate Son of Anton logo, if this install has one."""
         install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
-        svg_paths = [
-            os.path.join(install_dir, "assets", "logos", "son_of_anton_logo.svg"),
-            "/Users/ai/.gemini/antigravity/brain/b4a39c00-3096-4125-90bf-242cf7d5b2cc/son_of_anton_logo.svg"
-        ]
-        for p in svg_paths:
-            if os.path.exists(p):
-                return FileResponse(p, media_type="image/svg+xml")
+        svg_path = os.path.join(install_dir, "assets", "logos", "son_of_anton_logo.svg")
+        if os.path.exists(svg_path):
+            return FileResponse(svg_path, media_type="image/svg+xml")
         raise HTTPException(404, "son of anton logo not found")
 
     @app.get("/api/mode")
     def get_mode():
-        return {"son_of_anton_mode": engine.son_of_anton_mode}
+        # DB value wins: another process (the scheduler) may have observed a
+        # toggle this process restarted past; in-memory is the fallback.
+        mode = get_son_of_anton_mode(data_dir) if data_dir else engine.son_of_anton_mode
+        return {"son_of_anton_mode": bool(mode) or engine.son_of_anton_mode}
 
     @app.post("/api/mode/son-of-anton")
-    def set_mode(req: ModeReq, request: Request):
+    def set_mode(request: Request, req: ModeReq = ModeReq()):
+        # req's own default (son_of_anton_mode=True) only relaxes field
+        # validation *within* a body; FastAPI still requires a body to be
+        # present unless the parameter itself defaults, which is what lets
+        # the Ops Center UI's no-body POST through.
         _require_token(request, token)
         engine.son_of_anton_mode = req.son_of_anton_mode
+        # Persist: serve/scheduler runs in a separate process and reads this
+        # at gate-decision time — an in-memory-only flag never reaches it.
+        set_son_of_anton_mode(data_dir, req.son_of_anton_mode)
         return {"status": "updated", "son_of_anton_mode": engine.son_of_anton_mode}
 
+    @app.post("/api/mode/standard")
+    def set_mode_standard(request: Request):
+        """SidebarRoot.tsx posts here when the Son of Anton toggle flips off;
+        no request body (mirrors /api/mode/son-of-anton's boolean, fixed false)."""
+        _require_token(request, token)
+        engine.son_of_anton_mode = False
+        set_son_of_anton_mode(data_dir, False)
+        return {"status": "updated", "son_of_anton_mode": False}
+
     @app.get("/api/vault/note")
-    def get_vault_note(path: str):
-        """Fetches and serves markdown or python code for the in-app document viewer."""
+    def get_vault_note(request: Request, path: str):
+        """Fetches and serves markdown or python code for the in-app document viewer.
+
+        Authenticated and path-contained: `path` is resolved against a fixed set of
+        base directories and rejected if the realpath escapes any of them (no ../
+        traversal into secrets.yaml, web-token, browser-vault.key, etc.)."""
+        _require_token(request, token)
         install_dir = os.path.dirname(data_dir) if data_dir.endswith(".dev-data") else os.getcwd()
+        # Each candidate is (base, relpath): the file must resolve, by realpath,
+        # to something still inside its own base directory. No free-form
+        # install_dir join — that allowed reading repo-root secrets.yaml and,
+        # with ../, anything else on the host (web-token, browser-vault.key).
         candidates = [
-            os.path.join(install_dir, path),
-            os.path.join(data_dir, "vault", path + ".md"),
-            os.path.join(data_dir, "vault", path),
-            os.path.join(data_dir, path),
-            os.path.join(data_dir, "skills", path.replace("skills/", ""), "SKILL.md"),
-            os.path.join(install_dir, "scripts", os.path.basename(path))
+            (os.path.join(data_dir, "vault"), path + ".md"),
+            (os.path.join(data_dir, "vault"), path),
+            (os.path.join(data_dir, "skills", path.replace("skills/", "")), "SKILL.md"),
+            (os.path.join(install_dir, "scripts"), os.path.basename(path)),
         ]
-        
+
         found = None
-        for c in candidates:
-            if os.path.exists(c) and os.path.isfile(c):
+        for base, rel in candidates:
+            c = os.path.join(base, rel)
+            real = os.path.realpath(c)
+            if (
+                real.startswith(os.path.realpath(base) + os.sep)
+                and os.path.isfile(c)
+                and not os.path.islink(c)
+            ):
                 found = c
                 break
                 
@@ -787,32 +262,65 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             content = f.read()
             
         is_code = found.endswith(".py") or found.endswith(".sh") or found.endswith(".yaml")
-        return {"path": path, "content": content, "is_code": is_code}
+
+        # Ops Center contract fields (README, Data Contracts: GET /api/vault/note
+        # -> { title, kind, author, body, provenance, usedCount, linkCount }),
+        # added alongside the original {path, content, is_code} the embedded
+        # dashboard's own viewer already depends on.
+        title, note_kind, author, provenance = os.path.basename(path), "note", "agent", None
+        used_count = link_count = 0
+        vault_db_path = os.path.join(data_dir, "vault", "vault.db")
+        if os.path.exists(vault_db_path):
+            import sqlite3 as _sqlite3
+            with _sqlite3.connect(vault_db_path, timeout=10.0) as vconn:
+                ensure_vault_ops_schema(vconn)
+                row = vconn.execute(
+                    "SELECT title, author, kind, provenance FROM notes WHERE path=? OR path=?",
+                    (path, path + ".md")).fetchone()
+                if row:
+                    title = row[0] or title
+                    author = row[1] or author
+                    note_kind = row[2] or (
+                        "moc" if path.startswith("mocs/") else "skill" if path.startswith("skills/") else "note")
+                    provenance = row[3]
+                slug = os.path.splitext(path)[0]
+                used_count = vconn.execute(
+                    "SELECT COUNT(*) FROM graph_edges WHERE to_note=?", (slug,)).fetchone()[0]
+                link_count = vconn.execute(
+                    "SELECT COUNT(*) FROM graph_edges WHERE from_note=?", (slug,)).fetchone()[0]
+
+        return {
+            "path": path, "content": content, "is_code": is_code,
+            "title": title, "kind": note_kind, "author": author, "body": content,
+            "provenance": provenance, "usedCount": used_count, "linkCount": link_count,
+        }
 
     @app.post("/api/chat")
-    def chat_prompt(req: ChatReq):
-        """Handles regular conversational interactions and Second Brain queries."""
-        p_lower = req.prompt.lower()
-        if "reconcil" in p_lower or "math" in p_lower or "script" in p_lower or "gate" in p_lower:
-            return {
-                "reply": "Opened Python deterministic verify gate: scripts/verify_balance.py (0 tokens consumed).",
-                "note_path": "scripts/verify_balance.py"
-            }
-        elif "award" in p_lower or "marketing" in p_lower or "gtm" in p_lower:
-            return {
-                "reply": "I've synthesized the 2026 SaaS Innovation Award campaign across 3 artifacts in the Second Brain.",
-                "note_path": "strategy/award-marketing-plan"
-            }
-        elif "skill" in p_lower or "desktop" in p_lower or "designer" in p_lower:
-            return {
-                "reply": "Loaded staff-level protocol from Second Brain.",
-                "note_path": "skills/100x-desktop-ide-designer"
-            }
-        else:
-            return {
-                "reply": f"Anton processed: '{req.prompt}'. Second Brain query completed.",
-                "note_path": "strategy/award-marketing-plan"
-            }
+    def chat_prompt(request: Request, req: ChatReq):
+        """Real dispatch through the configured executor. This backs both direct
+        callers of this endpoint and the Ops Center's own "Anton" chat provider
+        option (apiproxy's AntonFastApiAdapter registers an LLM provider that
+        POSTs here) -- a customer selecting "Anton" as their chat provider used
+        to get keyword-matched fabricated replies indistinguishable from a real
+        response. prefer="cloud": a fresh install's setup wizard captures a
+        cloud provider key (Anthropic/OpenAI/DeepSeek/OpenRouter), which is what
+        this should actually route to by default, not a local model server this
+        deployment doesn't run."""
+        _require_token(request, token)
+        route = select_route(prefer="cloud")
+        result = engine.executor.run(req.prompt, model=route.model, provider=route.provider)
+        record = RunRecord.new(
+            task="chat", exit_code=result.exit_code, flags="source:api/chat",
+            output=result.output, model=result.model, provider=result.provider,
+            fallback_used=result.fallback_used, tokens_in=result.tokens_in,
+            tokens_out=result.tokens_out, cost_usd=result.cost_usd,
+            duration_ms=result.duration_ms,
+        )
+        ledger.append(record)
+        engine._record_metering(record)
+        if result.exit_code != 0:
+            raise HTTPException(502, result.stderr or result.output or "chat dispatch failed")
+        return {"reply": result.output}
 
     @app.get("/api/canary")
     def canary():
@@ -826,12 +334,50 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/api/initiatives")
     def initiatives():
-        return _db_rows(data_dir, "SELECT slug, source, risk, status FROM initiatives ORDER BY id DESC LIMIT 50")
+        """Automation[] (README, Data Contracts). Backed by the new `automations`
+        table (ops_schema.py) — NOT the `initiatives` table, which stays exactly
+        as delta.py's candidate-remediation detection has always used it; this
+        route only changed what path `/api/initiatives` itself serves."""
+        conn = open_isolation_db(data_dir)
+        try:
+            rows = conn.execute(
+                "SELECT id, name, plain, trigger_kind, trigger_display, trigger_expr, "
+                "needs_signoff, author, last_run, state, risk, nodes_json, links_json "
+                "FROM automations ORDER BY ts DESC LIMIT 50").fetchall()
+        finally:
+            conn.close()
+        out = []
+        for (aid, name, plain, tkind, tdisplay, texpr, needs_signoff, author, last_run,
+             state, risk, nodes_json, links_json) in rows:
+            out.append({
+                "id": aid, "name": name, "plain": plain,
+                "trigger": {"kind": tkind, "display": tdisplay, "expr": texpr},
+                "needsSignoff": bool(needs_signoff), "author": author, "lastRun": last_run,
+                "state": state, "risk": risk,
+                "nodes": json.loads(nodes_json or "[]"), "links": json.loads(links_json or "[]"),
+            })
+        return out
 
     @app.get("/api/jobs")
     def jobs():
-        return [{"id": j.id, "trigger": j.trigger, "model_route": j.model_route,
-                 "expected_cadence_min": j.expected_cadence_min} for j in engine.jobs]
+        """Job[] { id, automationId, trigger, nextRun, lastRun, cadenceMin }
+        (README, Data Contracts). `automationId` best-effort matches by job
+        id — jobs.yaml carries no explicit automation-linkage field."""
+        now = dt.datetime.now(dt.timezone.utc)
+        out = []
+        for j in engine.jobs:
+            trig = j.trigger or {}
+            next_run = None
+            if trig.get("type") == "cron" and j.cron is not None:
+                nxt = j.cron.next_after(now)
+                next_run = nxt.strftime("%Y-%m-%dT%H:%M:%SZ") if nxt else None
+            last = ledger.last_run(j.id)
+            out.append({
+                "id": j.id, "automationId": j.id, "trigger": trig,
+                "nextRun": next_run, "lastRun": (last or {}).get("ts"),
+                "cadenceMin": j.expected_cadence_min,
+            })
+        return out
 
     @app.get("/api/usage")
     def usage():
@@ -848,8 +394,69 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/api/approvals")
     def approvals(status: str = "pending"):
-        return _db_rows(data_dir, "SELECT id, nonce, action, amount, recipient, status, ts "
-                                 "FROM approvals WHERE status=? ORDER BY id DESC", (status,))
+        """Approval[] { id, title, sub, reason, evidence, changes, age, kind }
+        (README, Data Contracts). The `title`/`sub`/`reason`/`evidence`/
+        `changes`/`kind` columns are additive (ops_schema.py) — a row created
+        through the original money/outbound gate path (action/amount/
+        recipient, no UI-card fields set) still renders with a reasonable
+        fallback instead of nulls."""
+        conn = open_isolation_db(data_dir)
+        try:
+            rows = conn.execute(
+                "SELECT id, nonce, action, amount, recipient, status, ts, "
+                "title, sub, reason, evidence, changes_json, kind "
+                "FROM approvals WHERE status=? ORDER BY id DESC", (status,)).fetchall()
+        finally:
+            conn.close()
+        out = []
+        for (aid, nonce, action, amount, recipient, row_status, ts, title, sub, reason,
+             evidence, changes_json, kind) in rows:
+            out.append({
+                "id": aid,
+                "title": title or f"Approve {action}",
+                "sub": sub or (f"{amount} to {recipient}" if recipient else action),
+                "reason": reason or "Requires human sign-off before Anton can proceed.",
+                "evidence": evidence or "",
+                "changes": json.loads(changes_json) if changes_json else [],
+                "age": _age_str(ts),
+                "kind": kind or "money",
+            })
+        return out
+
+    @app.post("/api/approvals/{aid}")
+    def decide_approval(aid: int, req: ApprovalDecisionReq, request: Request):
+        """POST /api/approvals/:id -> { decision } (README, Data Contracts).
+        Distinct from the pre-existing `/resolve` sub-route (approve|deny,
+        used by the embedded dashboard) — this is the Ops Center's own
+        three-way decision. `once` and `always` both approve; `always` is
+        additionally flagged via `kind` so a future standing-allow policy has
+        somewhere to read it from. `defer` ("Not now") leaves the row pending."""
+        _require_token(request, token)
+        if req.decision not in ("once", "always", "defer"):
+            raise HTTPException(400, "decision must be once|always|defer")
+        conn = open_isolation_db(data_dir)
+        try:
+            if req.decision == "defer":
+                row = conn.execute("SELECT id FROM approvals WHERE id=?", (aid,)).fetchone()
+                if row is None:
+                    raise HTTPException(404, "no approval with that id")
+                return {"id": aid, "status": "pending", "decision": "defer"}
+            new_status = "approved"
+            new_kind = "standing" if req.decision == "always" else None
+            if new_kind:
+                cur = conn.execute(
+                    "UPDATE approvals SET status=?, kind=? WHERE id=? AND status='pending'",
+                    (new_status, new_kind, aid))
+            else:
+                cur = conn.execute(
+                    "UPDATE approvals SET status=? WHERE id=? AND status='pending'",
+                    (new_status, aid))
+            conn.commit()
+            if cur.rowcount == 0:
+                raise HTTPException(404, "no pending approval with that id")
+        finally:
+            conn.close()
+        return {"id": aid, "status": new_status, "decision": req.decision}
 
     @app.post("/api/approvals")
     def create_approval(req: ApprovalReq, request: Request):
@@ -886,13 +493,13 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     def vault_graph():
         vault_db_path = os.path.join(data_dir, "vault", "vault.db")
         if not os.path.exists(vault_db_path):
-            return {
-                "nodes": [
-                    {"id": "mocs/operations", "title": "Operations MOC", "type": "moc", "val": 15},
-                    {"id": "skills/100x-desktop-ide-designer", "title": "100x Desktop IDE", "type": "skill", "val": 8}
-                ],
-                "links": []
-            }
+            # Honest empty state, not fabricated content -- a fresh install
+            # (vault.db not provisioned yet) previously returned fake nodes
+            # ("Operations MOC", a made-up skill) that looked like real
+            # customer data. Matches the same single-placeholder-node
+            # fallback already used below for "vault.db exists but has
+            # nothing in it yet".
+            return {"nodes": [{"id": "index", "title": "Second Brain Root", "type": "moc", "val": 12}], "links": []}
         with sqlite3.connect(vault_db_path, timeout=10.0) as conn:
             notes = conn.execute("SELECT path, title FROM notes").fetchall()
             edges = conn.execute("SELECT from_note, to_note, kind FROM graph_edges").fetchall()
@@ -912,23 +519,30 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     @app.post("/api/wizard/providers")
     def save_provider_key(req: ProviderReq, request: Request):
         _require_token(request, token)
-        import yaml
-        install_dir = os.path.dirname(data_dir)
-        secrets_path = os.path.join(install_dir, "secrets.yaml")
-        current_secrets = {}
-        if os.path.exists(secrets_path):
-            with open(secrets_path, "r", encoding="utf-8") as f:
-                current_secrets = yaml.safe_load(f) or {}
-        current_secrets[req.provider] = req.key
-        content = yaml.safe_dump(current_secrets)
-        fd = os.open(secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with open(fd, "w", encoding="utf-8") as f:
-            f.write(content)
+        _save_secret(os.path.dirname(data_dir), req.provider, req.key)
         return {"status": "saved", "provider": req.provider}
 
     @app.get("/api/wizard/oauth/start")
     def start_oauth(request: Request, provider: str = "google"):
+        """Per-service OAuth starter, not hardcoded to one provider. This used
+        to always build a Google authorize URL with client_id=demo -- a fake
+        that could never actually complete an OAuth handshake, regardless of
+        which service the Add-ons UI claimed to be connecting. An operator
+        registers a real OAuth app for a given service (client_id, in
+        config.yaml's oauth.<provider> section) before this can do anything
+        real for that service; until then, this says so plainly instead of
+        producing a URL that silently fails."""
         _require_token(request, token)
+        oauth_cfg = (config.get("oauth") or {}).get(provider) or {}
+        client_id = oauth_cfg.get("client_id")
+        authorize_url, default_scope = OAUTH_AUTHORIZE_URLS.get(provider, (None, ""))
+        if not authorize_url:
+            return {"status": "not_configured",
+                    "detail": f"Anton doesn't know {provider}'s OAuth authorize URL yet."}
+        if not client_id:
+            return {"status": "not_configured",
+                    "detail": f"No OAuth app registered for {provider} yet -- "
+                              f"set oauth.{provider}.client_id in config.yaml."}
         global _active_oauth_server
         from .oauth import CallbackServer
         if _active_oauth_server is not None:
@@ -938,35 +552,126 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 pass
         _active_oauth_server = CallbackServer(port=0, timeout_s=120)
         _active_oauth_server.start()
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?client_id=demo&redirect_uri=http://localhost:{_active_oauth_server.port}/callback&response_type=code&scope=email"
+        scope = oauth_cfg.get("scope", default_scope)
+        auth_url = (f"{authorize_url}?client_id={client_id}"
+                   f"&redirect_uri=http://localhost:{_active_oauth_server.port}/callback"
+                   f"&response_type=code&scope={scope}")
         return {"status": "listening", "port": _active_oauth_server.port, "auth_url": auth_url}
 
     @app.get("/api/wizard/mcp")
     def list_mcp(request: Request):
+        """Addon[] { id, name, what, permissions, status } (README, Data
+        Contracts). Backed by `mcp_servers` — the two defaults below are
+        seeded on first read so an empty install still shows the core/
+        filesystem MCP servers the embedded dashboard always assumed."""
         _require_token(request, token)
-        return [
-            {"name": "anton-mcp-core", "room": "devops", "status": "active"},
-            {"name": "filesystem-mcp", "room": "devops", "status": "active"}
-        ]
+        conn = open_isolation_db(data_dir)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM mcp_servers").fetchone()[0]
+            if count == 0:
+                now = _now_iso()
+                conn.executemany(
+                    "INSERT INTO mcp_servers(id, name, what, permissions_json, status, room, ts) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    [
+                        ("anton-mcp-core", "anton-mcp-core", "Anton's own core tools", "[]", "active", "", now),
+                        ("filesystem-mcp", "filesystem-mcp", "Read/write the local filesystem", "[]", "active", "", now),
+                    ])
+                conn.commit()
+            rows = conn.execute(
+                "SELECT id, name, what, permissions_json, status FROM mcp_servers ORDER BY ts ASC").fetchall()
+        finally:
+            conn.close()
+        return [{
+            "id": r[0], "name": r[1], "what": r[2],
+            "permissions": json.loads(r[3] or "[]"), "status": r[4],
+        } for r in rows]
 
     @app.post("/api/wizard/mcp")
     def add_mcp(req: MCPReq, request: Request):
         _require_token(request, token)
-        return {"status": "registered", "name": req.name, "room": req.room}
+        conn = open_isolation_db(data_dir)
+        try:
+            mcp_id = req.name.strip().lower().replace(" ", "-")
+            conn.execute(
+                "INSERT INTO mcp_servers(id, name, what, permissions_json, status, room, ts) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET what=excluded.what, "
+                "permissions_json=excluded.permissions_json, room=excluded.room, ts=excluded.ts",
+                (mcp_id, req.name, req.what, json.dumps(req.permissions), "active", req.room, _now_iso()))
+            conn.commit()
+            if req.api_key.strip():
+                _save_secret(os.path.dirname(data_dir), f"mcp:{mcp_id}", req.api_key.strip())
+        finally:
+            conn.close()
+        return {"status": "registered", "id": mcp_id, "name": req.name, "room": req.room}
 
+    @app.post("/api/wizard/browser-login")
+    def add_browser_login(req: BrowserLoginReq, request: Request):
+        """Registers a stored-login connection and performs the first real
+        login. The password is stored encrypted (browser_vault) and used
+        directly here to fill the form -- it is never returned in this
+        response and never reaches an LLM. A later dispatch that uses the
+        resulting persisted session for real work is a separate,
+        governor-gated concern (kind="outbound"), not built here."""
+        _require_token(request, token)
+        from . import browser_login, browser_vault
+        install_dir = os.path.dirname(data_dir)
+        mcp_id = req.name.strip().lower().replace(" ", "-")
+        browser_vault.store_credential(install_dir, mcp_id, req.username, req.password)
+
+        conn = open_isolation_db(data_dir)
+        try:
+            conn.execute(
+                "INSERT INTO mcp_servers(id, name, what, permissions_json, status, room, ts) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET what=excluded.what, ts=excluded.ts",
+                (mcp_id, req.name, req.what, "[]", "pending", "", _now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
+
+        selectors = browser_login.LoginSelectors(
+            username_selector=req.username_selector, password_selector=req.password_selector,
+            submit_selector=req.submit_selector, success_selector=req.success_selector)
+        result = browser_login.perform_login(install_dir, mcp_id, req.login_url, selectors)
+
+        conn = open_isolation_db(data_dir)
+        try:
+            conn.execute("UPDATE mcp_servers SET status=? WHERE id=?",
+                        ("active" if result.status == "success" else "pending", mcp_id))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"status": result.status, "detail": result.detail, "id": mcp_id, "name": req.name}
+
+    register_ops_routes(app, engine, data_dir, config, token)
     return app
-
-def _db_rows(data_dir: str, sql: str, params: tuple = ()) -> list:
-    import sqlite3
-    path = os.path.join(data_dir, "isolation.db")
-    if not os.path.exists(path):
-        return []
-    with sqlite3.connect(path, timeout=10.0) as conn:
-        cur = conn.execute(sql, params)
-        rows = [dict(zip([c[0] for c in cur.description], r))
-                for r in cur.fetchall()]
-    return rows
 
 def _day_ago_iso() -> str:
     now = dt.datetime.now(dt.timezone.utc)
     return (now - dt.timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _age_str(ts: Optional[str]) -> str:
+    """"2H AGO" / "3D AGO" style relative-age string (README §5 example copy)."""
+    if not ts:
+        return ""
+    try:
+        then = dt.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        return ""
+    delta = dt.datetime.now(dt.timezone.utc) - then
+    minutes = int(delta.total_seconds() // 60)
+    if minutes < 1:
+        return "JUST NOW"
+    if minutes < 60:
+        return f"{minutes}M AGO"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}H AGO"
+    return f"{hours // 24}D AGO"

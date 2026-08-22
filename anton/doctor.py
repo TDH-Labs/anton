@@ -57,11 +57,24 @@ def run_doctor(data_dir: str, executor_name: str = "fake") -> tuple[list[str], b
     vault_index = os.path.join(data_dir, "vault", "index.md")
     check("vault index", os.path.exists(vault_index))
 
-    from .executor import OIExecutor, PiExecutor
-    for exe in (PiExecutor(), OIExecutor()):
-        check(f"executor {type(exe).__name__}",
-              exe.available() or type(exe).__name__ == "FakeExecutor",
-              "binary found" if exe.available() else "binary not installed (use --executor fake)")
+    # Only the executor this install is actually configured to use can fail
+    # the overall check -- e.g. `oi`'s binary missing is expected and fine
+    # on an install that runs `pi` (or `fake`, as this function's own
+    # default), not a real problem. Every other executor's availability is
+    # still reported, just informationally, so switching later isn't a
+    # surprise.
+    from .executor import OIExecutor, OpenCodeExecutor, PiExecutor
+    executor_classes = {"pi": PiExecutor, "oi": OIExecutor, "opencode": OpenCodeExecutor}
+    for name, cls in executor_classes.items():
+        exe = cls()
+        available = exe.available()
+        detail = "binary found" if available else "binary not installed"
+        if name == executor_name:
+            check(f"executor {name} (configured)", available, detail)
+        else:
+            lines.append(f"{'✓' if available else '·'} executor {name} — {detail}")
+    if executor_name not in executor_classes and executor_name != "fake":
+        check(f"executor {executor_name}", False, "unknown executor name")
 
     from .ledger import Ledger
     if jobs:

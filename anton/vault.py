@@ -42,7 +42,10 @@ WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 
 def provision_vault(vault_dir: str) -> str:
     os.makedirs(vault_dir, exist_ok=True)
-    for sub in ("notes", "mocs", "templates", "digests"):
+    # notes/research/ holds upskill.py's captured sources (learning.py's
+    # distillation reads it back) -- created on every fresh install, not
+    # lazily by the first upskill run, so it's always a stable, indexable path.
+    for sub in ("notes", "notes/research", "mocs", "templates", "digests"):
         os.makedirs(os.path.join(vault_dir, sub), exist_ok=True)
     if not os.path.exists(os.path.join(vault_dir, "index.md")):
         with open(os.path.join(vault_dir, "index.md"), "w", encoding="utf-8") as f:

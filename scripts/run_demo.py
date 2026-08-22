@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Harbor-SAS Live Interactive Demo & Asciinema Recording Generator.
-Runs a complete end-to-end showcase of all control plane capabilities and captures
+Anton Live Interactive Demo & Asciinema Recording Generator.
+Runs a complete end-to-end showcase of all agent-harness capabilities and captures
 an animated demo.cast file for playback.
 """
 import datetime as dt
@@ -94,7 +94,7 @@ def main():
         shutil.rmtree(DEMO_DIR)
     os.makedirs(DEMO_DIR, exist_ok=True)
 
-    log_header("AUTONOMOUS CONTROL PLANE & ZERO-TRUST GATE SHOWCASE")
+    log_header("AUTONOMOUS AGENT & ZERO-TRUST GATE SHOWCASE")
 
     # 1. SETUP
     log_step(1, "Turnkey Provisioning & Idempotent Environment Initialization")
@@ -224,9 +224,9 @@ def main():
         time.sleep(0.5)
 
         # 11. EXECUTIVE DIGEST
-        log_step(11, "Generating Executive Control Plane Markdown Digest")
+        log_step(11, "Generating Executive Agent Markdown Digest")
         run_cmd(["python3", "-m", "harbor.cli", "digest", "--data-dir", data_dir])
-        digest_file = os.path.join(vault_dir, "digests", "control-plane-digest.md")
+        digest_file = os.path.join(vault_dir, "digests", "daily-digest.md")
         if os.path.exists(digest_file):
             record_out(f"\n{BOLD}{YELLOW}--- Digest Preview ({os.path.basename(digest_file)}) ---{RESET}\n")
             with open(digest_file, encoding="utf-8") as f:
@@ -261,7 +261,7 @@ def main():
         "width": 120,
         "height": 36,
         "timestamp": int(time.time()),
-        "title": "Harbor-SAS Autonomous Control Plane Showcase",
+        "title": "Anton Autonomous Agent Showcase",
         "env": {"SHELL": "/bin/zsh", "TERM": "xterm-256color"}
     }
     with open(CAST_PATH, "w", encoding="utf-8") as f:

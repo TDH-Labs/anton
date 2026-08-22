@@ -1,5 +1,6 @@
 """Generates crisp SVG and rasterized PNG of the young, reckless 'Son of Anton' silhouette."""
 import os
+from pathlib import Path
 
 svg_content = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
@@ -64,7 +65,7 @@ svg_content = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" w
 </svg>
 """
 
-svg_path = "[REDACTED-PATH]/assets/logos/son_of_anton_logo.svg"
+svg_path = str(Path(__file__).resolve().parents[1] / "assets" / "logos" / "son_of_anton_logo.svg")
 with open(svg_path, "w", encoding="utf-8") as f:
     f.write(svg_content.strip())
 

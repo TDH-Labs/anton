@@ -1,0 +1,138 @@
+Anton bundles and builds on the following third-party software. Each
+project's own license terms apply to its own code independent of the terms
+in LICENSE.
+
+--------------------------------------------------------------------------
+DeepSeek Harness (github.com/deepseek-ai/deepseek-harness)
+--------------------------------------------------------------------------
+The Ops Center web UI and its host runtime (anton-studio/) are a fork of
+DeepSeek Harness.
+
+MIT License
+
+Copyright (c) 2026 DeepSeek
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+--------------------------------------------------------------------------
+pi (github.com/earendil-works/pi)
+--------------------------------------------------------------------------
+The default automation executor (anton/executor/pi_executor.py) shells out
+to the `pi` CLI, installed as a pinned npm package
+(@earendil-works/pi-coding-agent) inside the published Docker image — not
+vendored source, but redistributed as part of the image.
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+--------------------------------------------------------------------------
+opencode (github.com/anomalyco/opencode)
+--------------------------------------------------------------------------
+A second automation executor (anton/executor/opencode_executor.py) shells
+out to the `opencode` CLI, installed as a pinned npm package (opencode-ai)
+inside the published Docker image — not vendored source, but redistributed
+as part of the image. This is the executor a job uses when it needs
+browser tools on an already-authenticated stored-login session.
+
+MIT License
+
+Copyright (c) 2025 opencode
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+--------------------------------------------------------------------------
+Playwright (github.com/microsoft/playwright-python) and
+Playwright MCP (github.com/microsoft/playwright-mcp)
+--------------------------------------------------------------------------
+The stored-login browser feature (anton/browser_login.py) uses the
+Playwright Python package to drive a real, persistent browser session for
+signing in. @playwright/mcp, installed as a pinned npm package inside the
+published Docker image, is the MCP server a job uses to work with an
+already-authenticated session's browser. Both are redistributed as part of
+the image, not vendored source.
+
+Copyright (c) Microsoft Corporation.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use these files except in compliance with the License. You may obtain a
+copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+License for the specific language governing permissions and limitations
+under the License.
+
+--------------------------------------------------------------------------
+Chromium (chromium.googlesource.com/chromium/src)
+--------------------------------------------------------------------------
+Playwright downloads and bundles a Chromium browser binary into the
+published Docker image (`playwright install chromium` in the Dockerfile)
+for the stored-login browser feature to drive. Chromium is BSD-licensed
+with numerous bundled third-party components under their own licenses; see
+Chromium's own credits at chromium.googlesource.com/chromium/src/+/main/LICENSE
+rather than reproduced here.
+
+--------------------------------------------------------------------------
+Caddy (github.com/caddyserver/caddy) — used, not bundled
+--------------------------------------------------------------------------
+The optional VPS deployment path (vps/docker-compose.yml) runs Caddy as a
+separate container alongside Anton's, pulled directly from its own
+official Docker Hub image (caddy:2.9) to provide HTTPS. Unlike the
+entries above, Caddy's binary is never copied into or redistributed as
+part of Anton's own image — listed here for transparency about what a VPS
+install runs, not because Anton bundles it. Caddy is Apache-2.0 licensed;
+see the project's own repository for its full license text.

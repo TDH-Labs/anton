@@ -44,7 +44,7 @@ class TestDigest(unittest.TestCase):
 
     def test_write_digest_atomic_and_indexed(self):
         content = build_digest(self.engine, self.vault, load_config())
-        path = write_digest(os.path.join(self.vault, "digests", "control-plane-digest.md"),
+        path = write_digest(os.path.join(self.vault, "digests", "daily-digest.md"),
                             content, self.vault)
         self.assertTrue(os.path.exists(path))
         with open(path, encoding="utf-8") as f:

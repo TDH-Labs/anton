@@ -3,7 +3,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from anton.delta import scan_ledger_failures
+from anton.delta import scan_ledger_failures, scan_upskill_candidates
 from anton.ledger import Ledger
 from anton.models import RunRecord
 
@@ -32,3 +32,16 @@ class TestDelta(unittest.TestCase):
     def test_success_no_candidate(self):
         self.ledger.append(RunRecord.new(task="e2e-canary", exit_code=0))
         self.assertEqual(scan_ledger_failures(self.ledger, self.conn), [])
+
+    def test_single_failure_is_not_an_upskill_candidate(self):
+        # a one-off failure is scan_ledger_failures' territory (a repair
+        # candidate); repeated failure of the SAME task is a competence gap.
+        self.ledger.append(RunRecord.new(task="cookie-sync", exit_code=1))
+        self.assertEqual(scan_upskill_candidates(self.ledger, self.conn), [])
+
+    def test_repeated_failure_emits_upskill_candidate_and_dedupes(self):
+        self.ledger.append(RunRecord.new(task="cookie-sync", exit_code=1))
+        self.ledger.append(RunRecord.new(task="cookie-sync", exit_code=1))
+        slugs = scan_upskill_candidates(self.ledger, self.conn)
+        self.assertEqual(slugs, ["upskill-cookie-sync"])
+        self.assertEqual(scan_upskill_candidates(self.ledger, self.conn), [])

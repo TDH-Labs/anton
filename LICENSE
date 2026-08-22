@@ -1,0 +1,33 @@
+Anton Community License 1.0
+
+Copyright (c) 2026 TDH Labs
+
+This is a source-available license, not an OSI-approved open-source license.
+It is written in plain terms rather than reused verbatim from a named
+license (e.g. BUSL, Elastic License 2.0) whose exact wording carries
+specific legal meaning this document does not claim to replicate. Treat this
+as a working draft: get it reviewed by a lawyer before relying on it to
+protect real revenue.
+
+Permission is granted, free of charge, to any person or organization
+obtaining a copy of this software and associated documentation (the
+"Software"), to use, copy, modify, and self-host the Software for any
+purpose, including internal commercial use, subject to the following
+conditions:
+
+1. You may not offer the Software, or a modified version of it, to third
+   parties as a hosted or managed service (i.e. running it on infrastructure
+   you control on behalf of others) without a separate commercial agreement
+   with TDH Labs.
+2. You may not remove or alter this license, or the copyright notices in
+   NOTICE, from copies or substantial portions of the Software.
+3. The Software is provided "AS IS", without warranty of any kind, express
+   or implied, including but not limited to the warranties of
+   merchantability, fitness for a particular purpose, and noninfringement.
+   In no event shall the authors or copyright holders be liable for any
+   claim, damages, or other liability arising from, out of, or in connection
+   with the Software or its use.
+
+Portions of this Software are derived from third-party open-source projects
+under their own MIT licenses; their notices are preserved in NOTICE and
+still apply to those portions independent of the terms above.

@@ -1,9 +1,14 @@
 [Unit]
-Description=anton control plane (scheduler + webhooks + dashboard)
+Description=anton agent harness (scheduler + webhooks + dashboard)
 After=network.target
 
 [Service]
 Type=simple
+User=anton
+Group=anton
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=__ANTON_DATA_DIR__
 EnvironmentFile=-/etc/anton.env
 ExecStart=__ANTON_VENV_BIN__ serve --data-dir __ANTON_DATA_DIR__ --executor __ANTON_EXECUTOR__
 Restart=on-failure

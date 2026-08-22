@@ -11,3 +11,12 @@ runs.jsonl
 *.egg-info/
 
 
+.env
+.env.*
+*.env
+secrets*
+!secrets.example*
+*.cast
+*.mp4
+.DS_Store
+notes/

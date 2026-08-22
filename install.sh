@@ -26,19 +26,11 @@ if [ -x "$ANTON_HOME/venv/bin/python" ] && \
   echo "==> existing venv uses Python < 3.11 — rebuilding"
   rm -rf "$ANTON_HOME/venv"
 fi
-if [ ! -x "$ANTON_HOME/venv/bin/harbor" ]; then
+if [ ! -x "$ANTON_HOME/venv/bin/anton" ]; then
   "$PYTHON" -m venv "$ANTON_HOME/venv"
 fi
 "$ANTON_HOME/venv/bin/pip" install -q --disable-pip-version-check -e "$REPO_DIR"
-# 4. Check for Agent Canvas UI
-CANVAS_BIN="$(which agent-canvas 2>/dev/null || echo "$HOME/.local/bin/agent-canvas")"
-if [ -x "$CANVAS_BIN" ]; then
-  echo "==> Agent Canvas UI detected at: $CANVAS_BIN"
-else
-  echo "==> Agent Canvas UI not found. Install globally via: npm install -g @openhands/agent-canvas"
-fi
 
-echo "==> Installed successfully. Start the turnkey system with:"
-echo "    1. Control Plane & 3D Neural Graph:  $ANTON_HOME/venv/bin/harbor dashboard --data-dir $ANTON_HOME/data"
-echo "    2. Background Automation Engine:     $ANTON_HOME/venv/bin/harbor serve --data-dir $ANTON_HOME/data"
-echo "    3. Agent Canvas Multi-Panel UI:      agent-canvas --port 8000"
+echo "==> Installed successfully. Start the agent with:"
+echo "    1. Dashboard + API (Ops Center backend):  $ANTON_HOME/venv/bin/anton dashboard --data-dir $ANTON_HOME/data"
+echo "    2. Background scheduler (cron + webhooks): $ANTON_HOME/venv/bin/anton serve --data-dir $ANTON_HOME/data --port 8798"
