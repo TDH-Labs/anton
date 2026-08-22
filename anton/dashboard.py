@@ -11,6 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 
 from .canary import compute_tripwires
+from .connections import (bridges_configured, bundled_catalog, composio_apps,
+                          nango_integrations, registry_servers)
 from .digest import build_digest
 from .models import RunRecord
 from .providers import catalog_for_ui, list_models
@@ -140,6 +142,15 @@ class MCPReq(BaseModel):
     # the same way provider keys are (secrets.yaml, 0600), under a
     # mcp:<id> namespace so it never collides with a real AI provider name.
     api_key: str = ""
+
+class ConnectReq(BaseModel):
+    id: str
+    name: str = ""
+    what: str = ""
+    url: str = ""
+    auth: str = ""
+    command: str = ""
+    bridge: str = ""
 
 class BrowserLoginReq(BaseModel):
     """The 4th Add-ons connection type: a service with no OAuth, MCP, or API
@@ -702,6 +713,53 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         finally:
             conn.close()
         return {"status": "registered", "id": mcp_id, "name": req.name, "room": req.room}
+
+    @app.get("/api/connections/catalog")
+    def connections_catalog(request: Request, registry: str = "1"):
+        """The abundant connection list: bundled entries + (optionally) the
+        live MCP registry sync + hosted-OAuth bridge apps (Composio/Nango).
+        Each entry carries transport/auth metadata so the UI can render the
+        right connect flow. Never raises -- a dead network degrades to the
+        bundled list."""
+        _require_token(request, token)
+        out = bundled_catalog()
+        if registry == "1":
+            out.extend(registry_servers(data_dir))
+        bridges = bridges_configured(config)
+        if bridges["composio"]:
+            try:
+                out.extend(composio_apps(config["bridges"]["composio"]["api_key"]))
+            except Exception:
+                pass
+        if bridges["nango"]:
+            try:
+                out.extend(nango_integrations(config["bridges"]["nango"]["secret_key"]))
+            except Exception:
+                pass
+        return {"connections": out, "bridges": bridges}
+
+    @app.post("/api/connections/connect")
+    def connections_connect(req: ConnectReq, request: Request):
+        """Connect a catalog entry: remote-http entries store their URL (and
+        optional bearer token); stdio entries install like any MCP server;
+        bridge entries record which bridge owns them. All state lives in the
+        mcp_servers table so existing consumers see one shape."""
+        _require_token(request, token)
+        conn = open_isolation_db(data_dir)
+        try:
+            perms = json.dumps({k: v for k, v in {
+                "url": req.url, "auth": req.auth,
+                "command": req.command, "bridge": req.bridge}.items() if v})
+            conn.execute(
+                "INSERT INTO mcp_servers(id, name, what, permissions_json, status, room, ts) "
+                "VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET what=excluded.what, "
+                "permissions_json=excluded.permissions_json, status=excluded.status, ts=excluded.ts",
+                (req.id, req.name or req.id, req.what or "", perms, "active", "", _now_iso()))
+            conn.commit()
+        finally:
+            conn.close()
+        return {"status": "connected", "id": req.id}
 
     @app.post("/api/wizard/browser-login")
     def add_browser_login(req: BrowserLoginReq, request: Request):

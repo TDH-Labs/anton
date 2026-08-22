@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ConnectionsCatalog } from './ConnectionsCatalog.tsx'
 import type { CSSProperties } from 'react'
 import bp from '../blueprint.module.css'
 import { Blueprint } from '../Blueprint.tsx'
@@ -245,7 +246,11 @@ export function AddonsScreen() {
         </div>
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-        <div style={{ padding: '22px 26px 30px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16, alignContent: 'start' }}>
+        <div style={{ padding: '18px 26px 0' }}>
+          <ConnectionsCatalog onConnected={(c) => setAdded((prev) => [...prev.filter((x) => x.id !== c.id), { id: c.id, name: c.name, what: '', permissions: [], status: 'active' as const }])} />
+        </div>
+        <div style={{ padding: '4px 26px 30px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16, alignContent: 'start' }}>
+          <div style={{ gridColumn: '1 / -1', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>MANUAL SETUP</div>
           {loading && <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>Loading…</div>}
           {error && <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>Couldn't reach Anton.</div>}
           {addons.map((a) => {
