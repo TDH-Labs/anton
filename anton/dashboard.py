@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 from .canary import compute_tripwires
 from .digest import build_digest
 from .models import RunRecord
+from .providers import catalog_for_ui, list_models
 from .ops_api import open_isolation_db, register_ops_routes
 from .ops_schema import ensure_ops_schema, ensure_vault_ops_schema
 from .routes import select_route
@@ -83,6 +84,26 @@ def _save_secret(install_dir: str, key_name: str, value: str) -> None:
         f.write(content)
 
 
+def _set_cloud_model(install_dir: str, model: str) -> None:
+    """Persist the wizard's model pick into config.yaml routes.cloud_model
+    (the executor's routing default), flipping prefer to cloud -- a key the
+    user just entered is by definition a cloud key."""
+    import yaml
+    config_path = os.path.join(install_dir, "config.yaml")
+    current = {}
+    if os.path.exists(config_path):
+        with open(config_path, encoding="utf-8") as f:
+            current = yaml.safe_load(f) or {}
+    routes = current.get("routes") or {}
+    routes["cloud_model"] = model
+    routes["prefer"] = "cloud"
+    current["routes"] = routes
+    tmp = config_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(current, f)
+    os.replace(tmp, config_path)
+
+
 class ApprovalReq(BaseModel):
     action: str
     amount: str = "0.00"
@@ -97,6 +118,16 @@ class ApprovalDecisionReq(BaseModel):
 class ProviderReq(BaseModel):
     provider: str
     key: str
+    # Custom (OpenAI-compatible) providers: where to reach them. Also used by
+    # known providers only if someone self-hosts a proxy; ignored otherwise.
+    base_url: str = ""
+    # Optional model selection from the wizard's model step. Persisted to
+    # config.yaml routes.cloud_model so the executor picks it up on next poll.
+    model: str = ""
+
+class SetupWizardReq(BaseModel):
+    step: str = "review"
+    picks: List[str] = []
 
 class MCPReq(BaseModel):
     name: str
@@ -520,7 +551,74 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     def save_provider_key(req: ProviderReq, request: Request):
         _require_token(request, token)
         _save_secret(os.path.dirname(data_dir), req.provider, req.key)
-        return {"status": "saved", "provider": req.provider}
+        if req.base_url.strip():
+            _save_secret(os.path.dirname(data_dir), f"{req.provider}:base_url", req.base_url.strip())
+        # Make the key visible to the already-running executor without waiting
+        # for a restart (cli.py's loader is idempotent per env var).
+        try:
+            from .cli import _load_secrets_into_env
+            _load_secrets_into_env(data_dir)
+        except Exception:
+            pass
+        if req.model.strip():
+            _set_cloud_model(os.path.dirname(data_dir), f"{req.provider}/{req.model.strip()}")
+        return {"status": "saved", "provider": req.provider, "model": req.model}
+
+    @app.get("/api/wizard/catalog")
+    def wizard_catalog(request: Request):
+        """Single source of truth for provider lists -- the wizard and the
+        settings API-keys section both render from this, so they can never
+        drift apart again."""
+        _require_token(request, token)
+        return {"providers": catalog_for_ui()}
+
+    @app.get("/api/wizard/keys")
+    def wizard_keys(request: Request):
+        """Which providers already have a saved key (booleans only -- secrets
+        are never echoed back to any UI) and the model chosen in the wizard,
+        so settings can show real state instead of empty boxes."""
+        _require_token(request, token)
+        install_dir = os.path.dirname(data_dir)
+        have: dict[str, bool] = {}
+        secrets_path = os.path.join(install_dir, "secrets.yaml")
+        if os.path.exists(secrets_path):
+            import yaml
+            with open(secrets_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            for k, v in raw.items():
+                if isinstance(v, str) and v and not k.startswith("mcp:") and not k.endswith(":base_url"):
+                    have[k] = True
+                elif isinstance(v, str) and k.endswith(":base_url") and v:
+                    have[k] = True
+        chosen_model = ""
+        config_path = os.path.join(install_dir, "config.yaml")
+        if os.path.exists(config_path):
+            import yaml
+            with open(config_path, encoding="utf-8") as f:
+                routes = (yaml.safe_load(f) or {}).get("routes") or {}
+            chosen_model = str(routes.get("cloud_model") or "")
+        return {"have_key": have, "cloud_model": chosen_model}
+
+    @app.get("/api/wizard/models")
+    def wizard_models(request: Request, provider: str, key: str = "", base_url: str = ""):
+        """Live-list models for a provider key. Errors are explicit strings,
+        never silent empties: an empty list with no error means the provider
+        genuinely returned zero models."""
+        _require_token(request, token)
+        if not key:
+            # Fall back to whatever key was already saved for this provider.
+            secrets_path = os.path.join(os.path.dirname(data_dir), "secrets.yaml")
+            if os.path.exists(secrets_path):
+                import yaml
+                with open(secrets_path, encoding="utf-8") as f:
+                    key = (yaml.safe_load(f) or {}).get(provider, "") or ""
+        try:
+            models = list_models(provider, key, base_url or None)
+        except ValueError as e:
+            return {"error": str(e), "models": []}
+        except Exception as e:
+            return {"error": f"Unexpected error listing models: {e}", "models": []}
+        return {"models": models, "error": None}
 
     @app.get("/api/wizard/oauth/start")
     def start_oauth(request: Request, provider: str = "google"):
@@ -586,7 +684,6 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             "id": r[0], "name": r[1], "what": r[2],
             "permissions": json.loads(r[3] or "[]"), "status": r[4],
         } for r in rows]
-
     @app.post("/api/wizard/mcp")
     def add_mcp(req: MCPReq, request: Request):
         _require_token(request, token)

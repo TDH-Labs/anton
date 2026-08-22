@@ -297,7 +297,7 @@ export abstract class AbstractApiClient implements IApiClient {
 
   protected mintRpcId(): RpcId {
     // crypto.randomUUID is a Web API (browser + Node ≥19): keeps this base platform-neutral.
-    return RpcId(crypto.randomUUID())
+    return RpcId(safeRandomUuid())
   }
 
   /**
@@ -546,4 +546,30 @@ function abortError(signal: AbortSignal): Error {
   if (reason instanceof Error) return reason
   if (typeof reason === 'string') return new Error(reason)
   return new Error('This operation was aborted')
+}
+
+/**
+ * crypto.randomUUID only exists in secure contexts (HTTPS / localhost).
+ * The Ops Center is routinely served over plain HTTP on LAN/Tailscale IPs,
+ * where it is undefined -- so every id minted here must use this fallback.
+ * getRandomValues IS available in insecure contexts; only randomUUID isn't.
+ * Keep in sync with the other copies (llm/message.ts, apiproxy/fetch/client.ts,
+ * ui-conversation/service.ts, interaction/commands/index.ts) until a shared
+ * utility package exists.
+ */
+export function safeRandomUuid(): string {
+  const c = globalThis.crypto as
+    | { randomUUID?: () => string; getRandomValues?: (a: Uint8Array) => Uint8Array }
+    | undefined
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  const b = new Uint8Array(16)
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(b)
+  } else {
+    for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256)
+  }
+  b[6] = (b[6]! & 0x0f) | 0x40
+  b[8] = (b[8]! & 0x3f) | 0x80
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
 }

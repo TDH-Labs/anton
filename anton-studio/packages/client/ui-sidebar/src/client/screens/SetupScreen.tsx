@@ -1,24 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import bp from '../blueprint.module.css'
 
 /**
  * README §11: "Steps: Pick the work → Connect it → Set the leash → Review
  * the plan." A step-0 "Connect your AI" precedes those: without a provider
- * key, Anton has nothing to draft automations with. It POSTs to
- * /api/wizard/providers (dashboard.py's save_provider_key) — that endpoint
- * already existed and already persisted a key to secrets.yaml, but nothing
- * in the UI ever called it and nothing on the backend ever read the saved
- * key back into the executor's environment (see anton/cli.py's
- * _load_secrets_into_env). Skippable: a fresh install still boots and the
- * rest of the wizard still works without a key, pi just fails cleanly on
- * its own until one is entered later (Add-ons, or re-running Set up).
+ * key, Anton has nothing to draft automations with.
+ *
+ * The provider list comes from the backend's /api/wizard/catalog — the same
+ * source the settings API-keys section renders from, so the two can never
+ * drift apart again. After a key is entered, /api/wizard/models live-lists
+ * what that key can actually use (errors shown inline, never silent).
+ * Custom OpenAI-compatible endpoints (vLLM, Ollama, LiteLLM proxies) are
+ * first-class: pick "Custom", give a base URL.
  */
 const STEPS = ['Connect your AI', 'Pick the work', 'Connect it', 'Set the leash', 'Review the plan']
 
-type Provider = { id: string; label: string; keyHint: string; signupUrl: string }
+type Provider = { id: string; label: string; keyHint: string; signupUrl: string; baseUrl?: string; custom?: boolean }
 
-const PROVIDERS: Provider[] = [
+// Rendered only until the backend catalog arrives (or if it fails to).
+const FALLBACK_PROVIDERS: Provider[] = [
   { id: 'anthropic', label: 'Anthropic', keyHint: 'sk-ant-…', signupUrl: 'https://console.anthropic.com/settings/keys' },
   { id: 'openai', label: 'OpenAI', keyHint: 'sk-…', signupUrl: 'https://platform.openai.com/api-keys' },
   { id: 'deepseek', label: 'DeepSeek', keyHint: 'sk-…', signupUrl: 'https://platform.deepseek.com/api_keys' },
@@ -51,6 +52,11 @@ const LEASH: PickCard[] = [
   { id: 'notify-slack', label: 'Notify the team channel on every gate', sub: 'In addition to the Waiting on you inbox' },
 ]
 
+const inputStyle: CSSProperties = {
+  width: '100%', boxSizing: 'border-box', padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit',
+  border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)',
+}
+
 /**
  * First-run wizard (README §11): a true full-viewport modal, not a routed
  * screen — the backdrop and dialog frame live in the caller (OpsCockpit),
@@ -61,9 +67,46 @@ const LEASH: PickCard[] = [
 export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
   const [step, setStep] = useState(0)
   const [picks, setPicks] = useState<Set<string>>(new Set())
+  const [providers, setProviders] = useState<Provider[]>(FALLBACK_PROVIDERS)
   const [provider, setProvider] = useState<string>('anthropic')
   const [apiKey, setApiKey] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [model, setModel] = useState('')
+  const [modelError, setModelError] = useState<string | null>(null)
+  const [loadingModels, setLoadingModels] = useState(false)
   const [keySaved, setKeySaved] = useState(false)
+
+  useEffect(() => {
+    // Single source of truth: the same backend catalog the settings page
+    // renders from, so wizard and settings can never drift apart again.
+    fetch('/api/wizard/catalog')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.providers?.length) setProviders(d.providers) })
+      .catch(() => { /* fallback list already set */ })
+  }, [])
+
+  const activeProvider = providers.find(p => p.id === provider)
+
+  const loadModels = () => {
+    if (!apiKey.trim()) return
+    setLoadingModels(true)
+    setModelError(null)
+    const qs = new URLSearchParams({ provider, key: apiKey.trim() })
+    if (provider === 'custom' && baseUrl.trim()) qs.set('base_url', baseUrl.trim())
+    fetch(`/api/wizard/models?${qs.toString()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => {
+        setModels(d.models ?? [])
+        setModelError(d.error ?? null)
+        if (d.models?.length && !model) {
+          const preferred = activeProvider?.defaultModel
+          setModel(preferred && d.models.includes(preferred) ? preferred : d.models[0])
+        }
+      })
+      .catch((e) => setModelError(String(e.message ?? e)))
+      .finally(() => setLoadingModels(false))
+  }
 
   const stepCards = step === 1 ? WORK : step === 2 ? SYSTEMS : step === 3 ? LEASH : []
   const stepPicked = stepCards.filter(c => picks.has(c.id)).length
@@ -73,8 +116,8 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
     fetch('/api/wizard/providers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, key: apiKey.trim() }),
-    }).then(() => { setKeySaved(true) })
+      body: JSON.stringify({ provider, key: apiKey.trim(), base_url: baseUrl.trim(), model: model.trim() }),
+    }).then((r) => { setKeySaved(r.ok) })
       .catch(() => { /* Anton still boots; pi just fails cleanly until a key is saved */ })
       .finally(() => { setStep(1) })
   }
@@ -84,7 +127,7 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ step: 'review', picks: [...picks] }),
-    }).catch(() => { /* the wizard still closes; nothing was picked up server-side */ })
+    }).catch(() => { /* the wizard still closes */ })
       .finally(() => { onExit?.() })
   }
 
@@ -108,7 +151,7 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
           : 'Here is the plan.'
 
   const paragraph = step === 0
-    ? 'Anton drafts and runs automations through a model you bring the key for. Add one now, or skip and add it later from Add-ons — Anton still boots either way, it just can\'t do real work until a key is saved.'
+    ? 'Anton drafts and runs automations through a model you bring the key for. Enter a key, then load the models it can use and pick one. Or skip and add it later from Settings — Anton still boots either way, it just can\'t do real work until a key is saved.'
     : step === 1
       ? 'Pick as many as you like — Anton drafts each one as a diagram you can review before anything runs.'
       : step === 2
@@ -119,65 +162,78 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
             ? "You didn't pick anything to start with — that's fine, Anton still boots. Add automations any time from Add-ons or by re-running Set up."
             : `Anton will draft roughly ${picks.size} automation${picks.size === 1 ? '' : 's'} from what you picked, and wait for your OK before any of it runs.`
 
-  const cardStyle = (active: boolean): CSSProperties => ({
-    display: 'flex',
-    gap: 10,
-    padding: '12px 14px',
-    cursor: 'pointer',
-    border: `1px solid ${active ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-border-l2)'}`,
-    background: active ? 'var(--dsw-alias-state-business-tertiary)' : 'transparent',
-  })
-
   return (
-    <div className={bp.blueprint} style={{ width: 'min(920px, 100%)', maxHeight: '100%', display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base)', boxShadow: '0 12px 32px rgba(29,31,32,.22)' }}>
-      <span className={`${bp.corner} ${bp.cornerTl}`} />
-      <span className={`${bp.corner} ${bp.cornerTr}`} />
-      <span className={`${bp.corner} ${bp.cornerBl}`} />
-      <span className={`${bp.corner} ${bp.cornerBr}`} />
-
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 12, padding: '20px 24px', borderBottom: '1px solid var(--dsw-alias-border-l2)' }}>
-        <img src="/anton_logo.jpg" alt="" style={{ width: 22, height: 22, flex: 'none' }} />
-        <div style={{ minWidth: 0 }}>
-          <div className={bp.screenTitle} style={{ fontSize: 21 }}>Set up Anton</div>
-          <div className={bp.mono} style={{ fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 }}>Step {step + 1} of {STEPS.length} · about four minutes</div>
-        </div>
-      </div>
-
-      <div style={{ flex: 'none', display: 'flex', gap: 1, background: 'var(--dsw-alias-border-l2)', margin: '18px 24px 0' }}>
-        {STEPS.map((s, i) => (
-          <div key={s} style={{ flex: 1, padding: '9px 12px', background: i === step ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-bg-base)' }}>
-            <div className={bp.kicker} style={{ margin: 0, color: i === step ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-secondary)' }}>STEP {i + 1}</div>
-            <div style={{ fontSize: 12.5, fontWeight: 500, color: i === step ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-secondary)', marginTop: 2 }}>{s}</div>
-          </div>
-        ))}
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '28px 24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      <div style={{ flex: '1 1 auto', overflowY: 'auto', padding: '28px 24px 12px' }}>
         <div className={bp.screenTitle} style={{ fontSize: 24, marginBottom: 8 }}>{question}</div>
         <div style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--dsw-alias-label-secondary)', maxWidth: '70ch', marginBottom: step < 4 ? 22 : 0 }}>{paragraph}</div>
 
         {step === 0 && (
-          <div style={{ maxWidth: 420 }}>
+          <div style={{ maxWidth: 460 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 16 }}>
-              {PROVIDERS.map((p) => {
+              {providers.map((p) => {
                 const active = provider === p.id
                 return (
-                  <div key={p.id} onClick={() => { setProvider(p.id) }} style={cardStyle(active)}>
+                  <div key={p.id} onClick={() => { setProvider(p.id); setModels([]); setModel(''); setModelError(null) }} style={cardStyle(active)}>
                     <div style={{ fontSize: 13.5, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }}>{p.label}</div>
                   </div>
                 )
               })}
             </div>
+            {activeProvider?.custom && (
+              <input
+                type="text"
+                value={baseUrl}
+                onChange={(e) => { setBaseUrl(e.target.value); setModels([]); setModel('') }}
+                placeholder="Base URL, e.g. http://192.168.1.10:11434/v1"
+                style={{ ...inputStyle, marginBottom: 10 }}
+              />
+            )}
             <input
               type="password"
               value={apiKey}
               onChange={(e) => { setApiKey(e.target.value); setKeySaved(false) }}
-              placeholder={PROVIDERS.find(p => p.id === provider)?.keyHint ?? 'API key'}
-              style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', fontSize: 13.5, fontFamily: 'inherit', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}
+              onBlur={() => { if (!activeProvider?.custom || baseUrl.trim()) loadModels() }}
+              placeholder={activeProvider?.keyHint ?? 'API key'}
+              style={inputStyle}
             />
-            <div style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)', marginTop: 8, lineHeight: 1.5 }}>
-              Don't have one? <a href={PROVIDERS.find(p => p.id === provider)?.signupUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--dsw-alias-state-business-primary)' }}>Get a {PROVIDERS.find(p => p.id === provider)?.label} key</a> — this is billed by {PROVIDERS.find(p => p.id === provider)?.label} based on how much Anton actually uses, typically a few dollars a month for one small business. Anton never sees this bill directly; check the provider's own dashboard for usage and spending limits.
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+              <button
+                onClick={loadModels}
+                disabled={!apiKey.trim() || loadingModels || (provider === 'custom' && !baseUrl.trim())}
+                style={{ padding: '7px 14px', background: 'transparent', border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-primary)', fontSize: 12.5, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                {loadingModels ? 'Loading…' : 'Load models'}
+              </button>
+              {models.length > 0 && <span style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>{models.length} models available</span>}
             </div>
+            {modelError && (
+              <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-danger-primary, #c0392b)', marginTop: 8, lineHeight: 1.45 }}>{modelError}</div>
+            )}
+            {!modelError && models.length > 0 && (
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                style={{ ...inputStyle, marginTop: 10 }}
+              >
+                {!model && <option value="">Pick a model…</option>}
+                {models.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            )}
+            {(models.length === 0 || model) && (
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="Model id (optional — e.g. claude-sonnet-4-5)"
+                style={{ ...inputStyle, marginTop: 10 }}
+              />
+            )}
+            {activeProvider?.signupUrl && (
+              <div style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)', marginTop: 8, lineHeight: 1.5 }}>
+                Don't have one? <a href={activeProvider.signupUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--dsw-alias-state-business-primary)' }}>Get a {activeProvider.label} key</a> — this is billed by {activeProvider.label} based on how much Anton actually uses, typically a few dollars a month for one small business. Anton never sees this bill directly; check the provider's own dashboard for usage and spending limits.
+              </div>
+            )}
             {keySaved && <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-success-primary)', marginTop: 8 }}>Saved.</div>}
           </div>
         )}
@@ -272,4 +328,13 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
       </div>
     </div>
   )
+}
+
+function cardStyle(active: boolean): CSSProperties {
+  return {
+    display: 'flex', flexDirection: 'row', gap: 9, padding: '11px 13px', cursor: 'pointer',
+    borderRadius: 8,
+    border: `1px solid ${active ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-border-l2)'}`,
+    background: active ? 'var(--dsw-alias-bg-raised, rgba(0,0,0,0.03))' : 'transparent',
+  }
 }
