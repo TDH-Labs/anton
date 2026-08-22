@@ -1,0 +1,63 @@
+/* Shared "blueprint" primitives for the Ops Center screens (design handoff
+   README, "Screens / Views" — shared chrome present on every screen): the
+   10px/.14em/uppercase kicker, the 29px condensed screen title, the 1px
+   hairline rule, and the blueprint-frame treatment (1px hairline border plus
+   four 11x11 "+" registration marks offset -6px at the corners). Radius: 0
+   everywhere; shadows: none (README, "Design Tokens"). Ported from the
+   handoff's styles.css `.blueprint`/`.corner` rules onto the live
+   `--dsw-specific-registration-mark` token. */
+
+.kicker {
+  font-size: 10px;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--dsw-alias-state-business-primary);
+  margin-bottom: 5px;
+}
+
+.screenTitle {
+  font-family: var(--dsw-font-family-heading, 'Barlow Condensed', system-ui, sans-serif);
+  font-weight: 600;
+  font-size: 29px;
+  line-height: 1;
+  color: var(--dsw-alias-label-primary);
+}
+
+.sectionTitle {
+  font-family: var(--dsw-font-family-heading, 'Barlow Condensed', system-ui, sans-serif);
+  font-weight: 600;
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+}
+
+.mono {
+  font-family: ui-monospace, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.blueprint {
+  position: relative;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 0;
+}
+
+.blueprint > .corner {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  color: var(--dsw-specific-registration-mark);
+}
+
+.blueprint > .corner::before,
+.blueprint > .corner::after {
+  content: '';
+  position: absolute;
+  background: currentColor;
+}
+
+.blueprint > .corner::before { left: 5px; top: 0; width: 1px; height: 100%; }
+.blueprint > .corner::after { top: 5px; left: 0; width: 100%; height: 1px; }
+.blueprint > .cornerTl { top: -6px; left: -6px; }
+.blueprint > .cornerTr { top: -6px; right: -6px; }
+.blueprint > .cornerBl { bottom: -6px; left: -6px; }
+.blueprint > .cornerBr { bottom: -6px; right: -6px; }

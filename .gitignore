@@ -20,3 +20,7 @@ secrets*
 *.mp4
 .DS_Store
 notes/
+# vendored UI: dependencies are installed at build time, never committed
+anton-studio/**/node_modules/
+anton-studio/**/.pnpm-store/
+anton-studio/**/dist/

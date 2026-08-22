@@ -1,0 +1,40 @@
+@import url("/fonts/barlow.css");
+
+body {
+  --dsw-font-family: 'Barlow', system-ui, sans-serif;
+  --dsw-font-family-heading: 'Barlow Condensed', system-ui, sans-serif;
+
+  --dsw-alias-bg-base: #f2f2f3;
+  --dsw-alias-bg-layer-2: #e9e9ea;
+  --dsw-specific-sidebar-fill: #e9e9ea;
+  --dsw-alias-label-primary: #1d1f20;
+  --dsw-alias-label-secondary: rgba(29, 31, 32, .55);
+  --dsw-alias-border-l2: rgba(29, 31, 32, .16);
+  --dsw-specific-registration-mark: rgba(29, 31, 32, .5);
+  --dsw-alias-state-business-primary: #5980a6;
+  --dsw-alias-accent-strong: #416180;
+  --dsw-alias-state-business-tertiary: #eef6ff;
+  --dsw-alias-state-warn-label: #8a5a10;
+  --dsw-alias-state-warn-tertiary: rgba(245, 158, 11, .16);
+  --dsw-alias-state-success-primary: #3f7d55;
+  --dsw-alias-state-error-primary: #a6452f;
+  --dsw-alias-interactive-bg-hover: rgba(29, 31, 32, .05);
+}
+
+body[data-anton-mode='son'] {
+  --dsw-alias-bg-base: #111619;
+  --dsw-alias-bg-layer-2: #171d21;
+  --dsw-specific-sidebar-fill: #0d1114;
+  --dsw-alias-label-primary: #e9e6df;
+  --dsw-alias-label-secondary: rgba(233, 230, 223, .55);
+  --dsw-alias-border-l2: rgba(245, 158, 11, .22);
+  --dsw-specific-registration-mark: rgba(245, 158, 11, .5);
+  --dsw-alias-state-business-primary: #f0a020;
+  --dsw-alias-accent-strong: #f6c063;
+  --dsw-alias-state-business-tertiary: rgba(245, 158, 11, .13);
+  --dsw-alias-state-warn-label: #f0a020;
+  --dsw-alias-state-warn-tertiary: rgba(245, 158, 11, .16);
+  --dsw-alias-state-success-primary: #5fae7d;
+  --dsw-alias-state-error-primary: #e2705a;
+  --dsw-alias-interactive-bg-hover: rgba(245, 158, 11, .08);
+}
