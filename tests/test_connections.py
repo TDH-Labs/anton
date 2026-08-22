@@ -71,10 +71,13 @@ class TestCatalog(_Ctx):
         self.assertFalse(b["nango"])
 
     def test_composio_apps_maps_fields(self):
-        payload = [{"appName": "quickbooks", "logo": "l.png", "meta": {"displayName": "QuickBooks"}}]
+        payload = {"items": [{"slug": "quickbooks", "name": "QuickBooks",
+                              "meta": {"description": "QBO tools", "tools_count": 42}}]}
         with mock.patch("anton.connections._http_json", return_value=payload):
             apps = composio_apps("key")
         self.assertEqual(apps[0]["id"], "composio:quickbooks")
+        self.assertEqual(apps[0]["name"], "QuickBooks")
+        self.assertEqual(apps[0]["tools_count"], 42)
         self.assertEqual(apps[0]["bridge"], "composio")
 
     def test_nango_integrations_maps_fields(self):

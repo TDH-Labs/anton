@@ -138,21 +138,24 @@ def registry_servers(data_dir: str, force: bool = False) -> list[dict[str, Any]]
             return []
 
 
-def composio_apps(api_key: str, base_url: str = "https://backend.composio.dev/v1") -> list[dict[str, Any]]:
-    """List Composio's app catalog (hundreds of SaaS, each becomes a connect card)."""
-    data = _http_json(f"{base_url}/apps", {"X-API-Key": api_key})
-    apps = data if isinstance(data, list) else data.get("items", [])
+def composio_apps(api_key: str, base_url: str = "https://backend.composio.dev/api/v3.1") -> list[dict[str, Any]]:
+    """List Composio's toolkit catalog (hundreds of SaaS, each a connect card).
+    v3.1 API: GET /toolkits -> {items:[{name,slug,meta:{description,...}}]}."""
+    data = _http_json(f"{base_url}/toolkits?limit=100", {"X-API-Key": api_key})
+    items = data.get("items", []) if isinstance(data, dict) else []
     out = []
-    for a in apps[:400]:
+    for a in items[:400]:
+        slug = a.get("slug") or a.get("name") or ""
+        meta = a.get("meta") or {}
         out.append({
-            "id": f"composio:{a.get('appName') or a.get('name')}",
-            "name": (a.get("meta", {}) or {}).get("displayName") or a.get("appName") or a.get("name"),
+            "id": f"composio:{slug}",
+            "name": a.get("name") or slug.title(),
             "category": "saas",
             "transport": "bridge",
             "bridge": "composio",
             "auth": "oauth",
-            "logo": (a.get("logo") or ""),
-            "what": f"Connect {a.get('name')} via Composio hosted OAuth",
+            "what": (meta.get("description") or f"Connect {slug} via Composio hosted OAuth")[:140],
+            "tools_count": meta.get("tools_count"),
             "source": "composio",
         })
     return out
