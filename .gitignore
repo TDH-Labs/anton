@@ -24,3 +24,8 @@ notes/
 anton-studio/**/node_modules/
 anton-studio/**/.pnpm-store/
 anton-studio/**/dist/
+
+# build/dev-session debris (never ship)
+harbor_sas.egg-info/
+*.egg-info/
+.playwright-mcp/
