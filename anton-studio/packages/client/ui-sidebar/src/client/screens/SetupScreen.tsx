@@ -14,7 +14,7 @@ import bp from '../blueprint.module.css'
  * Custom OpenAI-compatible endpoints (vLLM, Ollama, LiteLLM proxies) are
  * first-class: pick "Custom", give a base URL.
  */
-type Provider = { id: string; label: string; keyHint: string; signupUrl: string; baseUrl?: string; custom?: boolean }
+type Provider = { id: string; label: string; keyHint?: string; signupUrl?: string; baseUrl?: string; custom?: boolean; defaultModel?: string }
 
 // Rendered only until the backend catalog arrives (or if it fails to).
 const FALLBACK_PROVIDERS: Provider[] = [
