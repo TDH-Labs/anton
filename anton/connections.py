@@ -21,6 +21,7 @@ from typing import Any
 
 REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers?limit=200"
 CACHE_TTL_S = 6 * 3600
+LAST_REGISTRY_ERROR = None
 
 # transport: "remote-http" (URL + optional auth header) | "stdio" (command)
 # auth: "oauth" (remote server handles it via browser) | "key" (user supplies
@@ -126,7 +127,9 @@ def registry_servers(data_dir: str, force: bool = False) -> list[dict[str, Any]]
                 json.dump({"ts": time.time(), "servers": servers}, f)
             os.replace(tmp, cache_path)
         return servers
-    except Exception:
+    except Exception as e:
+        global LAST_REGISTRY_ERROR
+        LAST_REGISTRY_ERROR = f"{type(e).__name__}: {e}"
         # stale cache is better than nothing
         try:
             with open(cache_path, encoding="utf-8") as f:

@@ -11,8 +11,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 
 from .canary import compute_tripwires
-from .connections import (bridges_configured, bundled_catalog, composio_apps,
-                          nango_integrations, registry_servers)
+from .connections import (LAST_REGISTRY_ERROR, bridges_configured, bundled_catalog,
+                          composio_apps, nango_integrations, registry_servers)
 from .digest import build_digest
 from .models import RunRecord
 from .providers import catalog_for_ui, list_models
@@ -751,7 +751,8 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 out.extend(nango_integrations(config["bridges"]["nango"]["secret_key"]))
             except Exception:
                 pass
-        return {"connections": out, "bridges": bridges}
+        return {"connections": out, "bridges": bridges,
+                "registry_error": LAST_REGISTRY_ERROR}
 
     @app.post("/api/connections/connect")
     def connections_connect(req: ConnectReq, request: Request):
