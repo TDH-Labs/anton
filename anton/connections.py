@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers?limit=200"
+REGISTRY_URL = "https://registry.modelcontextprotocol.io/v0/servers?limit=100"
 CACHE_TTL_S = 6 * 3600
 LAST_REGISTRY_ERROR = None
 

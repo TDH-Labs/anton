@@ -136,5 +136,13 @@ class TestConnectionsEndpoints(_Ctx):
         self.assertEqual(len(listed), 1)
 
 
+
+    def test_registry_url_uses_api_max_limit(self):
+        from anton.connections import REGISTRY_URL
+        import re
+        m = re.search(r"limit=(\d+)", REGISTRY_URL)
+        self.assertIsNotNone(m)
+        self.assertLessEqual(int(m.group(1)), 100)
+
 if __name__ == "__main__":
     unittest.main()
