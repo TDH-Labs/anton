@@ -184,6 +184,14 @@ class ChatReq(BaseModel):
     prompt: str
 
 def _require_token(request, token: str) -> None:
+    # When the authZ spine is wired (config authz.enabled), identity comes
+    # from per-user sessions resolved by AuthzMiddleware; the legacy shared
+    # token is dead (REQ-AUTH-01, CI-T-AUTH-01). request.state.principal is
+    # set by the middleware for authenticated requests.
+    if getattr(request.app.state, "authz_middleware_active", False):
+        if getattr(request.state, "principal", None) is None:
+            raise HTTPException(401, "missing or invalid bearer token")
+        return
     # An empty token means the operator explicitly opted out (create_app warns
     # loudly at startup); it must never silently disable auth on a deployment
     # that was expected to have one.
@@ -817,6 +825,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         return {"status": result.status, "detail": result.detail, "id": mcp_id, "name": req.name}
 
     register_ops_routes(app, engine, data_dir, config, token)
+
+    # Multi-user authorization spine (docs/AUTHZ-SPEC.md v1.1). Off by
+    # default until migration flag flips; when enabled it replaces the
+    # shared-token path entirely.
+    authz_cfg = config.get("authz") or {}
+    if authz_cfg.get("enabled"):
+        from .authz import wire_authz
+        wire_authz(app, data_dir, config)
     return app
 
 def _day_ago_iso() -> str:
