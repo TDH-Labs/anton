@@ -52,3 +52,16 @@
 
 Commits: 648f714, 5ebab33 (spec), 3f02481 (#10 spine), 2e7766d (#12),
 10a7fb1 (#11), 988fae1 (#5).
+
+## Review run 3 (2026-08-22) — DEFERRED, provider outage
+
+- Run 3 launched against 82ba79c twice: the first (mt5aglx2-7b9kbu) was
+  repeatedly 429-paused by the stealth/ox-alpha shared pool and died
+  mid-refute ("no valid structured_output after repair"); the relaunch
+  (mt5c2cb7-fguanb) failed at investigate launch (231 tokens). Provider
+  outage confirmed during session.
+- Nothing lost: investigation + early refutes cached on the dead run's
+  files; rounds 1-2 dispositions remain valid and pinned by tests.
+- Next session: resume mt5c2cb7-fguanb (or fresh relaunch) once the pool
+  recovers, or reroute with an OpenRouter key (openrouter.ai/settings
+  /integrations). CONV-1 streak does not start until this lands clean.
