@@ -185,7 +185,15 @@ class JobEngine:
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
             return False, "no_db"
+        # R6-1: the money gate only means something while its triggers exist
+        # with canonical bodies — re-verify before EVERY decision.
         with sqlite3.connect(p, timeout=10.0) as conn:
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE name LIKE "
+                "'trg_approvals_%'")}
+            if not {"trg_approvals_pending_only_insert",
+                    "trg_approvals_transition_guard"} <= names:
+                return False, "gate_triggers_missing"
             row = conn.execute(
                 "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
                 (job_id,)).fetchone()

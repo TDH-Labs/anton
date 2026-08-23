@@ -534,3 +534,123 @@ class R5BreakglassOverLimitNoDelivery(unittest.TestCase):
                           "SELECT event_type FROM audit_chain "
                           "WHERE event_type='breakglass_rate_limited'")
         self.assertEqual(len(rows), 1)
+
+
+# =========================================================================
+# Round 6 (verification of round-5 fixes)
+# =========================================================================
+
+class R6PendingConsumedRefused(unittest.TestCase):
+    """MINOR R6-3a: pending rows cannot flip straight to consumed."""
+
+    def test_pending_to_consumed_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts)"
+                         " VALUES('pc1','job','pending','now')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE approvals SET status='consumed' "
+                             "WHERE nonce='pc1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='pc1'")
+        self.assertEqual(rows[0][0], "pending")
+
+
+class R6ApprovedRevertRefused(unittest.TestCase):
+    """MINOR R6-3b: approved rows cannot be reverted to pending."""
+
+    def test_approved_to_pending_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                         " initiator_human, initiator_principal)"
+                         " VALUES('ap1','job','pending','now','bob','bob')")
+            conn.commit()
+            conn.execute("UPDATE approvals SET status='approved',"
+                         " approver_human='alice', approver_principal='alice'"
+                         " WHERE nonce='ap1'")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE approvals SET status='pending' "
+                             "WHERE nonce='ap1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='ap1'")
+        self.assertEqual(rows[0][0], "approved")
+
+
+class R6SupersededTriggerDropped(unittest.TestCase):
+    """MAJOR R6-2: an upgrade must remove superseded trigger names so the
+    old weak bodies cannot veto the adoption/decision path."""
+
+    def test_init_db_drops_superseded_triggers(self):
+        import os
+        import sqlite3
+        path = os.path.join("/tmp",
+                            f"iso_upgrade_{int(time.time()*1000)}.db")
+        conn = sqlite3.connect(path)
+        # simulate an R4-era DB: weak old trigger present
+        conn.execute("CREATE TABLE approvals (id INTEGER PRIMARY KEY,"
+                     " nonce TEXT, action TEXT, amount TEXT, recipient TEXT,"
+                     " status TEXT, hmac TEXT, ts TEXT, initiator_human TEXT,"
+                     " initiator_principal TEXT, approver_human TEXT,"
+                     " approver_principal TEXT)")
+        conn.execute("CREATE TRIGGER trg_approvals_no_self_approve_upd"
+                     " BEFORE UPDATE ON approvals BEGIN SELECT RAISE(ABORT,"
+                     " 'old weak'); END;")
+        conn.commit()
+        conn.close()
+        try:
+            from anton.db import init_db
+            conn = init_db(path)  # upgrade path
+            names = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE name IS NOT NULL")}
+            self.assertNotIn("trg_approvals_no_self_approve_upd", names)
+            self.assertIn("trg_approvals_transition_guard", names)
+            self.assertIn("trg_approvals_pending_only_insert", names)
+            conn.close()
+        finally:
+            os.unlink(path)
+
+
+class R6AdoptionHelperAudited(unittest.TestCase):
+    """OBSERVATION R6-4: the adoption path is a raw-SQL-only, unaudited
+    channel. The helper stamps + audits; adoption of a non-NULL row fails."""
+
+    def test_adopt_helper_and_audit(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        audit = self.env.app.state.authz_audit
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts)"
+                     " VALUES('ad1','job','pending','now')")
+        conn.commit()
+        from anton.db import adopt_legacy_approval
+        adopt_legacy_approval(conn, "ad1", audit=audit)
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT event_type FROM audit_chain "
+                          "WHERE event_type='legacy_approval_adopted'")
+        self.assertTrue(rows)
+        # not-adoptable: non-NULL row
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                     " initiator_human) VALUES('ad2','job','pending','now','bob')")
+        conn.commit()
+        with self.assertRaises(LookupError):
+            adopt_legacy_approval(conn, "ad2", audit=audit)
+        conn.close()

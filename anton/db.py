@@ -113,6 +113,12 @@ WHEN (
 
     -- terminal states are terminal: consumed/denied cannot be re-decided
     OR (OLD.status IN ('consumed', 'denied') AND NEW.status != OLD.status)
+
+    -- pending CANNOT be skipped to consumed (audit/execution-marker
+    -- spoofing), and an approved row cannot be walked back to pending
+    -- (approver laundering / re-open of a dated sign-off) — R6-3
+    OR (NEW.status = 'consumed' AND OLD.status NOT IN ('approved', 'consumed'))
+    OR (OLD.status = 'approved' AND NEW.status = 'pending')
 )
 BEGIN
     SELECT RAISE(ABORT, 'approval transition rejected (REQ-APPR-01/02)');
@@ -123,9 +129,31 @@ END;
 def init_db(path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     conn = sqlite3.connect(path)
+    _upgrade_approvals_columns(conn)
+    # Superseded trigger names from earlier rounds must never survive:
+    # a same-name IF NOT EXISTS create would silently keep the OLD weak body
+    # (R5-2/R6-1). Drop them explicitly, then install the canonical set.
+    conn.execute("DROP TRIGGER IF EXISTS trg_approvals_no_self_approve")
+    conn.execute("DROP TRIGGER IF EXISTS trg_approvals_no_self_approve_upd")
     conn.executescript(SCHEMA)
     conn.commit()
     return conn
+
+
+def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent ADD COLUMN for the identity fields introduced in R3 so
+    pre-R3 isolation.db files upgrade cleanly (R6-2)."""
+    tbl = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approvals'"
+    ).fetchone()
+    if tbl is None:
+        return  # fresh DB: SCHEMA creates it with the columns already
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(approvals)")}
+    for name in ("initiator_human", "initiator_principal",
+                 "approver_human", "approver_principal"):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE approvals ADD COLUMN {name} TEXT")
+    conn.commit()
 
 
 # The legacy approvals trigger set is the scheduler's real money/outbound
@@ -136,6 +164,29 @@ CRITICAL_ISOLATION_TRIGGERS = (
     "trg_approvals_pending_only_insert",
     "trg_approvals_transition_guard",
 )
+
+
+def adopt_legacy_approval(conn: sqlite3.Connection, nonce: str, audit=None):
+    """Single-shot adoption of a pre-authz all-NULL approval row. Only a
+    row that is pending with all identity NULL may be stamped with the
+    system:legacy initiator; after that it is immutable and decisions flow
+    through the guarded path. Audited when an audit log is supplied (R6-4)."""
+    cur = conn.execute(
+        "UPDATE approvals SET initiator_human='system:legacy', "
+        "initiator_principal='system:legacy' "
+        "WHERE nonce=? AND status='pending' AND initiator_human IS NULL "
+        "AND initiator_principal IS NULL AND approver_human IS NULL "
+        "AND approver_principal IS NULL", (nonce,))
+    conn.commit()
+    if cur.rowcount == 0:
+        raise LookupError(f"no pending all-NULL approval with nonce {nonce}")
+    if audit is not None:
+        try:
+            audit.append("legacy_approval_adopted",
+                         payload={"nonce": nonce})
+        except Exception:
+            pass
+    return True
 
 
 def isolation_approvals_integrity(conn: sqlite3.Connection) -> list[str]:
@@ -158,4 +209,10 @@ def isolation_approvals_integrity(conn: sqlite3.Connection) -> list[str]:
             out.append(f"{name}:missing")
         elif live[name] != canon.get(name):
             out.append(f"{name}:weakened")
+    # Any approvals trigger beyond the canonical set is drift — including a
+    # superseded same-name body that survived IF NOT EXISTS (R6-1).
+    for name in live:
+        if name.startswith("trg_approvals_") and \
+                name not in CRITICAL_ISOLATION_TRIGGERS:
+            out.append(f"{name}:unexpected")
     return out

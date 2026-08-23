@@ -71,10 +71,32 @@ def _load_secrets_into_env(data_dir: str) -> None:
             os.environ[env_var] = key
 
 
+def _assert_isolation_trigger_integrity(data_dir: str) -> None:
+    """The money/outbound gate lives in isolation.db; serve and any process
+    that makes gate decisions must refuse to start on trigger drift — not
+    only the dashboard process (R6-1)."""
+    import sqlite3
+    from .db import isolation_approvals_integrity
+    path = os.path.join(data_dir, "isolation.db")
+    if not os.path.exists(path):
+        return
+    conn = sqlite3.connect(path)
+    try:
+        drift = isolation_approvals_integrity(conn)
+    finally:
+        conn.close()
+    if drift:
+        raise RuntimeError(
+            "isolation.db approvals trigger set drifted (" +
+            ",".join(drift) + ") — refusing to start. Run `anton setup` "
+            "/ re-run init_db to restore the canonical gate.")
+
+
 def _build(config: dict, data_dir: str, executor_name: str):
     _load_secrets_into_env(data_dir)
     os.makedirs(data_dir, exist_ok=True)
     init_db(os.path.join(data_dir, "isolation.db"))
+    _assert_isolation_trigger_integrity(data_dir)
     init_vault_db(os.path.join(data_dir, "vault", "vault.db"))
     jobs_path = os.path.join(data_dir, config.get("jobs_file", "jobs.yaml"))
     if not os.path.exists(jobs_path):
@@ -244,6 +266,7 @@ def cmd_vault(args, config: dict) -> int:
         return 0
     from .db import init_db
     init_db(os.path.join(args.data_dir, "isolation.db"))
+    _assert_isolation_trigger_integrity(args.data_dir)
     new_mod, removed = scan_vault(vault_dir)
     db_conn = __import__("sqlite3").connect(os.path.join(args.data_dir, "isolation.db"))
     for n in new_mod:

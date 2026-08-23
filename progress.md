@@ -201,3 +201,28 @@ DB.
   R3B-4 now holds the single store write lock across unbounded external
   channel I/O (global control-plane wedge incl. revocation + audit append).
   CONV-1 stays closed.
+
+## Review (adversarial-reviewer-A, run vs HEAD 3ff567b — round-5 fixes; angle: AUTH BYPASS + FAIL-OPEN)
+
+Suite green before probing (107 passed + 75 subtests). Round-5 fixes verified
+genuine at API/trigger level: all-NULL two-step forge closed (decided
+transitions require non-null approver != initiator; adoption is the sole
+escape and is single-shot); fresh trigger names install on old DBs;
+break-glass pre-check precedes delivery and rate_limited rows are audited;
+refused migrations audited; consumed/denied terminal; _validate_lease and
+_check_capability share the fail-closed session helper. The remaining
+findings are round-5 seams:
+
+- Fixed: nothing (adversarial review only; findings returned as JSON).
+- Note: found 2 MAJOR + 1 MINOR + 2 OBSERVATION (JSON returned). R5-7's
+  isolation.db gate runs only inside wire_authz (dashboard boot, authz-enabled),
+  while every money-gate decision happens in `anton serve`/webhook — separate
+  processes that never run the check; init_db's CREATE TRIGGER IF NOT EXISTS
+  silently accepts a pre-existing weakened same-name trigger on the serve
+  side, and the gate is exact-text + boot-only so a runtime trigger swap is
+  never re-detected. R5-1's adoption path is dead on upgraded round-3/4-era
+  DBs (surviving trg_approvals_no_self_approve_upd aborts every initiator
+  mutation), and the R5-7 gate reports clean on those DBs — repro'd via the
+  real init_db + isolation_approvals_integrity code. Approved is not terminal
+  (approved→pending→approved replay allows re-running the money gate on one
+  dated sign-off). CONV-1 stays closed.
