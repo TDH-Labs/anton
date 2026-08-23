@@ -232,24 +232,32 @@ class AuthzStore:
         return [dict(r) for r in rows]
 
     # -- machine tokens ----------------------------------------------------
-    def mint_machine_token(self, service_user_id: str) -> tuple[str, str]:
+    def mint_machine_token(self, service_user_id: str,
+                           ttl_hours: float | None = None) -> tuple[str, str]:
+        """Downtime-free rotation (REQ-AUTH-02): mint a replacement token,
+        switch the executor over, then revoke the old jti — overlapping
+        generations are supported by design. ttl_hours bounds lifetime."""
         jti = uuid.uuid4().hex
         token = "amt_" + pysecrets.token_urlsafe(32)
+        expires = (_epoch() + ttl_hours * 3600) if ttl_hours else None
         with self.lock:
             self.conn.execute(
-                "INSERT INTO machine_tokens(id, token_hash, service_user_id, created)"
-                " VALUES(?,?,?,?)",
-                (jti, _token_digest("machine", token), service_user_id, _now()))
+                "INSERT INTO machine_tokens(id, token_hash, service_user_id,"
+                " created, expires) VALUES(?,?,?,?,?)",
+                (jti, _token_digest("machine", token), service_user_id,
+                 _now(), expires))
             self.conn.commit()
         return token, jti
 
     def resolve_machine_token(self, token: str) -> UserPrincipal | None:
         digest = _token_digest("machine", token)
         row = self.conn.execute(
-            "SELECT m.id AS jti, m.revoked, u.* FROM machine_tokens m "
+            "SELECT m.id AS jti, m.revoked, m.expires, u.* FROM machine_tokens m "
             "JOIN users u ON u.id = m.service_user_id WHERE m.token_hash=?",
             (digest,)).fetchone()
         if row is None or row["revoked"]:
+            return None
+        if row["expires"] is not None and row["expires"] <= _epoch():
             return None
         return UserPrincipal(user_id=row["id"], username=row["username"],
                              role=None, human_id=row["human_id"], kind="service")

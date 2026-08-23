@@ -306,3 +306,18 @@ class FixAuditorNotVacuous(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MachineTokenExpiry(unittest.TestCase):
+    """MINOR fix: machine tokens support bounded lifetimes."""
+
+    def test_expired_machine_token_rejected(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        owner = store.get_user_by_username("owner")
+        svc = store.create_service_identity("svc-exp", owner["id"])
+        tok, _ = store.mint_machine_token(svc["id"], ttl_hours=-0.01)
+        self.assertIsNone(store.resolve_machine_token(tok))
+        tok2, _ = store.mint_machine_token(svc["id"])  # no expiry
+        self.assertIsNotNone(store.resolve_machine_token(tok2))

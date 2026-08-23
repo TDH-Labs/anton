@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS sessions_authz (
 CREATE TABLE IF NOT EXISTS machine_tokens (
     id TEXT PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL,
     service_user_id TEXT NOT NULL,
-    created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
+    created TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0,
+    expires REAL
 );
 CREATE TABLE IF NOT EXISTS login_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
