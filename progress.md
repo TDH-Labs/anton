@@ -83,6 +83,28 @@ adversarial reviews issuing PROCEED verdicts with zero BLOCKER/MAJOR
 against running code (HEAD 8b14463). Suite at convergence: 354 passed +
 75 RBAC matrix subtests; all prior-round regression pins still green.
 
+### Multi-tenant design note (2026-08-23, verified against HEAD)
+
+Single-org vs multi-tenant is NOT additive work. Controls hardened this
+session ASSUME one trust domain and would be redesigned, not extended:
+
+- Keyed decision HMAC (dashboard._decision_hmac, consume_verified_approval)
+  — deployment-global secret; multi-tenant needs per-tenant keys with
+  key-ID-prefixed evidence.
+- Genesis stamp — one authz/genesis.stamp per data dir; multi-tenant needs
+  per-tenant wipe detection or an out-of-DB marker scheme.
+- Broker master key + capability tokens — deployment-global; per-tenant
+  credential namespaces required so Firm A's QBO token is unmintable for B.
+- WORM audit chain — single global chain; per-tenant chains or partitioned
+  anchoring needed.
+- org_id columns exist on isolation.db tables but are INERT scaffolding
+  (no query filters, no trigger partitions) — schema comments claiming
+  "tenant-ready" overstate; treat as groundwork only.
+
+Conclusion: commercial shape today = one deployed box per firm, operated
+as a fleet. Multi-tenancy = its own designed phase with the four systems
+above revisited at the design level.
+
 ### Open tracked items (MINOR/OBS, non-blocking per CONV-1)
 1. Out-of-DB genesis marker for the kv-drop launder (audit-chain table-drop
    shape heals before first_boot gate) — needs a file-based seeding marker;
