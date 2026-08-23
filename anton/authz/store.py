@@ -16,7 +16,7 @@ import threading
 import uuid
 
 from .principals import UserPrincipal
-from .schema import ensure_schema
+from .schema import ensure_schema, schema_signature
 
 SESSION_TTL_HOURS = 12
 LOCKOUT_WINDOW_S = 900
@@ -53,6 +53,16 @@ def open_store(path: str) -> "AuthzStore":
     return AuthzStore(path)
 
 
+
+def _canonical_conn():
+    """A scratch connection holding the EXACT canonical authz schema."""
+    import sqlite3 as _s3
+    from .schema import SCHEMA, TRIGGERS
+    m = _s3.connect(":memory:")
+    m.executescript(SCHEMA)
+    m.executescript(TRIGGERS)
+    return m
+
 class AuthzStore:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -64,25 +74,26 @@ class AuthzStore:
         self.token_rotator = None  # type: ignore
         self.decision_secret: str | None = None
         self.broker = None
-        # R13-B1: gate BEFORE heal. If a recorded baseline exists and does
-        # NOT match the raw on-disk state, something was dropped/weakened
-        # while the app was stopped — running ensure_schema here would
-        # silently recreate it and launder the tamper past boot_check.
-        # Refuse instead; wire_authz surfaces the refusal.
+        # R13-B1/R20-2: gate BEFORE heal. If the raw on-disk signature does
+        # not match the recorded baseline, the DB drifted or was tampered
+        # with while stopped — REFUSE with the file left byte-identical
+        # (never heal-then-refuse: that persists a partial state and bricks
+        # the install). Remediation (documented, pre-1.0): re-run anton
+        # setup to rebuild authz.db; approval history lives in isolation.db.
         self.preheal_refusal = None
         has_kv = bool(self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'"
         ).fetchone())
         if has_kv:
-            from .schema import schema_signature
             baseline = self.kv_get("schema_hash")
             if baseline is not None:
                 live = schema_signature(self.conn)
                 if live != baseline:
                     self.preheal_refusal = (
                         f"authz schema drifted while stopped "
-                        f"(recorded {baseline[:16]}…, on-disk {live[:16]}…)")
-                    return  # do not heal; caller must refuse
+                        f"(recorded {baseline[:16]}…, on-disk {live[:16]}…) "
+                        f"— re-run anton setup to rebuild the authz store.")
+                    return  # live DB left byte-identical
         ensure_schema(self.conn)
         self._upgrade_approval_decision_columns()
 

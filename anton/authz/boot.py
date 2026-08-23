@@ -64,6 +64,31 @@ def _TXN_CONTROL_WORDS():
     return {"BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "END"}
 
 
+def _leading_keyword(text: str) -> str | None:
+    """First SQL keyword after stripping whitespace and comments — a
+    leading '--' comment must not smuggle transaction-control past the
+    guard (R20-1)."""
+    import re as _re
+    s = text
+    while True:
+        s = s.lstrip()
+        if s.startswith("--"):
+            nl = s.find("\n")
+            if nl == -1:
+                return None
+            s = s[nl + 1:]
+            continue
+        if s.startswith("/*"):
+            end = s.find("*/")
+            if end == -1:
+                return None
+            s = s[end + 2:]
+            continue
+        break
+    m = _re.match(r"([A-Za-z]+)", s)
+    return m.group(1).upper() if m else None
+
+
 def _for_each_statement(conn, text, fn):
     """Executes fn(conn, stmt) for every complete statement in `text`.
 
@@ -78,19 +103,18 @@ def _for_each_statement(conn, text, fn):
     for ch in text:
         buf += ch
         if ch == ";" and sqlite3.complete_statement(buf):
-            first = _re.match(r"\s*([A-Za-z]+)", buf)
-            if first and first.group(1).upper() in _TXN_CONTROL_WORDS():
+            kw = _leading_keyword(buf)
+            if kw in _TXN_CONTROL_WORDS():
                 raise MigrationIntegrityError(
                     f"transaction-control statement forbidden in "
-                    f"migrations: {first.group(1).upper()}")
+                    f"migrations: {kw}")
             fn(conn, buf)
             buf = ""
     if buf.strip():
-        first = _re.match(r"\s*([A-Za-z]+)", buf)
-        if first and first.group(1).upper() in _TXN_CONTROL_WORDS():
+        kw = _leading_keyword(buf)
+        if kw in _TXN_CONTROL_WORDS():
             raise MigrationIntegrityError(
-                f"transaction-control statement forbidden in migrations: "
-                f"{first.group(1).upper()}")
+                f"transaction-control statement forbidden in migrations: {kw}")
         fn(conn, buf)
 
 
