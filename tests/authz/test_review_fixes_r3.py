@@ -1244,3 +1244,57 @@ class R11UpgradeBaselineGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =========================================================================
+# Round 12 (verification of round-11 fixes)
+# =========================================================================
+
+class R12BaselineNoneTamperNotLaundered(unittest.TestCase):
+    """MAJOR R12-1: a tampered DB with the kv baseline row DELETED must not
+    be auto-healed by the sanctioned upgrade — boot_check refuses instead."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        from anton.authz.store import open_store
+        # tamper: drop column + delete baseline row
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN evidence_hmac")
+        conn.execute("DELETE FROM kv WHERE key='schema_hash'")
+        conn.commit()
+        conn.close()
+        store = open_store(self.env.authz_db)  # must NOT heal
+        self.baseline = store.kv_get("schema_hash")
+        cols = {r[1] for r in store.conn.execute(
+            "PRAGMA table_info(approval_decisions)")}
+        self.column_restored = "evidence_hmac" in cols
+        store.close()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_baseline_stays_none_and_column_not_restored(self):
+        self.assertIsNone(self.baseline)
+        self.assertFalse(self.column_restored)
+
+
+class R12DisabledServiceIdentity(unittest.TestCase):
+    """OBS R12-3: a disabled service identity's machine token dies."""
+
+    def test_disabled_service_machine_token_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        owner = store.get_user_by_username("owner")
+        svc = store.create_service_identity("svc-x", owner["id"])
+        tok, _ = store.mint_machine_token(svc["id"])
+        self.assertIsNotNone(store.resolve_machine_token(tok))
+        with store.lock:
+            store.conn.execute("UPDATE users SET disabled=1 WHERE id=?",
+                               (svc["id"],))
+            store.commit_flag = True
+            store.conn.commit()
+        self.assertIsNone(store.resolve_machine_token(tok))

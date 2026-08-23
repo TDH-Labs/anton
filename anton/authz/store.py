@@ -90,12 +90,24 @@ class AuthzStore:
         from .schema import schema_signature
         old_sig = schema_signature(self.conn)
         baseline = self.kv_get("schema_hash")
-        if baseline is not None and baseline != old_sig:
-            return  # not our upgrade path; boot_check will refuse
-        self.conn.execute(
-            "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
-        self.conn.commit()
-        self.kv_set("schema_hash", schema_signature(self.conn))
+        # R12-1: a genuine pre-R9 DB ALWAYS has a baseline (recorded since
+        # the Phase-1 spine) equal to its live signature. baseline None or a
+        # mismatch means tampering/botched restore — leave it for
+        # boot_check's fail-closed refusals; never ALTER + re-baseline.
+        if baseline is None or baseline != old_sig:
+            return
+        with self.lock:
+            try:
+                self.conn.execute(
+                    "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
+                self.conn.commit()
+            except sqlite3.OperationalError as e:
+                # concurrent opener won the race — accept if present now
+                cols = {r[1] for r in self.conn.execute(
+                    "PRAGMA table_info(approval_decisions)")}
+                if "evidence_hmac" not in cols:
+                    raise
+            self.kv_set("schema_hash", schema_signature(self.conn))
 
     # -- users -----------------------------------------------------------
     def count_users(self) -> int:
@@ -292,8 +304,18 @@ class AuthzStore:
             return None
         if row["expires"] is not None and row["expires"] <= _epoch():
             return None
+        if row["disabled"]:
+            # a disabled service identity's tokens die with it (R12-3)
+            return None
         return UserPrincipal(user_id=row["id"], username=row["username"],
                              role=None, human_id=row["human_id"], kind="service")
+
+    def revoke_machine_token(self, jti: str) -> None:
+        """Revoke a machine token by id (rotation's second half — R12-3)."""
+        with self.lock:
+            self.conn.execute(
+                "UPDATE machine_tokens SET revoked=1 WHERE id=?", (jti,))
+            self.conn.commit()
 
     # -- misc ----------------------------------------------------------------
     def add_alert(self, kind: str, detail: str) -> None:

@@ -413,3 +413,66 @@ hmac; triggers permit hmac-less approve writes) permanently parks all legit
 approvals behind unverified_hmac (reproduced). (5) OBSERVATION — approvals.id is not
 in the transition-guard immutability list; row renumbering invalidates keyed hmacs
 (DoS / tamper-evidence) — add NEW.id IS NOT OLD.id.
+
+## Review — round 12 (adversarial reviewer B, verification round 12, HEAD 01737b7)
+
+### What's correct
+- R11-1 (whitespace): genuine. All three write-side trust points normalize —
+  `create_app`/`_set_hmac_secret` (dashboard.py:217-220), `wire_authz`
+  (authz/__init__.py:42), `cli._build` (cli.py:118) all `.strip()`. All four
+  verify-side consumers read the already-normalized value (`store.decision_secret`,
+  `engine._decision_secret`); no config-raw reader remains. Grep-confirmed.
+- R11-2 (NULL-hmac consumed INSERT): genuine. `COALESCE(NEW.hmac,'') !=
+  'son_of_anton_bypass'` in db.py:85 correctly aborts NULL/empty-hmac consumed
+  INSERTs while the documented bypass marker still passes; cannon reset matches
+  via `isolation_approvals_integrity`. R11 tests pass (3/3).
+- R11-3 (upgrade baseline guard), baseline-PRESENT branch: genuine — a drifted DB
+  with an intact kv baseline is NOT rebaselined by open_store; boot_check refuses
+  (pinned test). Covered below: the None branch is not.
+
+### Fixed
+- (none from this round — see MAJOR finding; fix already applied by review)
+  Actually: none were applied; the MAJOR below remains open.
+
+### Note
+- MAJOR finding 1 (R11-3 incomplete) blocks PROCEED per prior round convention;
+  see JSON. Failed-closed alternative is available and does not break the
+  sanctioned pre-R9 upgrade path (every DB that ever passed wire_authz/boot_check
+  or run_migration has a recorded baseline since the Phase-1 spine; evidence_hmac
+  arrived only in R9, so a genuine pre-R9 DB always has baseline == old_sig).
+
+## Review — adversarial round 12 (AUTH BYPASS + FAIL-OPEN sweep; HEAD 01737b7)
+
+- Verified round-11 fixes are genuine (code + probes + pinned tests in
+  tests/authz/test_review_fixes_r3.py):
+  - R11-1 whitespace: strip() at all three write-side trust points
+    (dashboard.py:220, cli.py:118, authz/__init__.py:42); verifiers read the
+    normalized store/engine value. R11WhitespaceSplitBrain passes.
+  - R11-2 NULL-hmac consumed-INSERT: COALESCE(NEW.hmac,'') in the isolation
+    pending-only trigger (db.py:85); probed end-to-end — NULL-hmac consumed
+    INSERT raises IntegrityError; legit approved row with keyed hmac still
+    consumes. R11NullHmacConsumedInsertRefused passes.
+  - R11-3 sanctioned upgrade requires baseline==live (store.py:92-93);
+    R11UpgradeBaselineGuard passes.
+- Swept all approval consumers (scheduler `_is_approved`, upskill
+  `approve_pending_promotion`, egress submit/execute, authz
+  approve/execute_approved) and the broker (lease/mint/fetch/poll, grant +
+  session + key-version rechecks). No BLOCKER/MAJOR. Fail-closed confirmed:
+  lock contention → 'gate_locked', drift → block, unverified hmac → block,
+  unwired grant/session validators → deny, broker unavailable → BrokerDegraded.
+- Fixed: nothing required.
+- Findings:
+  - MINOR: R11-3 incomplete for baseline==None — a tampered/restored authz.db
+    (evidence_hmac column dropped AND kv.schema_hash deleted) is auto-healed
+    and re-baselined by open_store, so boot_check's baseline_missing refusal
+    never fires. Genuine pre-R9 DBs always carry a baseline (schema_hash since
+    3f02481, evidence_hmac since bf5670e), so baseline==None is never a
+    legitimate upgrade target. (store.py:93; probed.)
+  - OBSERVATION: upskill default _PROMOTION_RISK_PROFILE routes
+    AUTO_EXECUTE (score 0.81 ≥ 0.7, low risk), so the R9-hardened approval
+    consumer is unreachable under default config — promotion lands in the
+    live skill pool unattended. (upskill.py:54/365-367)
+  - OBSERVATION: machine tokens ignore the user's `disabled` flag
+    (resolve_machine_token JOIN has no u.disabled=0 check, unlike
+    resolve_session) — a disabled service identity's token still passes the
+    /api/exec/result allowlist (static echo response only). (store.py:285-289)
