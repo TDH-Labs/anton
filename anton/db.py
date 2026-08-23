@@ -1,6 +1,8 @@
 """isolation.db — agent-harness state. Tenant-ready: org_id on every table (Q4)."""
 from __future__ import annotations
 
+import time
+
 import sqlite3
 import os
 
@@ -18,7 +20,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     -- REQ-APPR-01/02: approver != initiator on the scheduler's real money/
     -- outbound gate. Additive; backfilled NULL until authz rewrites.
     initiator_human TEXT, initiator_principal TEXT,
-    approver_human TEXT, approver_principal TEXT
+    approver_human TEXT, approver_principal TEXT,
+    decided_at TEXT
 );
 CREATE TABLE IF NOT EXISTS budgets (
     id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
@@ -210,7 +213,7 @@ def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
         return  # fresh DB: SCHEMA creates it with the columns already
     cols = {r[1] for r in conn.execute("PRAGMA table_info(approvals)")}
     for name in ("initiator_human", "initiator_principal",
-                 "approver_human", "approver_principal"):
+                 "approver_human", "approver_principal", "decided_at"):
         if name not in cols:
             conn.execute(f"ALTER TABLE approvals ADD COLUMN {name} TEXT")
     conn.commit()
@@ -254,12 +257,16 @@ def adopt_legacy_approval(conn: sqlite3.Connection, nonce: str, audit=None):
 
 
 def consume_verified_approval(conn: sqlite3.Connection, action: str,
-                              secret: str | None = None):
+                              secret: str | None = None,
+                              max_age_s: float | None = None):
     """THE verified consumer for the money/outbound/skill-promotion gates:
     trigger-integrity drift check + optional decision-hmac verification +
-    one-shot consume, atomically orderable inside a caller's BEGIN
-    IMMEDIATE (R9-BLOCKER: upskill consumed forgeries because R8-1 lived
-    only in the scheduler). Returns (ok, reason)."""
+    freshness window + one-shot consume, atomically orderable inside a
+    caller's BEGIN IMMEDIATE. Returns (ok, reason).
+
+    Freshness (R9-MINOR): when max_age_s is set, a decided row older than
+    the window is refused ('approval_expired'); rows with no decided_at
+    stamp pass only in legacy mode (no secret) — documented boundary."""
     import hashlib as _hashlib
     import hmac as _hmac
     drift = isolation_approvals_integrity(conn)
@@ -270,7 +277,7 @@ def consume_verified_approval(conn: sqlite3.Connection, action: str,
         # whose keyed hmac verifies — a single planted NULL-hmac junk row
         # cannot park legit approvals behind unverified_hmac forever.
         rows = conn.execute(
-            "SELECT id, hmac, nonce FROM approvals WHERE action=? AND "
+            "SELECT id, hmac, decided_at FROM approvals WHERE action=? AND "
             "status='approved' ORDER BY id DESC", (action,)).fetchall()
         verified = None
         for row in rows:
@@ -284,6 +291,19 @@ def consume_verified_approval(conn: sqlite3.Connection, action: str,
         if verified is None:
             return False, ("no_approval" if not rows else "unverified_hmac")
         aid = verified[0]
+        if max_age_s is not None:
+            import datetime as _dt
+            decided = verified[2]
+            if not decided:
+                return False, "no_decision_timestamp"
+            try:
+                age = time.time() - _dt.datetime.strptime(
+                    decided, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=_dt.timezone.utc).timestamp()
+            except ValueError:
+                return False, "bad_decision_timestamp"
+            if age > max_age_s:
+                return False, "approval_expired"
     else:
         row = conn.execute(
             "SELECT id FROM approvals WHERE action=? AND status='approved' "

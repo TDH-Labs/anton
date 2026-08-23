@@ -3,6 +3,7 @@
 Run 3 (independent reviewers on deepseek-v4-flash) survived these against
 HEAD 82ba79c. Each test pins one finding so it cannot silently regress.
 """
+import hashlib
 import time
 import unittest
 import unittest.mock
@@ -1417,3 +1418,167 @@ class R14PrehealRefusalSurvivesDroppedAuditChain(unittest.TestCase):
         from anton.dashboard import create_app
         with self.assertRaises(RuntimeError):
             create_app(self.env.engine, self.env.data_dir, self.env.cfg)
+
+
+# =========================================================================
+# Round 16 repairs (post-convergence hardening batch)
+# =========================================================================
+
+class R16ApprovalFreshnessWindow(unittest.TestCase):
+    """R9-MINOR repair: approved sign-offs expire."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.engine = self.env.engine
+        import os
+        self.engine.data_dir = os.path.join(self.env.dir, "data")
+        self.engine._decision_secret = "test-decision-secret"
+        self.engine._approval_max_age_s = 3600  # 1h window
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def _seed_approved(self, decided_at):
+        import sqlite3
+        import hmac as hm
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                     " initiator_human, initiator_principal)"
+                     " VALUES('fw1','job-fw','pending','now','system','sys')")
+        aid = conn.execute(
+            "SELECT id FROM approvals WHERE nonce='fw1'").fetchone()[0]
+        mac = hm.new(b"test-decision-secret", str(aid).encode(),
+                     hashlib.sha256).hexdigest()
+        conn.execute("UPDATE approvals SET status='approved',"
+                     " approver_human='alice', approver_principal='alice',"
+                     " hmac=?, decided_at=? WHERE id=?", (mac, decided_at, aid))
+        conn.commit()
+        conn.close()
+        return aid
+
+    def test_expired_decision_refused(self):
+        from anton.db import consume_verified_approval
+        import sqlite3
+        import datetime as dt
+        old_ts = (dt.datetime.now(dt.timezone.utc)
+                  - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        aid = self._seed_approved(old_ts)
+        conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
+        conn.execute("BEGIN IMMEDIATE")
+        ok, reason = consume_verified_approval(
+            conn, "job-fw", secret="test-decision-secret", max_age_s=3600)
+        conn.execute("ROLLBACK")
+        conn.close()
+        self.assertFalse(ok)
+        self.assertEqual(reason, "approval_expired")
+
+    def test_fresh_decision_accepted_and_missing_timestamp_refused(self):
+        from anton.db import consume_verified_approval
+        import sqlite3
+        import datetime as dt
+        now_ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        # missing timestamp -> refused when secret configured
+        aid = self._seed_approved(None)
+        conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
+        conn.execute("BEGIN IMMEDIATE")
+        ok, reason = consume_verified_approval(
+            conn, "job-fw", secret="test-decision-secret", max_age_s=3600)
+        conn.execute("ROLLBACK")
+        conn.close()
+        self.assertEqual(reason, "no_decision_timestamp")
+
+        # backfill a FRESH timestamp via the legal decide path shape
+        mac = raw_sqlite(self.env.isolation_db,
+                         "SELECT hmac FROM approvals WHERE id=?",
+                         (aid,))[0][0]
+        conn2 = sqlite3.connect(self.env.isolation_db)
+        conn2.execute("UPDATE approvals SET decided_at=? WHERE id=?",
+                      (now_ts, aid))
+        conn2.commit()
+        conn2.close()
+        conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
+        conn.execute("BEGIN IMMEDIATE")
+        ok, reason = consume_verified_approval(
+            conn, "job-fw", secret="test-decision-secret", max_age_s=3600)
+        conn.commit()
+        conn.close()
+        self.assertTrue(ok, reason)
+
+
+class R16GenesisMarker(unittest.TestCase):
+    """R15-B kv-drop launder closed: a wiped DB WITH an existing genesis
+    stamp is refused instead of re-blessed as first boot."""
+
+    def test_wiped_db_with_stamp_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()  # first boot wrote genesis.stamp
+        import os
+        stamp = os.path.join(self.env.data_dir, "authz", "genesis.stamp")
+        self.assertTrue(os.path.exists(stamp))
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        # full launder shape: wipe baseline/users AND destroy the audit
+        # chain (table drop also removes its triggers)
+        conn.execute("DROP TABLE audit_chain")
+        conn.execute("DELETE FROM kv WHERE key='schema_hash'")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+        from anton.dashboard import create_app
+        with self.assertRaises(RuntimeError):
+            create_app(self.env.engine, self.env.data_dir, self.env.cfg)
+
+
+class R16LeaseMintAudited(unittest.TestCase):
+    """OBS fix: lease/mint issuance leaves audit-chain records."""
+
+    def test_lease_and_mint_audited_over_socket(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        broker = self.env.app.state.authz_broker
+        broker.register_secret("conn-a", "v", connection_id="conn-a")
+        owner = store.get_user_by_username("owner")
+        dev = store.create_device(owner["id"], "t")
+        session_token = store.create_session(owner["id"], dev)
+        from anton.authz.broker import BrokerClient
+        client = BrokerClient(broker.socket_path)
+        lease = client.issue_lease(session_token, "exec-audit",
+                                   ["conn-a"], ttl_s=60)
+        cap = client.mint(lease, ["conn-a"])
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT event_type FROM audit_chain WHERE "
+                          "event_type IN ('lease_issued','cap_minted')")
+        types = {r[0] for r in rows}
+        self.assertIn("lease_issued", types)
+        self.assertIn("cap_minted", types)
+
+
+class R12MachineTokenRevocationReachThrough(unittest.TestCase):
+    """OBS fix: revoking/disabling a machine identity kills its LIVE broker
+    leases/cap tokens (previously TTL-bounded exposure)."""
+
+    def test_revoked_machine_token_kills_live_cap(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        broker = self.env.app.state.authz_broker
+        broker.register_secret("conn-m", "v", connection_id="conn-m")
+        owner = store.get_user_by_username("owner")
+        svc = store.create_service_identity("svc-live", owner["id"])
+        machine_token, jti = store.mint_machine_token(svc["id"])
+
+        from anton.authz.broker import BrokerClient, BrokerDenied
+        client = BrokerClient(broker.socket_path)
+        lease = client.issue_lease(machine_token, "exec-m",
+                                   ["conn-m"], ttl_s=300)
+        cap = client.mint(lease, ["conn-m"])
+        # works pre-revocation
+        self.assertEqual(client.fetch(cap, "conn-m", purpose="t"), "v")
+
+        # revoke the machine token -> live cap dies within one validation
+        store.revoke_machine_token(jti)
+        with self.assertRaises(BrokerDenied):
+            client.fetch(cap, "conn-m", purpose="post-revoke")

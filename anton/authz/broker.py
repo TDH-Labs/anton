@@ -683,6 +683,11 @@ class CredentialBroker:
                     principal, execution_id=req.get("execution_id", ""),
                     connection_ids=list(req.get("connection_ids") or []),
                     ttl_s=int(req.get("ttl_s", 300)))
+                if self.audit is not None:
+                    self.audit.append("lease_issued", payload={
+                        "principal": principal.principal_id,
+                        "execution_id": lease.execution_id,
+                        "connection_ids": lease.connection_ids})
                 return {"ok": True, "lease": lease.token}
             except BrokerDenied as e:
                 return {"ok": False, "error": type(e).__name__, "detail": str(e)}
@@ -692,6 +697,17 @@ class CredentialBroker:
                 self._validate_lease(lease)
                 token = self.mint_capability_token(lease,
                                                    list(req.get("secret_ids") or []))
+                if self.audit is not None:
+                    jti = None
+                    try:
+                        jti = json.loads(b64d(token.rsplit(".", 1)[0])).get("jti")
+                    except Exception:
+                        pass
+                    self.audit.append("cap_minted", payload={
+                        "principal": lease.principal_id,
+                        "execution_id": lease.execution_id,
+                        "secret_ids": list(req.get("secret_ids") or []),
+                        "jti": jti})
                 return {"ok": True, "token": token}
             except BrokerDenied as e:
                 return {"ok": False, "error": type(e).__name__, "detail": str(e)}

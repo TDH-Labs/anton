@@ -72,6 +72,10 @@ class JobEngine:
         self._job_executor_cache: dict = {}
         self._jobs_mtime: Optional[float] = None
         self._prime_jobs_mtime()
+        # R11-obs: shared secret required on /hooks/* triggers; unset means
+        # webhook triggers are refused (fail-closed).
+        self.webhook_secret = config.get("general", {}).get(
+            "webhook_secret") or None
 
     def _jobs_file_path(self) -> Optional[str]:
         if not self.data_dir:
@@ -198,6 +202,7 @@ class JobEngine:
         # contention fails closed as 'gate_locked' instead of killing the
         # scheduler process.
         secret = getattr(self, "_decision_secret", None) or None
+        max_age = getattr(self, "_approval_max_age_s", None)
         from .db import consume_verified_approval
         conn = sqlite3.connect(p, timeout=10.0, isolation_level=None)
         try:
@@ -207,7 +212,8 @@ class JobEngine:
                 return False, "gate_locked"
             try:
                 ok, reason = consume_verified_approval(conn, job_id,
-                                                       secret=secret)
+                                                       secret=secret,
+                                                       max_age_s=max_age)
             except sqlite3.OperationalError:
                 try:
                     conn.execute("ROLLBACK")

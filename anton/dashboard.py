@@ -516,13 +516,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             if new_kind:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, kind=?, approver_human=?, "
-                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
-                    (new_status, new_kind, appr_h, appr_p, hmac, aid))
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, new_kind, appr_h, appr_p, hmac,
+                     _now_iso(), aid))
             else:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, approver_human=?, "
-                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
-                    (new_status, appr_h, appr_p, hmac, aid))
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, _now_iso(), aid))
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(404, "no pending approval with that id")
@@ -574,8 +575,8 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                                  timeout=10.0) as conn:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, approver_human=?, "
-                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
-                    (new_status, appr_h, appr_p, hmac, aid))
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, _now_iso(), aid))
                 conn.commit()
                 if cur.rowcount == 0:
                     raise HTTPException(404, "no pending approval with that id")

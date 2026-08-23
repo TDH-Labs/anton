@@ -116,6 +116,8 @@ def _build(config: dict, data_dir: str, executor_name: str):
     # R11-1: normalize identically at EVERY trust point (dashboard seeds
     # stripped too) so whitespace can never split writer vs verifier.
     engine._decision_secret = (az.get("decision_secret") or "").strip()
+    # R9-MINOR freshness window: approved sign-offs expire (default 7 days).
+    engine._approval_max_age_s = az.get("approval_max_age_s", 7 * 24 * 3600)
     if az.get("enabled") and not engine._decision_secret:
         raise RuntimeError(
             "authz.enabled requires authz.decision_secret in config.yaml")

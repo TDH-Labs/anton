@@ -28,6 +28,16 @@ def make_handler(engine: JobEngine):
             if not job_id:
                 self._send(404, {"error": "not found"})
                 return
+            # R11-obs: /hooks/* can consume a one-use approval and execute a
+            # gated action — it MUST carry the shared webhook secret.
+            # Fail-closed: unconfigured secret rejects every trigger.
+            expected_secret = getattr(engine, "webhook_secret", None)
+            provided = self.headers.get("X-Anton-Secret", "")
+            import hmac as _hmac
+            if not expected_secret or not provided or not _hmac.compare_digest(
+                    provided, expected_secret):
+                self._send(403, {"error": "missing or invalid X-Anton-Secret"})
+                return
             job = engine.by_id(job_id)
             if job is None or job.trigger.get("type") != "webhook":
                 self._send(404, {"error": f"no webhook job {job_id!r}"})

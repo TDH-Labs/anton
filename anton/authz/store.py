@@ -332,8 +332,11 @@ class AuthzStore:
         if row["disabled"]:
             # a disabled service identity's tokens die with it (R12-3)
             return None
+        # R9-fix: carry the machine-token jti as the credential binding so
+        # broker lease/cap validation can re-check revocation live.
         return UserPrincipal(user_id=row["id"], username=row["username"],
-                             role=None, human_id=row["human_id"], kind="service")
+                             role=None, human_id=row["human_id"], kind="service",
+                             session_id=f"machine:{row['jti']}")
 
     def revoke_machine_token(self, jti: str) -> None:
         """Revoke a machine token by id (rotation's second half — R12-3)."""
@@ -341,6 +344,30 @@ class AuthzStore:
             self.conn.execute(
                 "UPDATE machine_tokens SET revoked=1 WHERE id=?", (jti,))
             self.conn.commit()
+
+    def credential_alive(self, credential_ref: str) -> bool:
+        """Broker-side liveness check for ANY credential binding carried in
+        a lease's session_id field: 'machine:<jti>' re-checks token
+        revocation/expiry AND owning-user disabled; anything else is a user
+        session id (R9: revocation reaches live leases)."""
+        if credential_ref.startswith("machine:"):
+            jti = credential_ref[len("machine:"):]
+            row = self.conn.execute(
+                "SELECT m.revoked, m.expires, u.disabled FROM machine_tokens m"
+                " JOIN users u ON u.id = m.service_user_id WHERE m.id=?",
+                (jti,)).fetchone()
+            if row is None or row["revoked"] or row["disabled"]:
+                return False
+            return not (row["expires"] is not None
+                        and row["expires"] <= _epoch())
+        return self.session_active(credential_ref)
+
+    def resolve_any_token(self, token: str) -> UserPrincipal | None:
+        """Resolve a bearer credential as either a user session or a
+        machine token (broker lease/mint entry point — R9 reach-through)."""
+        if token.startswith("amt_"):
+            return self.resolve_machine_token(token)
+        return self.resolve_session(token)
 
     # -- misc ----------------------------------------------------------------
     def add_alert(self, kind: str, detail: str) -> None:

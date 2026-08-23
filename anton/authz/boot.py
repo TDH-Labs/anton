@@ -73,17 +73,31 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     # database is touched (review R4-1). A rejected migration must leave
     # the live DB byte-identical.
     _validate_migration_sql(store, sql, audit=audit, name=name)
-    # Apply to the real DB (validate-first already refused any migration
-    # that would weaken the invariant set, so this cannot launder).
-    store.conn.executescript(sql)
-    store.conn.commit()
-    missing = missing_critical_triggers(store.conn)
-    weakened = weakened_critical_objects(store.conn)
-    if missing or weakened:  # belt-and-braces after a validated apply
-        _audit_refusal(audit, name, sql, missing, weakened)
-        raise MigrationIntegrityError(
-            f"migration {name!r} violated the invariant set post-apply: "
-            f"missing={missing} weakened={weakened}")
+    # Apply to the real DB inside ONE transaction (R9-MINOR crash-window
+    # fix): executescript auto-commits per statement, so wrap the script in
+    # explicit BEGIN/COMMIT and run the post-apply gate BEFORE the COMMIT.
+    # A crash or gate failure mid-script rolls back everything.
+    with store.lock:
+        store.conn.execute("BEGIN IMMEDIATE")
+        try:
+            store.conn.executescript(sql)
+            missing = missing_critical_triggers(store.conn)
+            weakened = weakened_critical_objects(store.conn)
+            if missing or weakened:  # belt-and-braces after a validated apply
+                raise MigrationIntegrityError(
+                    f"migration {name!r} violated the invariant set "
+                    f"post-apply: missing={missing} weakened={weakened}")
+            store.conn.commit()
+        except Exception:
+            try:
+                store.conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            audit.append("migration_refused", payload={
+                "name": name,
+                "sql_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+                "reason": "apply_or_gate_failure_rolled_back"})
+            raise
     audit.append("migration", actor=principal, payload={
         "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
     # Sanctioned migrations re-baseline the recorded schema hash.
