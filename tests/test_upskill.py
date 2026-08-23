@@ -3,6 +3,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
+
+def dt_datetime_utcnow_str():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 from unittest.mock import patch
 
 from anton import upskill
@@ -205,8 +209,9 @@ class TestRunUpskillSufficientResearch(UpskillTestBase):
         with patch.dict(upskill._PROMOTION_RISK_PROFILE, {"risk": "high"}):
             upskill.run_upskill(self.engine, "widget repair")
         conn = sqlite3.connect(os.path.join(self.data_dir, "isolation.db"))
-        conn.execute("UPDATE approvals SET status='approved' WHERE action=?",
-                     (f"upskill_promote:{slug}",))
+        conn.execute("UPDATE approvals SET status='approved', approver_human='owner', "
+                     "approver_principal='owner', decided_at=? WHERE action=?",
+                     (dt_datetime_utcnow_str(), f"upskill_promote:{slug}"))
         conn.commit()
         conn.close()
         ok = upskill.approve_pending_promotion(self.engine, slug)

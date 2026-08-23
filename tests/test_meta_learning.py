@@ -77,9 +77,9 @@ class TestDecide(MetaLearningTestBase):
         slug = upskill.slugify("widget-sync")
         conn = sqlite3.connect(os.path.join(self.data_dir, "isolation.db"))
         conn.execute(
-            "INSERT INTO approvals(nonce, action, amount, recipient, status, hmac, ts) "
-            "VALUES (?,?,?,?,?,?,?)",
-            ("n1", f"upskill_promote:{slug}", "", "", "pending", "", "2026-01-01T00:00:00Z"))
+            "INSERT INTO approvals(nonce, action, amount, recipient, status, ts) "
+            "VALUES (?,?,?,?,?,?)",
+            ("n1", f"upskill_promote:{slug}", "", "", "pending", "2026-01-01T00:00:00Z"))
         conn.commit()
         conn.close()
         with patch("anton.meta_learning.dt") as mock_dt:

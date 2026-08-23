@@ -16,7 +16,7 @@ import threading
 import uuid
 
 from .principals import UserPrincipal
-from .schema import ensure_schema
+from .schema import ensure_schema, schema_signature
 
 SESSION_TTL_HOURS = 12
 LOCKOUT_WINDOW_S = 900
@@ -53,6 +53,7 @@ def open_store(path: str) -> "AuthzStore":
     return AuthzStore(path)
 
 
+
 class AuthzStore:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -60,13 +61,89 @@ class AuthzStore:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
-        ensure_schema(self.conn)
-        # Roles permitted in the current deployment mode; set by wire_authz
-        # (single-operator mode collapses to Owner-only — REQ-APPR-05c).
         self.enabled_roles: list[str] | None = None
-        # Provider refresh-token rotation callback (set by callers with an
-        # OAuth integration; REQ-GRNT-01 revoke triggers rotation).
         self.token_rotator = None  # type: ignore
+        self.decision_secret: str | None = None
+        self.broker = None
+        # R13-B1/R20-2: gate BEFORE heal. If the raw on-disk signature does
+        # not match the recorded baseline, the DB drifted or was tampered
+        # with while stopped — REFUSE with the file left byte-identical
+        # (never heal-then-refuse: that persists a partial state and bricks
+        # the install). Remediation (documented, pre-1.0): re-run anton
+        # setup to rebuild authz.db; approval history lives in isolation.db.
+        self.preheal_refusal = None
+        has_kv = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'"
+        ).fetchone())
+        has_authz_tables = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name IN "
+            "('users', 'audit_chain')").fetchone())
+        # R20-B: a MISSING kv table alongside other authz tables is drift
+        # too (dropping it must not bypass the byte-identical refusal).
+        if has_kv or has_authz_tables:
+            baseline = self.kv_get("schema_hash") if has_kv else None
+            live = schema_signature(self.conn)
+            expected_baseline_present = baseline is not None
+            if baseline is not None and live != baseline:
+                self.preheal_refusal = (
+                    f"authz schema drifted while stopped "
+                    f"(recorded {baseline[:16]}…, on-disk {live[:16]}…) "
+                    f"— re-run anton setup to rebuild the authz store.")
+                return  # live DB left byte-identical
+            if not has_kv and has_authz_tables:
+                self.preheal_refusal = (
+                    "authz kv table missing while authz tables present "
+                    "— refusing (drift/tamper shape)")
+                return
+        ensure_schema(self.conn)
+        self._upgrade_approval_decision_columns()
+
+    def _upgrade_approval_decision_columns(self) -> None:
+        """Sanctioned ADDITIVE migration for pre-R9 authz.db files: add
+        approval_decisions.evidence_hmac when missing, then refresh the
+        recorded schema-hash baseline so boot_check accepts the upgraded DB
+        (R10-1: without this, existing installs booted clean then crashed at
+        approve())."""
+        tbl = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='approval_decisions'").fetchone()
+        if tbl is None:
+            return
+        cols = {r[1] for r in self.conn.execute(
+            "PRAGMA table_info(approval_decisions)")}
+        if "evidence_hmac" in cols:
+            return
+        # R11-3: only a TRUE pre-R9 DB (live signature == recorded baseline)
+        # may take the sanctioned ALTER + refresh. Anything else is tampering
+        # or drift — leave it for boot_check to refuse.
+        from .schema import schema_signature
+        old_sig = schema_signature(self.conn)
+        baseline = self.kv_get("schema_hash")
+        # R12-1: a genuine pre-R9 DB ALWAYS has a baseline (recorded since
+        # the Phase-1 spine) equal to its live signature. baseline None or a
+        # mismatch means tampering/botched restore — leave it for
+        # boot_check's fail-closed refusals; never ALTER + re-baseline.
+        if baseline is None or baseline != old_sig:
+            return
+        with self.lock:
+            try:
+                # single transaction: a crash between ALTER and baseline
+                # refresh cannot strand the DB in permanent preheal refusal
+                # (R15-B OBS)
+                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute(
+                    "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
+                self.kv_set("schema_hash", schema_signature(self.conn))
+                self.conn.commit()
+            except sqlite3.OperationalError as e:
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                cols = {r[1] for r in self.conn.execute(
+                    "PRAGMA table_info(approval_decisions)")}
+                if "evidence_hmac" not in cols:
+                    raise
 
     # -- users -----------------------------------------------------------
     def count_users(self) -> int:
@@ -89,14 +166,16 @@ class AuthzStore:
                                 kind="service", human_id=owning_human_id)
 
     def get_user(self, user_id: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM users WHERE id=?",
-                                (user_id,)).fetchone()
-        return dict(row) if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM users WHERE id=?",
+                                    (user_id,)).fetchone()
+            return dict(row) if row else None
 
     def get_user_by_username(self, username: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM users WHERE username=?",
-                                (username,)).fetchone()
-        return dict(row) if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM users WHERE username=?",
+                                    (username,)).fetchone()
+            return dict(row) if row else None
 
     def set_password(self, user_id: str, password: str) -> None:
         """Password reset revokes every outstanding session immediately."""
@@ -123,6 +202,10 @@ class AuthzStore:
         self.revoke_user_sessions(user_id)
 
     def role_of(self, user_id: str) -> str | None:
+        with self.lock:
+            return self._role_of_locked(user_id)
+
+    def _role_of_locked(self, user_id: str) -> str | None:
         row = self.conn.execute(
             "SELECT role FROM role_assignments WHERE user_id=? "
             "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
@@ -193,6 +276,10 @@ class AuthzStore:
         return token
 
     def resolve_session(self, token: str) -> UserPrincipal | None:
+        with self.lock:
+            return self._resolve_session_locked(token)
+
+    def _resolve_session_locked(self, token: str) -> UserPrincipal | None:
         digest = _token_digest("session", token)
         row = self.conn.execute(
             "SELECT s.id AS sid, s.expires, s.revoked, u.* "
@@ -254,6 +341,10 @@ class AuthzStore:
         return token, jti
 
     def resolve_machine_token(self, token: str) -> UserPrincipal | None:
+        with self.lock:
+            return self._resolve_machine_token_locked(token)
+
+    def _resolve_machine_token_locked(self, token: str) -> UserPrincipal | None:
         digest = _token_digest("machine", token)
         row = self.conn.execute(
             "SELECT m.id AS jti, m.revoked, m.expires, u.* FROM machine_tokens m "
@@ -263,8 +354,45 @@ class AuthzStore:
             return None
         if row["expires"] is not None and row["expires"] <= _epoch():
             return None
+        if row["disabled"]:
+            # a disabled service identity's tokens die with it (R12-3)
+            return None
+        # R9-fix: carry the machine-token jti as the credential binding so
+        # broker lease/cap validation can re-check revocation live.
         return UserPrincipal(user_id=row["id"], username=row["username"],
-                             role=None, human_id=row["human_id"], kind="service")
+                             role=None, human_id=row["human_id"], kind="service",
+                             session_id=f"machine:{row['jti']}")
+
+    def revoke_machine_token(self, jti: str) -> None:
+        """Revoke a machine token by id (rotation's second half — R12-3)."""
+        with self.lock:
+            self.conn.execute(
+                "UPDATE machine_tokens SET revoked=1 WHERE id=?", (jti,))
+            self.conn.commit()
+
+    def credential_alive(self, credential_ref: str) -> bool:
+        """Broker-side liveness check for ANY credential binding carried in
+        a lease's session_id field: 'machine:<jti>' re-checks token
+        revocation/expiry AND owning-user disabled; anything else is a user
+        session id (R9: revocation reaches live leases)."""
+        if credential_ref.startswith("machine:"):
+            jti = credential_ref[len("machine:"):]
+            row = self.conn.execute(
+                "SELECT m.revoked, m.expires, u.disabled FROM machine_tokens m"
+                " JOIN users u ON u.id = m.service_user_id WHERE m.id=?",
+                (jti,)).fetchone()
+            if row is None or row["revoked"] or row["disabled"]:
+                return False
+            return not (row["expires"] is not None
+                        and row["expires"] <= _epoch())
+        return self.session_active(credential_ref)
+
+    def resolve_any_token(self, token: str) -> UserPrincipal | None:
+        """Resolve a bearer credential as either a user session or a
+        machine token (broker lease/mint entry point — R9 reach-through)."""
+        if token.startswith("amt_"):
+            return self.resolve_machine_token(token)
+        return self.resolve_session(token)
 
     # -- misc ----------------------------------------------------------------
     def add_alert(self, kind: str, detail: str) -> None:
@@ -294,7 +422,10 @@ class AuthzStore:
                 "INSERT INTO kv(key, value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value))
-            self.conn.commit()
+            # R16-B: inside a migration transaction the caller owns the
+            # commit — an early commit here would break atomicity.
+            if not getattr(self, "in_migration_txn", False):
+                self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

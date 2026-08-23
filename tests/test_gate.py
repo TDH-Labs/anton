@@ -39,23 +39,30 @@ class TestGate(unittest.TestCase):
         self.assertEqual(rec.exit, 5)
         self.assertIn("gate-blocked", rec.flags)
 
-    def test_outbound_job_runs_after_approval(self):
-        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"), timeout=10.0) as conn:
-            conn.execute("INSERT INTO approvals(nonce, action, status, ts) VALUES(?,?,?,?)",
-                         ("nonce1", "email-client", "approved",
-                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+    def _seed_approved(self, action: str, nonce: str):
+        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"),
+                             timeout=10.0) as conn:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, status, ts, initiator_human,"
+                " initiator_principal) VALUES(?,?,?,?,?,?)",
+                (nonce, action, "pending",
+                 dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "system", "system:gate"))
+            conn.execute(
+                "UPDATE approvals SET status='approved', approver_human='owner',"
+                " approver_principal='owner', decided_at=? WHERE nonce=?",
+                (dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 nonce))
             conn.commit()
+
+    def test_outbound_job_runs_after_approval(self):
+        self._seed_approved("email-client", "nonce1")
         rec = self.engine.run_job(self.engine.by_id("email-client"),
                                   now=dt.datetime.now(dt.timezone.utc))
         self.assertEqual(rec.exit, 0)
 
     def test_outbound_job_nonce_consumed_after_single_use(self):
-        with sqlite3.connect(os.path.join(self.dir.name, "isolation.db"), timeout=10.0) as conn:
-            conn.execute("INSERT INTO approvals(nonce, action, status, ts) VALUES(?,?,?,?)",
-                         ("nonce1", "email-client", "approved",
-                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
-            conn.commit()
-        # First run consumes approval
+        self._seed_approved("email-client", "nonce1")
         rec1 = self.engine.run_job(self.engine.by_id("email-client"),
                                    now=dt.datetime.now(dt.timezone.utc))
         self.assertEqual(rec1.exit, 0)

@@ -78,7 +78,12 @@ CREATE TABLE IF NOT EXISTS approval_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     approval_id INTEGER NOT NULL,
     approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,
-    decision TEXT NOT NULL, ts TEXT NOT NULL
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+    ts TEXT NOT NULL,
+    -- R15-A: evidence_hmac sits LAST because SQLite's ALTER TABLE ADD
+    -- COLUMN appends at the end — canonical order must equal post-ALTER
+    -- live order or legitimately upgraded DBs stay 'weakened' forever.
+    evidence_hmac TEXT
 );
 CREATE TABLE IF NOT EXISTS approval_executions (
     approval_id INTEGER PRIMARY KEY,
@@ -190,6 +195,20 @@ BEGIN
     SELECT RAISE(ABORT, 'reactivation would create an escalation chain');
 END;
 
+-- Reactivation also re-applies the self-grant and party-existence
+-- predicates that the INSERT path enforces (R3B-3).
+CREATE TRIGGER IF NOT EXISTS trg_grant_no_self_reactivate
+BEFORE UPDATE ON connection_grants
+FOR EACH ROW
+WHEN OLD.active = 0 AND NEW.active = 1 AND (
+    NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.granter_id)
+    OR NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.grantee_id)
+    OR (SELECT human_id FROM users WHERE id = NEW.granter_id) =
+       (SELECT human_id FROM users WHERE id = NEW.grantee_id))
+BEGIN
+    SELECT RAISE(ABORT, 'reactivation of a self-grant forbidden');
+END;
+
 -- REQ-GRNT-03: sole-admin self-elevation requires an active break-glass
 -- elevation; otherwise the schema itself aborts the write.
 CREATE TRIGGER IF NOT EXISTS trg_role_no_self_modify
@@ -233,6 +252,33 @@ END;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_decision_once
 ON approval_decisions(approval_id);
 
+-- REQ-APPR-01: decision rows are append-only creations (never amendments)
+-- — no UPDATE/DELETE forgery of approver identity or decision value (R3A-4).
+CREATE TRIGGER IF NOT EXISTS trg_decision_append_only
+BEFORE UPDATE ON approval_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'approval decisions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_decision_no_delete
+BEFORE DELETE ON approval_decisions
+BEGIN
+    SELECT RAISE(ABORT, 'approval decisions are append-only');
+END;
+
+-- An executed approval can never be un-executed.
+CREATE TRIGGER IF NOT EXISTS trg_execution_no_delete
+BEFORE DELETE ON approval_executions
+BEGIN
+    SELECT RAISE(ABORT, 'approval executions are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_execution_append_only
+BEFORE UPDATE ON approval_executions
+BEGIN
+    SELECT RAISE(ABORT, 'approval executions are append-only');
+END;
+
 -- REQ-AUDIT-01: the audit chain is append-only at the schema level.
 CREATE TRIGGER IF NOT EXISTS trg_audit_append_only
 BEFORE UPDATE ON audit_chain
@@ -254,14 +300,29 @@ END;
 # Type-agnostic: triggers AND indexes (ux_decision_once closes the
 # double-decision race; dropping it must fail the pipeline — review R2A-4).
 CRITICAL_OBJECTS = (
+    # security-critical TABLE definitions — DROP/CREATE without the same
+    # invariants (CHECK constraints, NOT NULLs) must fail the gate
+    "approval_decisions",
+    "approval_executions",
+    "authz_approvals",
+    "connection_grants",
+    "role_assignments",
+    "breakglass_events",
+    "audit_chain",
+    # triggers
     "trg_grant_no_self",
     "trg_grant_no_cycle",
     "trg_grant_no_reparty",
     "trg_grant_no_cycle_reactivate",
+    "trg_grant_no_self_reactivate",
     "trg_role_no_self_modify",
     "trg_approval_append_only",
     "trg_approval_no_delete",
     "trg_approval_no_self_approve",
+    "trg_decision_append_only",
+    "trg_decision_no_delete",
+    "trg_execution_no_delete",
+    "trg_execution_append_only",
     "trg_audit_append_only",
     "trg_audit_no_delete",
     "ux_decision_once",
@@ -294,3 +355,45 @@ def missing_critical_triggers(conn: sqlite3.Connection) -> list[str]:
     names = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE name IS NOT NULL").fetchall()}
     return [t for t in CRITICAL_OBJECTS if t not in names]
+
+
+def _canonical_object_sql() -> dict[str, str]:
+    """(name -> full SQL) for every critical object as defined in this very
+    module — executed against a scratch DB so we compare byte-for-byte."""
+    scratch = sqlite3.connect(":memory:")
+    scratch.executescript(SCHEMA)
+    scratch.executescript(TRIGGERS)
+    rows = scratch.execute(
+        "SELECT name, sql FROM sqlite_master WHERE name IS NOT NULL").fetchall()
+    scratch.close()
+    canon = {}
+    for name, sql in rows:
+        if name in CRITICAL_OBJECTS:
+            canon[name] = sql or ""
+    return canon
+
+
+def _normalize_sql(sql: str) -> str:
+    """Comparison basis for table/trigger DDL: strips comments, the
+    IF NOT EXISTS modifier (dropped by SQLite's post-ALTER rewrite), and
+    all whitespace — so a sanctioned ADD COLUMN upgrade converges while
+    any dropped CHECK/NOT NULL token still diverges (R15-B/R15-A)."""
+    import re as _re
+    s = sql or ""
+    s = _re.sub(r"--[^\n]*", "", s)
+    s = _re.sub(r"/\*.*?\*/", "", s, flags=_re.S)
+    s = _re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", s, flags=_re.I)
+    s = _re.sub(r"\s+", "", s)
+    return s
+
+
+def weakened_critical_objects(conn: sqlite3.Connection) -> list[str]:
+    """Critical objects whose live SQL no longer matches the canonical
+    definition (same-name body weakening or constraint dropping — R3A-3,
+    R4-2), compared whitespace-insensitively."""
+    canon = _canonical_object_sql()
+    live = {r[0]: (r[1] or "") for r in conn.execute(
+        "SELECT name, sql FROM sqlite_master WHERE name IS NOT NULL")}
+    return [name for name in CRITICAL_OBJECTS
+            if _normalize_sql(canon.get(name)) != _normalize_sql(live.get(name))]
+

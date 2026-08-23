@@ -192,9 +192,10 @@ class CredentialBroker:
         return self.current_key_version
 
     def kv_get(self, key: str) -> str | None:
-        row = self.conn.execute("SELECT value FROM broker_kv WHERE key=?",
-                                (key,)).fetchone()
-        return row["value"] if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT value FROM broker_kv WHERE key=?",
+                                    (key,)).fetchone()
+            return row["value"] if row else None
 
     def kv_set(self, key: str, value: str) -> None:
         with self.lock:
@@ -266,43 +267,50 @@ class CredentialBroker:
 
     def register_secret(self, secret_id: str, plaintext_or_ref: str,
                         connection_id: str) -> None:
-        nonce = os.urandom(12)
-        ct = AESGCM(self._keys[self.current_key_version]).encrypt(
-            nonce, plaintext_or_ref.encode(), secret_id.encode())
-        blob = nonce + ct
+        # RB-B: encrypt INSIDE the lock so the ciphertext and the stored
+        # key_version can never come from different generations (a rotate
+        # landing between encrypt and insert previously bricked the row
+        # with an InvalidTag mismatch).
         with self.lock:
+            ver = self.current_key_version
+            nonce = os.urandom(12)
+            ct = AESGCM(self._keys[ver]).encrypt(
+                nonce, plaintext_or_ref.encode(), secret_id.encode())
+            blob = nonce + ct
             self.conn.execute(
                 "INSERT INTO broker_secrets(id, connection_id, ciphertext,"
                 " key_version, updated) VALUES(?,?,?,?,datetime('now')) "
                 "ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext,"
                 " key_version=excluded.key_version, updated=excluded.updated",
-                (secret_id, connection_id, blob, self.current_key_version))
+                (secret_id, connection_id, blob, ver))
             self.conn.commit()
 
     def get_secret(self, secret_id: str) -> tuple[str, str]:
-        row = self.conn.execute(
-            "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
-            "WHERE id=?", (secret_id,)).fetchone()
-        if row is None:
-            raise BrokerDenied(f"unknown secret {secret_id}")
-        self._load_key(row["key_version"])
-        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
-            bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
-            secret_id.encode()).decode()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
+                "WHERE id=?", (secret_id,)).fetchone()
+            if row is None:
+                raise BrokerDenied(f"unknown secret {secret_id}")
+            self._load_key(row["key_version"])
+            stored = AESGCM(self._keys[row["key_version"]]).decrypt(
+                bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
+                secret_id.encode()).decode()
         return self._materialize(secret_id, stored), row["connection_id"]
 
     def _stored_value(self, secret_id: str) -> tuple[str, str]:
         """Raw stored material (inline secret OR reference text) without
         resolving references — used for grant checks at mint time."""
-        row = self.conn.execute(
-            "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
-            "WHERE id=?", (secret_id,)).fetchone()
-        if row is None:
-            raise BrokerDenied(f"unknown secret {secret_id}")
-        self._load_key(row["key_version"])
-        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
-            bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
-            secret_id.encode()).decode()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
+                "WHERE id=?", (secret_id,)).fetchone()
+            if row is None:
+                raise BrokerDenied(f"unknown secret {secret_id}")
+            self._load_key(row["key_version"])
+            stored = AESGCM(self._keys[row["key_version"]]).decrypt(
+                bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
+                secret_id.encode()).decode()
         return stored, row["connection_id"]
 
     def _materialize(self, secret_id: str, stored: str) -> str:
@@ -398,6 +406,17 @@ class CredentialBroker:
         self._validate_lease(lease)
         for sid in secret_ids:
             _, connection_id = self._stored_value(sid)
+            # REQ-CRED-02: minted secrets must lie within the lease's
+            # permitted connection set (R3A-2).
+            if connection_id not in lease.connection_ids:
+                if self.audit is not None:
+                    self.audit.append("authorization_denied", payload={
+                        "reason": "connection_outside_lease",
+                        "connection_id": connection_id,
+                        "lease": lease.execution_id})
+                raise BrokerDenied(
+                    f"secret {sid} names connection {connection_id!r} outside "
+                    "the lease's permitted set")
             if not self._grant_allowed(lease.principal_id, connection_id):
                 if self.audit is not None:
                     self.audit.append(
@@ -433,8 +452,10 @@ class CredentialBroker:
         if self._revoked(execution_id=lease.execution_id,
                          principal_id=lease.principal_id):
             raise RevokedState("revoked")
-        if lease.session_id and self.session_validator is not None \
-                and not self.session_validator(lease.session_id):
+        # Fail-closed session binding (R5-6): same helper as check_capability,
+        # so lease and mint cannot diverge from fetch when the validator is
+        # unwired.
+        if self._session_dead(lease.session_id):
             raise LeaseInvalid("issuing session no longer valid")
 
     # -- validation -----------------------------------------------------------
@@ -453,8 +474,10 @@ class CredentialBroker:
 
     def _revoked(self, execution_id: str | None = None,
                  principal_id: str | None = None) -> bool:
-        for scope, state in self.conn.execute(
-                "SELECT scope, state FROM kill_switch WHERE state=1"):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT scope, state FROM kill_switch WHERE state=1").fetchall()
+        for scope, state in rows:
             if scope == "global":
                 return True
             if principal_id and scope == f"principal:{principal_id}":
@@ -464,17 +487,26 @@ class CredentialBroker:
         return False
 
     def _token_revoked_row(self, jti: str) -> bool:
-        row = self.conn.execute(
-            "SELECT revoked FROM issued_tokens WHERE jti=?", (jti,)).fetchone()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT revoked FROM issued_tokens WHERE jti=?",
+                (jti,)).fetchone()
         return bool(row and row["revoked"])
 
     def _session_dead(self, session_id: str) -> bool:
-        return bool(session_id and self.session_validator is not None
-                    and not self.session_validator(session_id))
+        # ED-2: with no session validator wired, any claimed session binding
+        # is unverifiable => treat as dead (fail closed), never trust the
+        # token body (R4-5).
+        if not session_id:
+            return False
+        if self.session_validator is None:
+            return True
+        return not self.session_validator(session_id)
 
     def _grant_allowed(self, principal_id: str, connection_id: str) -> bool:
+        # ED-2: an unwired grant checker is a DENY (R4-5).
         if self.grant_checker is None:
-            return True
+            return False
         return bool(self.grant_checker(principal_id, connection_id))
 
     def _check_capability(self, cap_payload: dict) -> None:
@@ -523,7 +555,16 @@ class CredentialBroker:
                     "principal": payload.get("pid")})
             raise BrokerDenied(
                 f"token does not name secret {secret_id}")
-        plaintext, connection_id = self.get_secret(secret_id)
+        # Grant re-check BEFORE any decryption/resolution: a revoked
+        # principal must never drive the external password-manager adapter
+        # (R3C-4).
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id FROM broker_secrets WHERE id=?",
+                (secret_id,)).fetchone()
+        if row is None:
+            raise BrokerDenied(f"unknown secret {secret_id}")
+        connection_id = row["connection_id"]
         if not self._grant_allowed(payload.get("pid", ""), connection_id):
             if self.audit is not None:
                 self.audit.append("authorization_denied", payload={
@@ -532,6 +573,7 @@ class CredentialBroker:
                     "connection_id": connection_id})
             raise BrokerDenied(
                 f"no active grant for {payload.get('pid')} on {connection_id}")
+        plaintext, connection_id = self.get_secret(secret_id)
         if self.audit is not None:
             self.audit.append("secret_fetch", payload={
                 "requester": payload.get("pid"), "secret_id": secret_id,
@@ -565,7 +607,7 @@ class CredentialBroker:
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(self.socket_path)
         os.chmod(self.socket_path, 0o660)
-        srv.listen(8)
+        srv.listen(128)
         self._server_sock = srv
         self._running = True
         self._thread = threading.Thread(target=self._serve, daemon=True,
@@ -581,42 +623,76 @@ class CredentialBroker:
                 pass
 
     def _serve(self) -> None:
+        # R16-load: thread-per-connection — concurrent executors must not
+        # be serialized behind one slow client (or dropped by backlog
+        # overflow). Handler exceptions never take down the accept loop.
         while self._running:
             try:
                 conn, _ = self._server_sock.accept()
             except OSError:
                 break
-            with conn:
-                try:
-                    conn.settimeout(5)
-                    buf = b""
-                    while b"\n" not in buf:
-                        chunk = conn.recv(65536)
-                        if not chunk:
-                            break
-                        buf += chunk
-                    if not buf.strip():
-                        continue
-                    req = json.loads(buf.decode())
-                    try:
-                        resp = self._dispatch(req, _peer_uid(conn))
-                    except BrokerDenied as e:
-                        resp = {"ok": False, "error": type(e).__name__,
-                                "detail": str(e)}
-                    except Exception:
-                        # never leak internals (paths, crypto details) over
-                        # the socket — callers get a generic denial
-                        resp = {"ok": False, "error": "BrokerDenied",
-                                "detail": "request refused"}
-                except Exception:
-                    resp = {"ok": False, "error": "malformed_request"}
-                try:
-                    conn.sendall((json.dumps(resp) + "\n").encode())
-                except OSError:
-                    pass
+            t = threading.Thread(target=self._handle_conn,
+                                 args=(conn,), daemon=True)
+            t.start()
+
+    def _handle_conn(self, conn: socket.socket) -> None:
+        try:
+            self._serve_conn(conn)
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _serve_conn(self, conn: socket.socket) -> None:
+        conn.settimeout(5)
+        try:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            if not buf.strip():
+                return
+            req = json.loads(buf.decode())
+            try:
+                resp = self._dispatch(req, _peer_uid(conn))
+            except BrokerDenied as e:
+                resp = {"ok": False, "error": type(e).__name__,
+                        "detail": str(e)}
+            except Exception:
+                # never leak internals (paths, crypto details) over the
+                # socket — callers get a generic denial
+                resp = {"ok": False, "error": "BrokerDenied",
+                        "detail": "request refused"}
+            except Exception:
+                resp = {"ok": False, "error": "malformed_request"}
+            conn.sendall((json.dumps(resp) + "\n").encode())
+        except OSError:
+            pass
 
     def _dispatch(self, req: dict, peer_uid: int | None) -> dict:
+        # R16-load: all socket ops share one broker connection; serialize
+        # dispatch so concurrent executors cannot interleave raw sqlite
+        # calls on it (ops are sub-millisecond — no contention risk).
+        with self.lock:
+            return self._dispatch_locked(req, peer_uid)
+
+    def _dispatch_locked(self, req: dict, peer_uid: int | None) -> dict:
         op = req.get("op")
+        # Every socket op is peer-attested: an unresolvable or non-allowed
+        # OS peer cannot lease, mint, or poll — REQ-CRED-02 (R3A-2).
+        if op in ("lease", "mint", "poll", "fetch") and \
+                (peer_uid is None or peer_uid not in self.allowed_uids):
+            if self.audit is not None:
+                self.audit.append("authorization_denied",
+                                  payload={"reason": "peer_uid_rejected",
+                                           "op": op})
+            return {"ok": False, "error": "BrokerDenied",
+                    "detail": "unattested peer"}
         if op == "ping":
             return {"ok": True, "epoch": round(self.epoch_now(), 3)}
         if op == "poll":
@@ -644,6 +720,11 @@ class CredentialBroker:
                     principal, execution_id=req.get("execution_id", ""),
                     connection_ids=list(req.get("connection_ids") or []),
                     ttl_s=int(req.get("ttl_s", 300)))
+                if self.audit is not None:
+                    self.audit.append("lease_issued", payload={
+                        "principal": principal.principal_id,
+                        "execution_id": lease.execution_id,
+                        "connection_ids": lease.connection_ids})
                 return {"ok": True, "lease": lease.token}
             except BrokerDenied as e:
                 return {"ok": False, "error": type(e).__name__, "detail": str(e)}
@@ -653,6 +734,17 @@ class CredentialBroker:
                 self._validate_lease(lease)
                 token = self.mint_capability_token(lease,
                                                    list(req.get("secret_ids") or []))
+                if self.audit is not None:
+                    jti = None
+                    try:
+                        jti = json.loads(b64d(token.rsplit(".", 1)[0])).get("jti")
+                    except Exception:
+                        pass
+                    self.audit.append("cap_minted", payload={
+                        "principal": lease.principal_id,
+                        "execution_id": lease.execution_id,
+                        "secret_ids": list(req.get("secret_ids") or []),
+                        "jti": jti})
                 return {"ok": True, "token": token}
             except BrokerDenied as e:
                 return {"ok": False, "error": type(e).__name__, "detail": str(e)}
@@ -753,7 +845,11 @@ class BrokerClient:
         resp = self.call({"op": "poll", "execution_id": execution_id,
                           "principal_id": principal_id,
                           "reported_time": self.time_source()})
-        return {"revoked": resp.get("revoked", False),
+        # ED-2: a response missing the revoked field is treated as REVOKED
+        # (fail closed), never as not-revoked (R15-A).
+        if "revoked" not in resp:
+            return {"revoked": True, "reason": "malformed_poll_response"}
+        return {"revoked": bool(resp["revoked"]),
                 "reason": resp.get("reason", "")}
 
     def issue_lease(self, session_token: str, execution_id: str,
@@ -779,6 +875,16 @@ def main() -> None:
     serve.add_argument("--uid", action="append", type=int, default=None)
     args = ap.parse_args()
     if args.cmd == "serve":
+        if not args.uid:
+            # The broker can only attest executors it shares OS-identity
+            # machinery with; a watchdog without wiring is a security
+            # misconfiguration, not a deployment. Refuse to start rather
+            # than serve actors with no grant/session validation (R5-7).
+            print("refusing to start: broker serve requires --uid "
+                  "(explicit executor OS identity); wire grant/session "
+                  "validators in the application, not via standalone serve.",
+                  file=sys.stderr)
+            raise SystemExit(2)
         broker = CredentialBroker(args.db, args.keys, args.sock,
                                   allowed_uids=args.uid)
         print(f"broker serving on {args.sock}", flush=True)

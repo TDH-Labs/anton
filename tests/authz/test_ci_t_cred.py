@@ -151,7 +151,8 @@ class TestCred05Availability(BrokerTestBase):
         sock = os.path.join(self.env.data_dir, "authz", "sub.sock")
         proc = subprocess.Popen(
             [sys.executable, "-m", "anton.authz.broker", "serve",
-             "--db", db, "--keys", keys, "--sock", sock],
+             "--db", db, "--keys", keys, "--sock", sock,
+             "--uid", str(os.getuid())],
             cwd=os.path.dirname(os.path.dirname(os.path.dirname(
                 os.path.abspath(__file__)))),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

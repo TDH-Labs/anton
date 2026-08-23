@@ -212,6 +212,12 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     global _active_oauth_server
     app = FastAPI(title="anton")
     ledger = engine.ledger
+    # R10-3: the decision-hmac secret has ONE trust point — config's
+    # authz.decision_secret — read here regardless of authz.enabled so the
+    # write side (decide endpoints) and verify side (scheduler) can never
+    # split-brain on a partial config.
+    _set_hmac_secret(
+        ((config.get("authz") or {}).get("decision_secret") or "").strip())
     token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("ANTON_DASHBOARD_TOKEN") or _os.environ.get("HARBOR_DASHBOARD_TOKEN") or ""
     if token:
         app.state.dashboard_token = token
@@ -266,6 +272,18 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         # present unless the parameter itself defaults, which is what lets
         # the Ops Center UI's no-body POST through.
         _require_token(request, token)
+        if getattr(app.state, "authz_middleware_active", False):
+            # R12-OBS: the permissionless bypass contradicts multi-user
+            # governance — the agent must never effect this toggle. The
+            # attempt is audited and refused.
+            principal = getattr(request.state, "principal", None)
+            audit_log = getattr(app.state, "authz_audit", None)
+            if audit_log is not None and principal is not None:
+                audit_log.append("soa_toggle_refused", actor=principal,
+                                 payload={"requested": req.son_of_anton_mode})
+            raise HTTPException(
+                403, "son-of-anton bypass is disabled in authz mode "
+                     "(operator-managed via config only)")
         engine.son_of_anton_mode = req.son_of_anton_mode
         # Persist: serve/scheduler runs in a separate process and reads this
         # at gate-decision time — an in-memory-only flag never reaches it.
@@ -277,6 +295,15 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         """SidebarRoot.tsx posts here when the Son of Anton toggle flips off;
         no request body (mirrors /api/mode/son-of-anton's boolean, fixed false)."""
         _require_token(request, token)
+        if getattr(app.state, "authz_middleware_active", False):
+            principal = getattr(request.state, "principal", None)
+            audit_log = getattr(app.state, "authz_audit", None)
+            if audit_log is not None and principal is not None:
+                audit_log.append("soa_toggle_refused", actor=principal,
+                                 payload={"requested": False})
+            raise HTTPException(
+                403, "son-of-anton bypass is disabled in authz mode "
+                     "(operator-managed via config only)")
         engine.son_of_anton_mode = False
         set_son_of_anton_mode(data_dir, False)
         return {"status": "updated", "son_of_anton_mode": False}
@@ -493,6 +520,11 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if req.decision not in ("once", "always", "defer"):
             raise HTTPException(400, "decision must be once|always|defer")
         conn = open_isolation_db(data_dir)
+        principal = getattr(request.state, "principal", None)
+        if principal is not None:
+            appr_h, appr_p = principal.human_id, principal.principal_id
+        else:
+            appr_h, appr_p = "legacy:operators", "api:decide"
         try:
             if req.decision == "defer":
                 row = conn.execute("SELECT id FROM approvals WHERE id=?", (aid,)).fetchone()
@@ -501,17 +533,24 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 return {"id": aid, "status": "pending", "decision": "defer"}
             new_status = "approved"
             new_kind = "standing" if req.decision == "always" else None
+            hmac = _decision_hmac(_hmac_secret, aid)
             if new_kind:
                 cur = conn.execute(
-                    "UPDATE approvals SET status=?, kind=? WHERE id=? AND status='pending'",
-                    (new_status, new_kind, aid))
+                    "UPDATE approvals SET status=?, kind=?, approver_human=?, "
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, new_kind, appr_h, appr_p, hmac,
+                     _now_iso(), aid))
             else:
                 cur = conn.execute(
-                    "UPDATE approvals SET status=? WHERE id=? AND status='pending'",
-                    (new_status, aid))
+                    "UPDATE approvals SET status=?, approver_human=?, "
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, _now_iso(), aid))
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(404, "no pending approval with that id")
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise HTTPException(409, "approver may not equal initiator")
         finally:
             conn.close()
         return {"id": aid, "status": new_status, "decision": req.decision}
@@ -520,11 +559,22 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     def create_approval(req: ApprovalReq, request: Request):
         _require_token(request, token)
         nonce = secrets.token_hex(16)
-        with sqlite3.connect(os.path.join(data_dir, "isolation.db"), timeout=10.0) as conn:
-            conn.execute("INSERT INTO approvals(nonce, action, amount, recipient, status, ts) "
-                         "VALUES(?,?,?,?,?,?)",
-                         (nonce, req.action, req.amount, req.recipient, "pending",
-                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+        principal = getattr(request.state, "principal", None)
+        if principal is not None:
+            init_h, init_p = principal.human_id, principal.principal_id
+        else:
+            # Legacy (authz-off) mode still writes explicit identity markers
+            # so the DB-level approver!=initiator gate stays meaningful and
+            # NULL-attributed rows are never produced by the API (R5-1).
+            init_h, init_p = "legacy:creators", "api:create"
+        with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
+                             timeout=10.0) as conn:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, amount, recipient, status,"
+                " ts, initiator_human, initiator_principal) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (nonce, req.action, req.amount, req.recipient, "pending",
+                 _now_iso(), init_h, init_p))
             aid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.commit()
         return {"id": aid, "nonce": nonce, "status": "pending"}
@@ -534,13 +584,27 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         _require_token(request, token)
         if req.decision not in ("approve", "deny"):
             raise HTTPException(400, "decision must be approve|deny")
-        with sqlite3.connect(os.path.join(data_dir, "isolation.db"), timeout=10.0) as conn:
-            cur = conn.execute("UPDATE approvals SET status=? WHERE id=? AND status='pending'",
-                               ("approved" if req.decision == "approve" else "denied", aid))
-            conn.commit()
-            if cur.rowcount == 0:
-                raise HTTPException(404, "no pending approval with that id")
-        return {"id": aid, "status": "approved" if req.decision == "approve" else "denied"}
+        principal = getattr(request.state, "principal", None)
+        if principal is not None:
+            appr_h, appr_p = principal.human_id, principal.principal_id
+        else:
+            appr_h, appr_p = "legacy:operators", "api:decide"
+        new_status = "approved" if req.decision == "approve" else "denied"
+        hmac = _decision_hmac(_hmac_secret, aid)
+        try:
+            with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
+                                 timeout=10.0) as conn:
+                cur = conn.execute(
+                    "UPDATE approvals SET status=?, approver_human=?, "
+                    "approver_principal=?, hmac=?, decided_at=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, _now_iso(), aid))
+                conn.commit()
+                if cur.rowcount == 0:
+                    raise HTTPException(404, "no pending approval with that id")
+        except sqlite3.IntegrityError:
+            # REQ-APPR-01: approver == initiator rejected at the DB layer
+            raise HTTPException(409, "approver may not equal initiator")
+        return {"id": aid, "status": new_status}
 
     @app.get("/api/digest", response_class=PlainTextResponse)
     def digest():
@@ -896,6 +960,24 @@ def _day_ago_iso() -> str:
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_hmac_secret = ""
+
+
+def _set_hmac_secret(secret: str) -> None:
+    global _hmac_secret
+    _hmac_secret = secret
+
+
+def _decision_hmac(secret: str, aid: int) -> str:
+    """KEYED authenticity marker for decided rows (R9: unkeyed sha256 let a
+    reader offline-crack a low-entropy secret). The scheduler/upskill
+    verifier recomputes it with the shared decision secret."""
+    import hashlib
+    import hmac as _hmac
+    return _hmac.new(secret.encode(), str(aid).encode(),
+                     hashlib.sha256).hexdigest()
 
 
 def _age_str(ts: Optional[str]) -> str:

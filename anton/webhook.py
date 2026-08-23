@@ -20,6 +20,15 @@ def make_handler(engine: JobEngine):
                 self._send(404, {"error": "not found"})
 
         def do_POST(self):  # noqa: N802
+            # R16-B: authenticate BEFORE any routing so unauthenticated
+            # callers cannot use 404-vs-403 as a job-id existence oracle.
+            expected_secret = getattr(engine, "webhook_secret", None)
+            provided = self.headers.get("X-Anton-Secret", "")
+            import hmac as _hmac
+            if not expected_secret or not provided or not _hmac.compare_digest(
+                    provided, expected_secret):
+                self._send(403, {"error": "missing or invalid X-Anton-Secret"})
+                return
             parsed_path = urllib.parse.urlparse(self.path).path
             if not parsed_path.startswith("/hooks/"):
                 self._send(404, {"error": "not found"})

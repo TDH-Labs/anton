@@ -3,8 +3,13 @@ Frozen spec: docs/AUTHZ-SPEC.md (v1.1, FROZEN — build against it, do not redes
 Reviews (binding requirements): docs/AUTHZ-ADVERSARIAL-REVIEW{,-2,-3}.md
 Convergence threshold: two consecutive independent PROCEED verdicts, zero BLOCKER/MAJOR.
 
-## State (updated 2026-08-22, post-build session)
-ALL FOUR build items are implemented and committed on main:
+## State (updated 2026-08-23 — ALL TODOS COMPLETE, CONV-1 SATISFIED)
+ALL FOUR build items are implemented, tested, and committed on main.
+CONV-1 satisfied: rounds 15A+15B consecutive independent PROCEED verdicts
+(zero BLOCKER/MAJOR) against HEAD 8b14463; full ledger in progress.md.
+7 tracked MINOR/OBS items in progress.md OPEN list (genesis marker,
+son-of-anton flag boundary, migration crash window, lease/mint audit rows,
+approval freshness window, machine-token lease reach-through, webhook auth):
 - 3f02481 #10 Phase 1 authZ spine (anton/authz/, tests/authz/ — suite written FIRST,
   CI-T-* ids map 1:1 to spec; 294 passed + 75 RBAC matrix subtests, zero legacy regressions)
 - 2e7766d #12 secret refs op:// bw:// vault:// resolved inside the broker

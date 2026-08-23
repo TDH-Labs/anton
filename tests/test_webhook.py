@@ -24,7 +24,11 @@ class TestWebhook(unittest.TestCase):
         with open(jobs_path, "w", encoding="utf-8") as f:
             f.write(JOBS)
         self.ledger = Ledger(os.path.join(self.dir.name, "runs.jsonl"))
-        self.engine = JobEngine(load_jobs(jobs_path), self.ledger, FakeExecutor(), load_config())
+        cfg = load_config()
+        cfg.setdefault("general", {})["webhook_secret"] = "whsec-test"
+        self.engine = JobEngine(load_jobs(jobs_path), self.ledger, FakeExecutor(), cfg)
+        self.headers = {"X-Anton-Secret": "whsec-test"}
+        self.bad_headers = {"X-Anton-Secret": "wrong"}
         self.srv = WebhookServer(self.engine, "127.0.0.1", 0)
         self.srv.start()
 
@@ -34,7 +38,7 @@ class TestWebhook(unittest.TestCase):
 
     def test_post_dispatches_job(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
-        conn.request("POST", "/hooks/bill-email", body='{"vendor":"x"}')
+        conn.request("POST", "/hooks/bill-email", body='{"vendor":"x"}', headers=self.headers)
         resp = conn.getresponse()
         body = resp.read().decode()
         conn.close()
@@ -44,7 +48,7 @@ class TestWebhook(unittest.TestCase):
 
     def test_unknown_job_404(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
-        conn.request("POST", "/hooks/nope")
+        conn.request("POST", "/hooks/nope", headers=self.headers)
         resp = conn.getresponse()
         resp.read()
         conn.close()
@@ -52,10 +56,30 @@ class TestWebhook(unittest.TestCase):
 
     def test_post_with_query_string_dispatches_job(self):
         conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
-        conn.request("POST", "/hooks/bill-email?key=val&token=123", body='{"vendor":"x"}')
+        conn.request("POST", "/hooks/bill-email?key=val&token=123", body='{"vendor":"x"}', headers=self.headers)
         resp = conn.getresponse()
         body = resp.read().decode()
         conn.close()
         self.assertEqual(resp.status, 200)
         self.assertIn('"exit": 0', body)
 
+
+    def test_missing_or_wrong_secret_refused(self):
+        # R11-obs: /hooks/* can consume one-use approvals — auth is
+        # mandatory and fail-closed.
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
+        conn.request("POST", "/hooks/bill-email", body='{}')  # no header
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 403)
+        self.assertIsNone(self.ledger.last_run("bill-email"))
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.srv.port, timeout=5)
+        conn.request("POST", "/hooks/bill-email", body='{}',
+                     headers={"X-Anton-Secret": "wrong"})
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 403)
+        self.assertIsNone(self.ledger.last_run("bill-email"))

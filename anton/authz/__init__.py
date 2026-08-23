@@ -28,10 +28,27 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     azcfg = (config.get("authz") or {})
     mode = azcfg.get("mode", "multi_user")
     azdir = os.path.join(data_dir, "authz")
+    # R9-MAJOR resolution (self-deploy): a missing decision secret no longer
+    # refuses boot — it is AUTO-PROVISIONED (crypto-random, persisted 0600)
+    # so hardened mode is the default with zero human configuration.
+    from .provision import ensure_decision_secret, ensure_webhook_secret
+    decision_secret = ensure_decision_secret(data_dir, config)
+    ensure_webhook_secret(data_dir, config)
     os.makedirs(azdir, exist_ok=True)
 
     store = open_store(os.path.join(data_dir, "authz.db"))
     store.enabled_roles = enabled_roles(config)
+    store.decision_secret = decision_secret or None
+    # R13-B1: surface the pre-heal drift refusal BEFORE anything heals the DB.
+    if store.preheal_refusal:
+        audit = AuditLog(store)
+        try:
+            audit.append("schema_mismatch", payload={
+                "reason": "preheal_drift", "detail": store.preheal_refusal})
+        except Exception:
+            pass  # the drift may include the audit chain itself (R14-B2)
+        raise RuntimeError("refusing multi-user start: "
+                           + store.preheal_refusal)
     audit = AuditLog(store)
 
     broker = CredentialBroker(
@@ -42,27 +59,98 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     )
     store.broker = broker  # revocation-rotation path for OAuth connectors
     # Session revocation reach-through: capability tokens die with their
-    # issuing session within one validation pass (REQ-AUTH-02/REQ-CRED-04).
-    broker.session_validator = store.session_active
+    # issuing session OR machine-token credential within one validation pass
+    # (REQ-AUTH-02/REQ-CRED-04/R9).
+    broker.session_validator = store.credential_alive
     # Full socket flow: lease/mint requests present a live session token;
     # the broker resolves the principal itself (REQ-CRED-02 attestation).
-    broker.principal_validator = store.resolve_session
+    broker.principal_validator = store.resolve_any_token
     # Grant re-check at mint/fetch; Owner/Admin are the privileged tier.
     def _grant_allowed(principal_id: str, connection_id: str) -> bool:
         p = store.principal_by_id(principal_id)
-        if p is not None and p.role in ("Owner", "Admin"):
-            return True
+        if p is not None:
+            if p.role in ("Owner", "Admin"):
+                return True
+            if p.kind == "service":
+                # R9: a service identity inherits its owning human's access —
+                # the self-grant trigger correctly forbids granting directly
+                # to it.
+                owner = store.principal_by_id(p.human_id)
+                if owner is None:
+                    return False
+                if owner.role in ("Owner", "Admin"):
+                    return True
+                return has_active_grant(store, owner.user_id, connection_id)
         return has_active_grant(store, principal_id, connection_id)
     broker.grant_checker = _grant_allowed
 
-    boot_check(store, audit, mode="first_boot" if store.count_users() == 0
-               else mode)
+    # R13-B2: first_boot means a genuinely pristine DB — no recorded
+    # baseline AND no audit history AND no genesis stamp. The stamp is a
+    # file OUTSIDE the database (authz/genesis.stamp), written once after
+    # the first baseline: an attacker who wipes tables/kv rows inside the
+    # DB cannot erase it, so a wiped DB can never be re-blessed as genesis
+    # (R15-B kv-drop launder).
+    has_history = bool(store.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='audit_chain'").fetchone()) and store.conn.execute(
+        "SELECT COUNT(*) FROM audit_chain").fetchone()[0] > 0
+    stamp = os.path.join(azdir, "genesis.stamp")
+    stamp_exists = os.path.exists(stamp)
+    pristine = (store.kv_get("schema_hash") is None and not has_history)
+    if stamp_exists and store.kv_get("schema_hash") is None and not has_history:
+        # R15-B: genesis stamp exists but the DB looks pristine -> wiped DB;
+        # never re-bless as first boot.
+        audit.append("schema_mismatch", payload={
+            "reason": "genesis_stamp_present_db_wiped"})
+        raise RuntimeError(
+            "refusing multi-user start: genesis stamp exists but the authz "
+            "DB has no baseline/history — the database was wiped or "
+            "restored improperly.")
+    boot_check(store, audit, mode="first_boot" if pristine else mode)
+    # REQ-AUDIT-02 (commercial hardening): anchor the chain head into the
+    # append-only file at EVERY boot, and verify continuity of prior
+    # anchors — a DB-level tail truncation is caught here.
+    anchor_path = os.path.join(azdir, "audit.anchor")
+    ok_a, detail_a = audit.verify_anchor(anchor_path)
+    if not ok_a and detail_a not in ("no anchor file",):
+        audit.append("anchor_mismatch", payload={"detail": detail_a})
+        raise RuntimeError("audit anchor verification failed: " + detail_a)
+    audit.anchor(anchor_path)
+    app.state.audit_anchor_path = anchor_path
+    # R16-B: write whenever MISSING (idempotent) — a crash between baseline
+    # commit and stamp write must not leave the install permanently
+    # disarmed. Never restored to a wiped DB (that path is refused above).
+    if not os.path.exists(stamp):
+        from .secrets import write_private_file
+        write_private_file(stamp, "genesis")
+
+    # The scheduler's real money/outbound gate lives in isolation.db; its
+    # approvals triggers must survive too (R5-7). Fail closed on drift.
+    import sqlite3 as _sq
+    from ..db import isolation_approvals_integrity as _iso_check
+    iso_path = os.path.join(data_dir, "isolation.db")
+    if os.path.exists(iso_path):
+        _iso = _sq.connect(iso_path)
+        try:
+            drift = _iso_check(_iso)
+        finally:
+            _iso.close()
+        if drift:
+            audit.append("schema_mismatch", payload={
+                "scope": "isolation_db_approvals", "drift": drift})
+            raise RuntimeError(
+                "isolation.db approvals trigger set drifted (" +
+                "".join(drift) + ") — refusing multi-user start")
 
     # First-run Owner claim: explicit, out-of-band, single-use (R1-F12).
     claim_path = os.path.join(azdir, "owner-claim")
     if store.count_users() == 0 and not os.path.exists(claim_path):
         import secrets as pysecrets
-        write_private_file(claim_path, pysecrets.token_hex(16))
+        code = pysecrets.token_hex(16)
+        write_private_file(claim_path, code)
+        # Self-deploy: operator reads this from container logs; the 0600
+        # file is the durable copy.
+        print(f"[authz] FIRST-RUN OWNER CLAIM CODE: {code}", flush=True)
 
     codes = None
     if store.kv_get("recovery_codes") is None:

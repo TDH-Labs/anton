@@ -10,6 +10,7 @@ import time
 from typing import List, Optional
 
 from .canary import attempt_repairs, compute_tripwires
+from .db import isolation_approvals_integrity
 from .executor import Executor
 from .jobs import Job
 from .ledger import Ledger
@@ -71,6 +72,18 @@ class JobEngine:
         self._job_executor_cache: dict = {}
         self._jobs_mtime: Optional[float] = None
         self._prime_jobs_mtime()
+        # R11-obs: shared secret required on /hooks/* triggers; unset means
+        # webhook triggers are refused (fail-closed). Self-deploy: auto-
+        # provisioned to data/authz/webhook.secret when absent.
+        self.webhook_secret = config.get("general", {}).get(
+            "webhook_secret") or None
+        if self.data_dir and not self.webhook_secret:
+            try:
+                from .authz.provision import ensure_webhook_secret
+                self.webhook_secret = ensure_webhook_secret(
+                    self.data_dir, config)
+            except Exception:
+                pass
 
     def _jobs_file_path(self) -> Optional[str]:
         if not self.data_dir:
@@ -152,30 +165,39 @@ class JobEngine:
                 pass
 
     def _is_approved(self, job_id: str) -> tuple[bool, str]:
-        """R1: check approval nonce or apply Son of Anton permissionless bypass."""
-        # Cross-process truth: the toggle lives in the DB (set via the
-        # dashboard API in a different process), so read it at decision time —
-        # both directions, or a stale True would survive toggling off.
-        if self.data_dir:
+        """R1: check approval nonce or apply Son of Anton permissionless bypass.
+
+        R12-OBS/R13: in hardened (authz) deployments the permissionless
+        bypass is DISABLED BY FIAT — the agent can never effect the toggle,
+        so flipping it is a dead path and the money/outbound gate always
+        requires a real verified approval."""
+        hardened = bool(getattr(self, "_decision_secret", None))
+        if self.data_dir and not hardened:
+            # legacy single-operator mode only: DB-backed toggle
             self.son_of_anton_mode = get_son_of_anton_mode(self.data_dir)
-        if self.son_of_anton_mode:
-            if self.data_dir:
-                import os
-                import sqlite3
-                import uuid
-                p = os.path.join(self.data_dir, "isolation.db")
-                if os.path.exists(p):
-                    try:
-                        with sqlite3.connect(p, timeout=10.0) as conn:
-                            nonce = f"son-of-anton-{uuid.uuid4().hex[:12]}"
-                            ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            conn.execute(
-                                "INSERT INTO approvals (nonce, action, amount, recipient, status, hmac, ts) VALUES (?, ?, ?, ?, 'consumed', 'son_of_anton_bypass', ?)",
-                                (nonce, job_id, "BYPASS", "AUTONOMOUS", ts)
-                            )
-                            conn.commit()
-                    except Exception:
-                        pass
+        if self.son_of_anton_mode and not hardened:
+            import os
+            import sqlite3
+            import uuid
+            p = os.path.join(self.data_dir, "isolation.db")
+            if os.path.exists(p):
+                # The permissionless bypass is itself gated on a healthy
+                # approvals trigger set — a drifted gate must not be
+                # rideable through the escape hatch (R7-6).
+                with sqlite3.connect(p, timeout=10.0) as conn:
+                    if isolation_approvals_integrity(conn):
+                        return False, "gate_triggers_drifted"
+                try:
+                    with sqlite3.connect(p, timeout=10.0) as conn:
+                        nonce = f"son-of-anton-{uuid.uuid4().hex[:12]}"
+                        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        conn.execute(
+                            "INSERT INTO approvals (nonce, action, amount, recipient, status, hmac, ts) VALUES (?, ?, ?, ?, 'consumed', 'son_of_anton_bypass', ?)",
+                            (nonce, job_id, "BYPASS", "AUTONOMOUS", ts)
+                        )
+                        conn.commit()
+                except Exception:
+                    pass
             return True, "son_of_anton_bypass"
 
         if not self.data_dir:
@@ -185,16 +207,39 @@ class JobEngine:
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
             return False, "no_db"
-        with sqlite3.connect(p, timeout=10.0) as conn:
-            row = conn.execute(
-                "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
-                (job_id,)).fetchone()
-            if not row:
-                return False, "no_approval"
-            aid = row[0]
-            cur = conn.execute("UPDATE approvals SET status='consumed' WHERE id=? AND status='approved'", (aid,))
-            conn.commit()
-            return (cur.rowcount > 0), "nonce_consumed"
+        # R6/R7/R8/R9: the gate decision runs inside one BEGIN IMMEDIATE
+        # transaction via the SHARED verified consumer (drift check + keyed
+        # decision-hmac verification + one-shot consume) so every consumer of
+        # this table enforces identical countermeasures. Transient write-lock
+        # contention fails closed as 'gate_locked' instead of killing the
+        # scheduler process.
+        secret = getattr(self, "_decision_secret", None) or None
+        max_age = getattr(self, "_approval_max_age_s", None)
+        from .db import consume_verified_approval
+        conn = sqlite3.connect(p, timeout=10.0, isolation_level=None)
+        try:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                return False, "gate_locked"
+            try:
+                ok, reason = consume_verified_approval(conn, job_id,
+                                                       secret=secret,
+                                                       max_age_s=max_age)
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                return False, "gate_locked"
+            if not ok and reason in ("gate_triggers_drifted", "unverified_hmac",
+                                     "no_approval"):
+                conn.execute("ROLLBACK")
+            else:
+                conn.commit()
+            return ok, reason
+        finally:
+            conn.close()
 
     def by_id(self, job_id: str) -> Optional[Job]:
         return next((j for j in self.jobs if j.id == job_id), None)
