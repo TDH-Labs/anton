@@ -11,6 +11,10 @@ class BreakGlassRateLimited(Exception):
     pass
 
 
+class BreakGlassDeliveryFailed(Exception):
+    pass
+
+
 class RecoveryArtifactError(Exception):
     pass
 
@@ -54,6 +58,15 @@ def request_breakglass(store, audit, principal, reason: str,
                 failed += 1
         except Exception:
             failed += 1
+
+    # REQ-APPR-03: "success if either delivers" — a fully silent elevation
+    # is refused and audited (review R2A-6). The offline recovery artifact
+    # (REQ-APPR-04) remains the all-channels-down path.
+    if ok == 0:
+        audit.append("breakglass_refused", actor=principal, payload={
+            "reason": "no_channel_delivered", "channels_failed": failed})
+        raise BreakGlassDeliveryFailed(
+            "break-glass refused: no notification channel delivered")
 
     expires = _epoch() + duration_min * 60
     with store.lock:

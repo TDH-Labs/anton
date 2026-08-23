@@ -321,3 +321,232 @@ class MachineTokenExpiry(unittest.TestCase):
         self.assertIsNone(store.resolve_machine_token(tok))
         tok2, _ = store.mint_machine_token(svc["id"])  # no expiry
         self.assertIsNotNone(store.resolve_machine_token(tok2))
+
+
+# =========================================================================
+# Round 2 (review run 2, docs/AUTHZ-CONSENSUS-REVIEW-FINAL.md)
+# =========================================================================
+
+class R2A1StubRouteRemoved(unittest.TestCase):
+    """MAJOR R2A-1: the {"todo": True} stub shadowed the real egress handler."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_channel_creation_really_creates(self):
+        h = self._owner_headers()
+        r = self.env.client.post("/api/authz/egress/channels", headers=h, json={
+            "channel_id": "sms-x", "kind": "agentphone_sms",
+            "address": "+15550001111", "clearance": "INTERNAL"})
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("todo", r.json())
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT id FROM egress_channels WHERE id='sms-x'")
+        self.assertEqual(len(rows), 1)
+        audit_rows = raw_sqlite(self.env.authz_db,
+                                "SELECT seq FROM audit_chain "
+                                "WHERE event_type='egress_channel_created'")
+        self.assertTrue(audit_rows)
+
+    def _owner_headers(self):
+        store = self.store
+        owner = store.get_user_by_username("owner")
+        dev = store.create_device(owner["id"], "t")
+        return {"Authorization": "Bearer " + store.create_session(owner["id"], dev)}
+
+
+class R2A2ClockStaircase(unittest.TestCase):
+    """MAJOR R2A-2: sub-threshold backward steps cannot extend TTLs."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.broker = self.env.app.state.authz_broker
+        self.broker.register_secret("conn-a", "v", connection_id="conn-a")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_staircase_regression_cannot_extend_epoch(self):
+        principal = self.store.principal_of("owner")
+        lease = self.broker.issue_execution_lease(
+            principal, execution_id="es", connection_ids=["conn-a"], ttl_s=5)
+        cap = self.broker.mint_capability_token(lease, ["conn-a"])
+
+        from anton.authz import broker as broker_mod
+        real_time = broker_mod.time
+
+        class FakeTime:
+            offset = 0.0
+
+            @staticmethod
+            def time():
+                return time.time() + FakeTime.offset
+
+            @staticmethod
+            def monotonic():
+                return time.monotonic()
+
+        with mock.patch.object(broker_mod, "time", FakeTime):
+            # three -290s steps, all under the 300s threshold
+            for _ in range(3):
+                FakeTime.offset -= 290.0
+                self.broker.epoch_now()
+            # epoch_now must never have regressed: expiry still enforced
+            time.sleep(5.1)
+            from anton.authz.broker import TokenExpired
+            with self.assertRaises(TokenExpired):
+                self.broker.fetch(cap, "conn-a", purpose="after-staircase")
+
+
+class R2A3FabricatedGrantParty(unittest.TestCase):
+    """MAJOR R2A-3: unknown party ids abort instead of passing NULL checks."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.owner_p = self.store.principal_of("owner")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_fabricated_granter_rejected_by_trigger(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO connection_grants(granter_id, grantee_id,"
+                    " connection_id, scope, oauth_scopes_json, policy_version,"
+                    " active, created) VALUES(?,?,?,?,?,?,1,'now')",
+                    ("fabricated-nonexistent-id", self.owner_p.user_id,
+                     "c9", "full", "[]", "v1"))
+        finally:
+            conn.close()
+
+
+class R2A4MigrationGateComplete(unittest.TestCase):
+    """MAJOR R2A-4: dropping ux_decision_once or any critical trigger fails."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_dropping_unique_index_fails_migration_gate(self):
+        from anton.authz.boot import MigrationIntegrityError, run_migration
+        from anton.authz.principals import MigrationPrincipal
+        with self.assertRaises(MigrationIntegrityError):
+            run_migration(
+                self.store, self.audit,
+                principal=MigrationPrincipal(migration_name="hostile-2"),
+                name="hostile-2",
+                sql="DROP INDEX IF EXISTS ux_decision_once")
+
+    def test_baseline_not_laundered_after_failed_migration(self):
+        from anton.authz.boot import MigrationIntegrityError, run_migration
+        from anton.authz.principals import MigrationPrincipal
+        before = self.store.kv_get("schema_hash")
+        with self.assertRaises(MigrationIntegrityError):
+            run_migration(
+                self.store, self.audit,
+                principal=MigrationPrincipal(migration_name="hostile-3"),
+                name="hostile-3", sql="DROP INDEX IF EXISTS ux_decision_once")
+        self.assertEqual(before, self.store.kv_get("schema_hash"))
+
+
+class R2A5WebSocketDenied(unittest.TestCase):
+    """MAJOR R2A-5: websocket scopes are fail-closed rejected."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_ws_connection_closed_without_data(self):
+        from starlette.websockets import WebSocketDisconnect
+        @self.env.app.websocket("/api/ws/rogue")
+        async def rogue(ws):  # pragma: no cover — must never run
+            await ws.send_text("leak")
+
+        with self.assertRaises(Exception):
+            with self.env.client.websocket_connect("/api/ws/rogue") as ws:
+                ws.receive_text()
+
+    def test_auditor_flags_any_websocket_route_even_guarded(self):
+        from anton.authz.guards import audit_routes_behavioral
+
+        @self.env.app.websocket("/api/ws/another")
+        async def another(ws):  # pragma: no cover
+            await ws.accept()
+
+        findings = audit_routes_behavioral(self.env.app)
+        self.assertTrue(any("websocket" in f for f in findings))
+
+
+class R2A6SilentBreakGlassRefused(unittest.TestCase):
+    """MINOR R2A-6: elevation requires at least one delivered channel."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+        self.owner_p = self.store.principal_of("owner")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_all_channels_down_refuses_elevation(self):
+        from anton.authz.breakglass import (BreakGlassDeliveryFailed,
+                                            elevation_active,
+                                            request_breakglass)
+        with self.assertRaises(BreakGlassDeliveryFailed):
+            request_breakglass(self.store, self.audit, principal=self.owner_p,
+                               reason="silent attempt", duration_min=10,
+                               channels=[lambda m: False])
+        self.assertFalse(elevation_active(self.store, self.owner_p.user_id))
+
+
+class O3DisabledUserSessionsAndBrokerErrors(unittest.TestCase):
+    """OBSERVATION O-3 hardening."""
+
+    def test_disabled_user_session_invalid(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        u = store.create_user("temp1", "Role-Pass-1!")
+        dev = store.create_device(u["id"], "d")
+        tok = store.create_session(u["id"], dev)
+        self.assertIsNotNone(store.resolve_session(tok))
+        with store.lock:
+            store.conn.execute("UPDATE users SET disabled=1 WHERE id=?",
+                               (u["id"],))
+            store.conn.commit()
+        self.assertIsNone(store.resolve_session(tok))
+
+    def test_malformed_broker_response_raises_degraded(self):
+        from anton.authz import broker as broker_mod
+        client = broker_mod.BrokerClient("/tmp/nonexistent-sock-does-not-exist")
+        with self.assertRaises(broker_mod.BrokerDegraded):
+            client.ping()

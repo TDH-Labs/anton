@@ -70,6 +70,8 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     app.state.authz_recovery_codes = codes or []
 
     from .guards import AuthzMiddleware as _MW  # local import clarity
+    from .guards import DenyWebSockets as _WS
+    app.add_middleware(_WS)          # raw-ASGI: closes all ws scopes
     app.add_middleware(_MW, store=store, audit=audit)
     app.include_router(build_router(store, audit, broker, azdir))
 

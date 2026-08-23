@@ -224,8 +224,21 @@ class CredentialBroker:
                     "drift_s": round(prev_wall - wall, 1)})
             projected = anchor_wall + (mono - anchor_mono)
         else:
+            # High-water mark: last_wall NEVER moves down, so a staircase
+            # of sub-threshold backward steps cannot walk epoch_now back to
+            # extend TTLs (review R2A-2). Cumulative regression alarms.
             projected = max(wall, prev_wall)
-            self.kv_set("last_wall", repr(wall))
+            self.kv_set("last_wall", repr(projected))
+            if wall < prev_wall:
+                debt = float(self.kv_get("skew_debt") or 0) + (prev_wall - wall)
+                self.kv_set("skew_debt", repr(debt))
+                if debt > self.skew_threshold_s and self.audit is not None:
+                    self.audit.append("clock_skew_alarm", payload={
+                        "kind": "staircase_regression",
+                        "cumulative_drift_s": round(debt, 1)})
+                    self.kv_set("skew_debt", "0")
+            else:
+                self.kv_set("skew_debt", "0")
         return projected - float(self.kv_get("epoch_base_wall"))
 
     def check_client_clock(self, reported_time: float | None) -> None:
@@ -710,7 +723,12 @@ class BrokerClient:
                 buf += chunk
         if not buf.strip():
             raise BrokerDegraded("broker unavailable: empty response")
-        resp = json.loads(buf.decode())
+        try:
+            resp = json.loads(buf.decode())
+        except (ValueError, UnicodeDecodeError) as e:
+            # Fail closed with the degraded class, not a raw decode error
+            # (review O-3).
+            raise BrokerDegraded("broker unavailable: malformed response") from e
         if not resp.get("ok", False):
             err = resp.get("error", "")
             detail = resp.get("detail", "")

@@ -132,21 +132,6 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
 
     # -- egress channels (handoff #11 HTTP surface) -------------------------
     @router.post("/api/authz/egress/channels")
-    def create_egress_channel(request: Request):
-        from pydantic import BaseModel as _BM
-
-        class _Req(_BM):
-            channel_id: str
-            kind: str
-            address: str
-            clearance: str = "INTERNAL"
-            recipient_name: str = ""
-
-        # body parsed by FastAPI below; capability enforced by middleware
-        return {"todo": True}
-
-    # -- egress channels (handoff #11 HTTP surface) -------------------------
-    @router.post("/api/authz/egress/channels")
     def create_egress_channel(req: EgressChannelReq, request: Request):
         principal = _principal(request)
         from .egress import create_channel

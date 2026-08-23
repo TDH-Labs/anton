@@ -200,6 +200,10 @@ class AuthzStore:
             "WHERE s.token_hash=?", (digest,)).fetchone()
         if row is None or row["revoked"] or row["expires"] <= _epoch():
             return None
+        if row["disabled"]:
+            # A disabled user's outstanding sessions die immediately
+            # (review O-3).
+            return None
         return UserPrincipal(
             user_id=row["id"], username=row["username"],
             role=self.role_of(row["id"]), human_id=row["human_id"],

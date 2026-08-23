@@ -132,14 +132,18 @@ CREATE TABLE IF NOT EXISTS audit_chain (
 TRIGGERS = """
 -- REQ-GRNT-02: no self-grants, enforced in schema, not API layer. The
 -- check collapses service identities to their owning human, so U granting
--- U's own service account is still a self-grant.
+-- U's own service account is still a self-grant. Unknown party ids abort
+-- too — NULL human_id comparisons must never let a fabricated granter
+-- through (review R2A-3).
 CREATE TRIGGER IF NOT EXISTS trg_grant_no_self
 BEFORE INSERT ON connection_grants
 FOR EACH ROW
-WHEN (SELECT human_id FROM users WHERE id = NEW.granter_id) =
+WHEN NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.granter_id)
+  OR NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.grantee_id)
+  OR (SELECT human_id FROM users WHERE id = NEW.granter_id) =
      (SELECT human_id FROM users WHERE id = NEW.grantee_id)
 BEGIN
-    SELECT RAISE(ABORT, 'self-grant forbidden (human match)');
+    SELECT RAISE(ABORT, 'self-grant forbidden (human match or unknown party)');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_grant_no_cycle
@@ -245,15 +249,26 @@ END;
 
 # The trigger set whose presence is asserted after every migration and at
 # every multi-user boot (REQ-PRIN-02, REQ-APPR-05b).
-CRITICAL_TRIGGERS = (
+# The full security-critical object set whose presence is asserted after
+# every migration and at every multi-user boot (REQ-PRIN-02, REQ-APPR-05b).
+# Type-agnostic: triggers AND indexes (ux_decision_once closes the
+# double-decision race; dropping it must fail the pipeline — review R2A-4).
+CRITICAL_OBJECTS = (
     "trg_grant_no_self",
     "trg_grant_no_cycle",
+    "trg_grant_no_reparty",
+    "trg_grant_no_cycle_reactivate",
     "trg_role_no_self_modify",
     "trg_approval_append_only",
+    "trg_approval_no_delete",
     "trg_approval_no_self_approve",
     "trg_audit_append_only",
     "trg_audit_no_delete",
+    "ux_decision_once",
 )
+
+# Back-compat alias.
+CRITICAL_TRIGGERS = CRITICAL_OBJECTS
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
@@ -277,5 +292,5 @@ def schema_signature(conn: sqlite3.Connection) -> str:
 
 def missing_critical_triggers(conn: sqlite3.Connection) -> list[str]:
     names = {r[0] for r in conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
-    return [t for t in CRITICAL_TRIGGERS if t not in names]
+        "SELECT name FROM sqlite_master WHERE name IS NOT NULL").fetchall()}
+    return [t for t in CRITICAL_OBJECTS if t not in names]

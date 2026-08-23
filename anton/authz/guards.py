@@ -32,6 +32,8 @@ MACHINE_TOKEN_ALLOWLIST = {
 # Declarative route→capability map. Exact matches take precedence over
 # prefixes. "" = any authenticated identity. MUTATING methods with no
 # mapping fail closed at settings.write (ED-2 default deny).
+# NOTE (review O-1): unmapped READ routes are authenticated-but-until-mapped
+# readable by any role including Viewer; the data layer remains canonical.
 ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/approvals", "approvals.submit"),
     ("POST", "/api/approvals/", "approvals.decide"),
@@ -77,6 +79,24 @@ def required_capability(method: str, path: str) -> str | None:
         # capability rather than passing open (CI-T-DATA-01 / ED-2).
         return DEFAULT_MUTATING_CAPABILITY
     return None
+
+
+class DenyWebSockets:
+    """Raw-ASGI middleware: BaseHTTPMiddleware only sees http scopes, so a
+    WebSocket route would bypass authZ entirely (review R2A-5). Phase 1
+    ships zero WebSocket routes; any connection is fail-closed rejected
+    with policy violation 1008. Remove this class ONLY together with an
+    authenticated WS guard in guards.py."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            await receive()  # consume the websocket.connect message
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        await self.app(scope, receive, send)
 
 
 class AuthzMiddleware(BaseHTTPMiddleware):
@@ -169,12 +189,18 @@ def _walk(router_like, findings: list[str], prefix: str, guarded: bool) -> None:
             sub_app = getattr(route, "app", None)
             if hasattr(sub_app, "routes"):
                 _walk(sub_app, findings, prefix=full, guarded=guarded)
-            elif not guarded and full not in EXEMPT_PATHS:
-                findings.append(f"unprotected mount: {full}")
+            else:
+                # Static/file mounts carry no auth dependency of their own;
+                # they are only covered by the parent middleware — always
+                # surface them so the coverage claim stays explicit.
+                if full not in EXEMPT_PATHS:
+                    findings.append(f"mount without own auth dependency: {full}")
             continue
-        if cls == "WebSocketRoute":
-            if not guarded and full not in EXEMPT_PATHS:
-                findings.append(f"unprotected websocket: {full}")
+        if cls in ("WebSocketRoute", "APIWebSocketRoute"):
+            # Phase-1 policy: no WebSocket routes; runtime denies the scope
+            # (DenyWebSockets). Any WS route appearing here is a finding.
+            findings.append(
+                f"websocket route present (denied at runtime): {full}")
             continue
         if cls in ("APIRoute", "StarletteRoute", "Route"):
             if full in EXEMPT_PATHS:

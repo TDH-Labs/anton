@@ -2,9 +2,14 @@
 
 Append-only SQLite with per-entry hash chaining and monotonic sequence
 numbers. A single writer lock serializes chain writes (R2-N7) so
-concurrent writers produce one valid chain. The expected chain head is
-tracked in kv; tail truncation is detected as a gap even when the
-remaining rows are internally consistent.
+concurrent writers produce one valid chain.
+
+HONEST LIMIT (review R2A-7): tail-truncation detection compares the chain
+against kv.audit_head_seq, which lives in the SAME database — an attacker
+with raw DB access can rewrite both. That check defends against partial/
+accidental truncation, not a full DB-level attacker; the authoritative
+control against that threat is external WORM anchoring (REQ-AUDIT-02,
+scheduled for the audit phase), not this in-file comparison.
 """
 from __future__ import annotations
 
