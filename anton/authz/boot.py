@@ -60,16 +60,49 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
     return sig
 
 
+def _TXN_CONTROL_WORDS():
+    return {"BEGIN", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE", "END"}
+
+
+def _for_each_statement(conn, text, fn):
+    """Executes fn(conn, stmt) for every complete statement in `text`.
+
+    Splits char-by-char using sqlite3.complete_statement so semicolons
+    inside trigger bodies / quoted strings do not split prematurely, and
+    multiple statements on one line are applied individually. Refuses
+    transaction-control statements — they would break the single-
+    transaction atomicity guarantee (R19-B).
+    """
+    import re as _re
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch == ";" and sqlite3.complete_statement(buf):
+            first = _re.match(r"\s*([A-Za-z]+)", buf)
+            if first and first.group(1).upper() in _TXN_CONTROL_WORDS():
+                raise MigrationIntegrityError(
+                    f"transaction-control statement forbidden in "
+                    f"migrations: {first.group(1).upper()}")
+            fn(conn, buf)
+            buf = ""
+    if buf.strip():
+        first = _re.match(r"\s*([A-Za-z]+)", buf)
+        if first and first.group(1).upper() in _TXN_CONTROL_WORDS():
+            raise MigrationIntegrityError(
+                f"transaction-control statement forbidden in migrations: "
+                f"{first.group(1).upper()}")
+        fn(conn, buf)
+
+
 def run_migration(store, audit, principal, name: str, sql: str) -> str:
     """Migration runner operates exclusively under MigrationPrincipal.
 
-    Every migration is applied inside ONE BEGIN IMMEDIATE transaction that
-    also contains the WORM audit row and the baseline refresh — apply,
-    record, and re-baseline commit or roll back atomically. The invariant
-    gate (name + body) runs BOTH on a scratch clone before the live DB is
-    touched AND post-apply inside the transaction. Scope note (R18-OBS):
-    the gate covers schema OBJECTS; vetting row DATA written by a
-    MigrationPrincipal is out of scope."""
+    One BEGIN IMMEDIATE transaction contains: the DDL, the WORM audit row,
+    and the baseline refresh — all commit or roll back atomically. The
+    invariant gate (name + body) runs on a scratch clone BEFORE the live DB
+    is touched, and again post-apply inside the transaction. Scope note
+    (R18-OBS): the gate covers schema OBJECTS; vetting row DATA written by
+    a MigrationPrincipal is out of scope."""
     require_nonhuman(principal)
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
@@ -77,27 +110,23 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     _validate_migration_sql(store, sql, audit=audit, name=name,
                             principal=principal)
     with store.lock:
-        store.in_migration_txn = True  # defer kv_set/audit commits
         conn = store.conn
+        # R19-A: a quiescent connection is required. If a foreign writer has
+        # an open transaction we refuse WITHOUT touching it — rolling
+        # back here would destroy their uncommitted work.
+        if conn.in_transaction:
+            _audit_refusal(audit, principal, name, sql,
+                           ["foreign_transaction_present"], [])
+            raise MigrationIntegrityError(
+                "migration requires a quiescent connection (a foreign "
+                "transaction is open on this connection)")
+        store.in_migration_txn = True  # defer kv_set/audit commits
+        started = False
         try:
-            foreign_txn = conn.in_transaction
-            if foreign_txn:
-                # never roll back a foreign writer's pending work (R18-3)
-                store.in_migration_txn = False
-                raise MigrationIntegrityError(
-                    "migration requires a quiescent connection")
             conn.execute("BEGIN IMMEDIATE")
-            # R16-A/R18-2: executescript() silently commits; execute each
-            # COMPLETE statement individually (complete_statement handles
-            # trigger BEGIN...END bodies).
-            buf = ""
-            for line in sql.splitlines(keepends=True):
-                buf += line
-                if sqlite3.complete_statement(buf):
-                    conn.execute(buf)
-                    buf = ""
-            if buf.strip():
-                conn.execute(buf)
+            started = True
+            _for_each_statement(
+                conn, sql, lambda c, stmt: c.execute(stmt))
             missing = missing_critical_triggers(conn)
             weakened = weakened_critical_objects(conn)
             if missing or weakened:
@@ -108,18 +137,17 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
                 "name": name,
                 "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
             sig = schema_signature(conn)
-            conn.execute(
-                "INSERT INTO kv(key, value) VALUES('schema_hash', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (sig,))
+            kv_set_deferred(conn, "schema_hash", sig)
             conn.commit()
             store.in_migration_txn = False
             return sig
         except Exception:
+            if started:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
             store.in_migration_txn = False
-            try:
-                conn.execute("ROLLBACK")
-            except Exception:
-                pass
             _audit_refusal(audit, principal, name, sql,
                            ["apply_or_gate_failure_rolled_back"], [])
             raise
@@ -152,20 +180,25 @@ def _validate_migration_sql(store, sql: str, audit=None, name: str = "",
     import sqlite3
     scratch = sqlite3.connect(":memory:")
     try:
-        for (ddl,) in store.conn.execute(
-                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
-            if ddl.startswith("CREATE TABLE sqlite_"):
-                continue
-            scratch.execute(ddl)
-        scratch.commit()
-        scratch.executescript(sql)
-        scratch.commit()
-        missing = missing_critical_triggers(scratch)
-        weakened = weakened_critical_objects(scratch)
+        try:
+            for (ddl,) in store.conn.execute(
+                    "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
+                if ddl.startswith("CREATE TABLE sqlite_"):
+                    continue
+                scratch.execute(ddl)
+            scratch.commit()
+            # same statement-splitting semantics as the live apply path so
+            # validation matches execution exactly (R18-B)
+            _for_each_statement(
+                scratch, sql, lambda c, stmt: c.execute(stmt))
+            missing = missing_critical_triggers(scratch)
+            weakened = weakened_critical_objects(scratch)
+        finally:
+            scratch.close()
+        if missing or weakened:
+            _audit_refusal(audit, principal, name, sql, missing, weakened)
+            raise MigrationIntegrityError(
+                f"migration would violate the authZ invariant set: "
+                f"missing={missing} weakened={weakened}")
     finally:
         scratch.close()
-    if missing or weakened:
-        _audit_refusal(audit, principal, name, sql, missing, weakened)
-        raise MigrationIntegrityError(
-            f"migration would violate the authZ invariant set: "
-            f"missing={missing} weakened={weakened}")
