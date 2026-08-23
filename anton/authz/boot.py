@@ -62,75 +62,62 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
 
 def run_migration(store, audit, principal, name: str, sql: str) -> str:
     """Migration runner operates exclusively under MigrationPrincipal;
-    every migration is hash-recorded in the audit chain; post-migration
-    the critical trigger/constraint set is asserted by NAME and by BODY
-    (REQ-PRIN-02, R3A-3: a same-name weakened trigger is a failure)."""
+    every migration is hash-recorded in the audit chain INSIDE the same
+    transaction as the DDL; post-migration the critical trigger/constraint
+    set is asserted by NAME and by BODY (REQ-PRIN-02, R3A-3, R16-B)."""
     require_nonhuman(principal)
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
             "migrations require a MigrationPrincipal")
-    # VALIDATE FIRST: apply the migration to a scratch :memory: clone of the
-    # live schema and run the full name+body gate there, BEFORE the real
-    # database is touched (review R4-1). A rejected migration must leave
-    # the live DB byte-identical.
+    # VALIDATE FIRST on a scratch clone — a rejected migration never
+    # touches the live DB.
     _validate_migration_sql(store, sql, audit=audit, name=name)
-    # Apply to the real DB inside ONE transaction (R9-MINOR crash-window
-    # fix): executescript auto-commits per statement, so wrap the script in
-    # explicit BEGIN/COMMIT and run the post-apply gate BEFORE the COMMIT.
-    # A crash or gate failure mid-script rolls back everything.
     with store.lock:
-        # R16-B: audit rows and the baseline refresh join the DDL's
-        # transaction — kv_set/audit commits are deferred via the flag.
-        store.in_migration_txn = True
-        store.conn.execute("BEGIN IMMEDIATE")
+        store.in_migration_txn = True  # defer kv_set/audit commits
+        conn = store.conn
         try:
-            # R16-A: executescript() silently COMMITs the pending transaction
-            # before running — statements must be executed individually so
-            # the gate failure ROLLBACK is real. complete_statement() handles
-            # trigger BEGIN...END bodies correctly.
+            conn.execute("BEGIN IMMEDIATE")
+            # R16-A: executescript() silently commits; execute statements
+            # individually (complete_statement handles trigger bodies).
             buf = ""
             for line in sql.splitlines(keepends=True):
                 buf += line
                 if sqlite3.complete_statement(buf):
-                    store.conn.execute(buf)
+                    conn.execute(buf)
                     buf = ""
             if buf.strip():
-                store.conn.execute(buf)
-            missing = missing_critical_triggers(store.conn)
-            weakened = weakened_critical_objects(store.conn)
-            if missing or weakened:  # belt-and-braces after a validated apply
+                conn.execute(buf)
+            missing = missing_critical_triggers(conn)
+            weakened = weakened_critical_objects(conn)
+            if missing or weakened:
                 raise MigrationIntegrityError(
                     f"migration {name!r} violated the invariant set "
                     f"post-apply: missing={missing} weakened={weakened}")
-            # audit + baseline refresh INSIDE the transaction: apply, WORM
-            # record, and baseline commit or roll back atomically (R16-B).
+            # WORM record + baseline refresh commit atomically WITH the DDL.
             audit.append("migration", actor=principal, payload={
-                "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
-            sig = schema_signature(store.conn)
-            store.kv_set("schema_hash", sig)
-            store.conn.commit()
+                "name": name,
+                "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
+            sig = schema_signature(conn)
+            kv_set_deferred(conn, "schema_hash", sig)
+            conn.commit()
             store.in_migration_txn = False
             return sig
         except Exception:
             store.in_migration_txn = False
             try:
-                store.conn.execute("ROLLBACK")
+                conn.execute("ROLLBACK")
             except Exception:
                 pass
-            try:
-                audit.append("migration_refused", payload={
-                    "name": name,
-                    "sql_sha256": hashlib.sha256(sql.encode()).hexdigest(),
-                    "reason": "apply_or_gate_failure_rolled_back"})
-            except Exception:
-                pass
+            _audit_refusal(audit, name, sql,
+                           ["rolled_back"], [])
             raise
-    audit.append("migration", actor=principal, payload={
-        "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
-    # Sanctioned migrations re-baseline the recorded schema hash.
-    sig = schema_signature(store.conn)
-    store.kv_set("schema_hash", sig)
-    return sig
+
+
+def kv_set_deferred(conn, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO kv(key, value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value))
 
 
 def _audit_refusal(audit, name: str, sql: str, missing, weakened) -> None:

@@ -648,3 +648,48 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
     single-operator mode is un-gated by design (documented boundary), and both
     wire_authz and cli.py refuse authz.enabled without decision_secret, so the
     boundary is unreachable in practice — no action required.
+
+## Review (round 17, adversarial reviewer B, HEAD 1419653)
+
+- **Correct — R16 atomicity fix is genuine.** Read boot.py run_migration (per-statement
+  execution, in-migration-txn deferral at boot.py:84, commit at 111), store.py kv_set
+  (deferred commit at store.py:402), audit.py append (deferred commit at audit.py:77).
+  Ran `tests/authz`: 146 passed, 75 subtests passed.
+
+- **Probed the exact failure shapes (+ synthetic crash):**
+  - P1 real mid-apply DDL failure (CREATE UNIQUE INDEX on duplicated kv.value —
+    passes empty-scratch validation, fails on live data): raised IntegrityError;
+    index absent after; NO "migration" audit row; schema_hash baseline unchanged;
+    only an intentional `migration_refused` row was committed (R5-4 requires
+    refusals be recorded — the refusal row does not claim success).
+  - P2 post-apply gate failure (MigrationIntegrityError via live-only
+    missing/weakened): table rolled back, no success row, baseline untouched,
+    in_migration_txn reset to False.
+  - P3 sanctioned migration: DDL + "migration" audit row + refreshed schema_hash
+    all committed; flag reset False.
+  - P4 validation-refused hostile DROP TRIGGER: live DB untouched, refused row
+    committed, baseline unchanged.
+  - Crash probe: connection closed mid-transaction (BEGIN IMMEDIATE + DDL + kv
+    write, no commit) leaves zero residue on reopen — R9 crash-window holds.
+
+- **Fixed: (none required — no BLOCKER/MAJOR)**
+- **Note:** literal "byte-identical" is not achievable by design: the
+  spec-mandated `migration_refused` refusal row (R5-4) commits after the rollback,
+  so the DB gains exactly that one row. The task's acceptance bar — no partial
+  DDL, no success-claiming audit row, baseline untouched — is met.
+- **Findings (non-blocking):**
+  - MINOR boot.py:84-85: `in_migration_txn = True` and `BEGIN IMMEDIATE` sit
+    OUTSIDE the try/except that resets the flag. If BEGIN raises (precondition:
+    an already-open implicit transaction on the connection — reachable after any
+    DML that raised before commit, e.g. create_user IntegrityError on duplicate
+    username, which python sqlite3 legacy mode leaves in an open transaction),
+    the flag leaks True and every subsequent kv_set/audit append defers its
+    commit forever (silent write loss). Reproduced: after a stray open txn,
+    BEGIN raises OperationalError, `kv_set` values never appear in the DB.
+    Fix: move BEGIN (or the flag set) inside the try, or reset the flag when
+    BEGIN itself fails. Reachability today is low — run_migration has no
+    production call site yet (only exported + tests).
+  - OBSERVATION boot.py:121-127: dead code after the `with store.lock` block
+    (always returns at 113 or raises at 120) — a duplicated audit.append +
+    re-baseline that would append a second actor-less "migration" row and refresh
+    the baseline outside any transaction if a future edit removes the return.
