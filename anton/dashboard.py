@@ -272,6 +272,18 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         # present unless the parameter itself defaults, which is what lets
         # the Ops Center UI's no-body POST through.
         _require_token(request, token)
+        if getattr(app.state, "authz_middleware_active", False):
+            # R12-OBS: the permissionless bypass contradicts multi-user
+            # governance — the agent must never effect this toggle. The
+            # attempt is audited and refused.
+            principal = getattr(request.state, "principal", None)
+            audit_log = getattr(app.state, "authz_audit", None)
+            if audit_log is not None and principal is not None:
+                audit_log.append("soa_toggle_refused", actor=principal,
+                                 payload={"requested": req.son_of_anton_mode})
+            raise HTTPException(
+                403, "son-of-anton bypass is disabled in authz mode "
+                     "(operator-managed via config only)")
         engine.son_of_anton_mode = req.son_of_anton_mode
         # Persist: serve/scheduler runs in a separate process and reads this
         # at gate-decision time — an in-memory-only flag never reaches it.
@@ -283,6 +295,10 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         """SidebarRoot.tsx posts here when the Son of Anton toggle flips off;
         no request body (mirrors /api/mode/son-of-anton's boolean, fixed false)."""
         _require_token(request, token)
+        if getattr(app.state, "authz_middleware_active", False):
+            raise HTTPException(
+                403, "son-of-anton bypass is disabled in authz mode "
+                     "(operator-managed via config only)")
         engine.son_of_anton_mode = False
         set_son_of_anton_mode(data_dir, False)
         return {"status": "updated", "son_of_anton_mode": False}

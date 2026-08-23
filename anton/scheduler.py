@@ -157,13 +157,17 @@ class JobEngine:
                 pass
 
     def _is_approved(self, job_id: str) -> tuple[bool, str]:
-        """R1: check approval nonce or apply Son of Anton permissionless bypass."""
-        # Cross-process truth: the toggle lives in the DB (set via the
-        # dashboard API in a different process), so read it at decision time —
-        # both directions, or a stale True would survive toggling off.
-        if self.data_dir:
+        """R1: check approval nonce or apply Son of Anton permissionless bypass.
+
+        R12-OBS/R13: in hardened (authz) deployments the permissionless
+        bypass is DISABLED BY FIAT — the agent can never effect the toggle,
+        so flipping it is a dead path and the money/outbound gate always
+        requires a real verified approval."""
+        hardened = bool(getattr(self, "_decision_secret", None))
+        if self.data_dir and not hardened:
+            # legacy single-operator mode only: DB-backed toggle
             self.son_of_anton_mode = get_son_of_anton_mode(self.data_dir)
-        if self.son_of_anton_mode:
+        if self.son_of_anton_mode and not hardened:
             import os
             import sqlite3
             import uuid

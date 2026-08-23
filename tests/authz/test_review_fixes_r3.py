@@ -1582,3 +1582,46 @@ class R12MachineTokenRevocationReachThrough(unittest.TestCase):
         store.revoke_machine_token(jti)
         with self.assertRaises(BrokerDenied):
             client.fetch(cap, "conn-m", purpose="post-revoke")
+
+
+# =========================================================================
+# Round 17 — son-of-anton toggle hardening (Adam's requirement)
+# =========================================================================
+
+class R17SoAToggleHardened(unittest.TestCase):
+    """The agent can never effect the son-of-anton toggle in hardened
+    (authz) mode: API mutation refused + audited; even a raw-DB flag flip
+    is ignored by the money gate."""
+
+    def test_api_toggle_refused_and_audited_in_authz_mode(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        h = self.env.login("owner", "Owner-Pass-1!")
+        r = self.env.client.post("/api/mode/son-of-anton", json={},
+                                 headers=h)
+        self.assertEqual(r.status_code, 403)
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT event_type FROM audit_chain "
+                          "WHERE event_type='soa_toggle_refused'")
+        self.assertTrue(rows)
+
+    def test_raw_db_flag_flip_ignored_by_money_gate(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        engine = self.env.engine
+        import os
+        engine.data_dir = os.path.join(self.env.dir, "data")
+        engine._decision_secret = "test-decision-secret"
+        # attacker flips the legacy DB flag directly
+        from anton.scheduler import set_son_of_anton_mode
+        set_son_of_anton_mode(engine.data_dir, True)
+        ok, reason = engine._is_approved("any-gated-job")
+        self.assertFalse(ok)  # bypass NOT honored in hardened mode
+
+    def test_legacy_mode_still_honors_toggle(self):
+        env = build_env(authz_enabled=False)
+        # legacy deployments keep the designed escape hatch (documented
+        # single-operator boundary)
+        r = env.client.post("/api/mode/son-of-anton", json={},
+                            headers={"Authorization": "Bearer s3cret-legacy"})
+        self.assertEqual(r.status_code, 200)
