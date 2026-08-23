@@ -74,7 +74,8 @@ class AuditLog:
                      str(workspace), str(agent_instance), str(tool_credential),
                      payload_json, prev_hash, digest))
                 self.store.kv_set("audit_head_seq", str(seq))
-                self.store.conn.commit()
+                if not getattr(self.store, "in_migration_txn", False):
+                    self.store.conn.commit()
         return seq
 
     @staticmethod

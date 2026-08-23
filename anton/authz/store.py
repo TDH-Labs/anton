@@ -397,7 +397,10 @@ class AuthzStore:
                 "INSERT INTO kv(key, value) VALUES(?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (key, value))
-            self.conn.commit()
+            # R16-B: inside a migration transaction the caller owns the
+            # commit — an early commit here would break atomicity.
+            if not getattr(self, "in_migration_txn", False):
+                self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()

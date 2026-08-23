@@ -613,3 +613,38 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
 - Correct: decided_at ALTER upgrade path works on old isolation.db (`_upgrade_approvals_columns` appends; probe: column added, old rows NULL). Freshness check typed correctly (ISO-parse + compare, mismatch fail-closed). Scheduler consume sits inside caller's BEGIN IMMEDIATE; all consumers route through `consume_verified_approval`. `credential_alive` machine: parsing is injection/collision-clean (uuid4-hex jti + parameterized SQL; session sids are uuid4-hex so `machine:` prefix cannot collide; `amt_`/`ast_` token prefixes distinct). Webhook gate fail-closed + constant-time compare, auth before resource-existence disclosure. SoA fiat works: hardened gate ignores flag; raw-DB flip unreachable. Concurrent first boots benign (same hash bless, idempotent stamp).
 
 - Fixed: nothing changed in code (review findings below).
+- Findings (adversarial B, round 16 — schema invariants / TOCTOU / upgrade paths):
+  - MAJOR: run_migration "single transaction" is not atomic — audit.append()
+    (anton/authz/boot.py:104) internally calls store.kv_set() (store.py:394-402)
+    which issues conn.commit(), committing the BEGIN IMMEDIATE transaction
+    mid-migration. Any failure after that point (e.g. schema_signature or the
+    final kv_set("schema_hash")) leaves the DDL + WORM row durable and the
+    except-branch ROLLBACK a no-op ("cannot rollback - no transaction is
+    active" — reproduced). Probe: BEGIN IMMEDIATE; CREATE TABLE; kv-set commit;
+    ROLLBACK → table survives. Boot then refuses on stale baseline (fail-closed,
+    but the "roll back atomically" property is false). Also lines 123-128
+    (trailing audit.append + re-baseline after `with store.lock`) are
+    unreachable dead code. Fix: do not commit inside the migration txn — use a
+    connection-level "in tx" flag so kv_set/audit defer their commit, or write
+    the audit row + baseline with plain conn.execute and commit exactly once.
+  - MINOR: genesis.stamp write-if-missing (__init__.py:116-118) runs on every
+    boot outside any DB transaction and is not cross-process serialized; a
+    crash between boot_check's baseline commit and the stamp write leaves the
+    install without a stamp, so a subsequent DB wipe + boot re-blesses as
+    first_boot (the commit message's "a wiped DB can never be re-blessed"
+    holds only while the attacker cannot delete the file AND no crash window
+    was hit). Both limits are acknowledged in comments, but the guarantee as
+    stated is narrower than claimed.
+  - OBSERVATION: _upgrade_approvals_columns backfill (db.py:230-236) stamps
+    decided_at=ts for pre-R16 decided rows, but ts is the CREATION time — for
+    any row older than the freshness window this converts an upgradable
+    "no_decision_timestamp" refusal into "approval_expired" at the money/
+    outbound/upskill gates. The comment "instead of bricking them" is
+    misleading: post-upgrade installs must re-decide every pre-R16 approved
+    sign-off older than 7 days (verified: consume returns approval_expired).
+    Functionally consistent with the freshness design; operator-impact note.
+  - OBSERVATION: freshness is skipped entirely on the no-secret consume path
+    (db.py:318 `if max_age_s is not None` nested under `if secret:`); legacy
+    single-operator mode is un-gated by design (documented boundary), and both
+    wire_authz and cli.py refuse authz.enabled without decision_secret, so the
+    boundary is unreachable in practice — no action required.

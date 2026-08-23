@@ -226,8 +226,9 @@ def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(f"ALTER TABLE approvals ADD COLUMN {name} TEXT")
             changed = True
-    # R16-OBS: backfill decided_at for already-decided pre-batch rows so the
-    # freshness window uses their creation time instead of bricking them.
+    # R16-OBS: backfill decided_at from creation time for already-decided
+    # pre-batch rows. NOTE: rows older than authz.approval_max_age_s will be
+    # refused as expired at consume time — operators must re-decide them.
     if "decided_at" in {r[1] for r in conn.execute(
             "PRAGMA table_info(approvals)")}:
         conn.execute(

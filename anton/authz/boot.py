@@ -79,6 +79,9 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     # explicit BEGIN/COMMIT and run the post-apply gate BEFORE the COMMIT.
     # A crash or gate failure mid-script rolls back everything.
     with store.lock:
+        # R16-B: audit rows and the baseline refresh join the DDL's
+        # transaction — kv_set/audit commits are deferred via the flag.
+        store.in_migration_txn = True
         store.conn.execute("BEGIN IMMEDIATE")
         try:
             # R16-A: executescript() silently COMMITs the pending transaction
@@ -106,8 +109,10 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
             sig = schema_signature(store.conn)
             store.kv_set("schema_hash", sig)
             store.conn.commit()
+            store.in_migration_txn = False
             return sig
         except Exception:
+            store.in_migration_txn = False
             try:
                 store.conn.execute("ROLLBACK")
             except Exception:
