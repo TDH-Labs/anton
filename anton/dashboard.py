@@ -494,8 +494,10 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             raise HTTPException(400, "decision must be once|always|defer")
         conn = open_isolation_db(data_dir)
         principal = getattr(request.state, "principal", None)
-        appr_h = principal.human_id if principal else None
-        appr_p = principal.principal_id if principal else None
+        if principal is not None:
+            appr_h, appr_p = principal.human_id, principal.principal_id
+        else:
+            appr_h, appr_p = "legacy:operators", "api:decide"
         try:
             if req.decision == "defer":
                 row = conn.execute("SELECT id FROM approvals WHERE id=?", (aid,)).fetchone()
@@ -529,8 +531,13 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         _require_token(request, token)
         nonce = secrets.token_hex(16)
         principal = getattr(request.state, "principal", None)
-        init_h = principal.human_id if principal else None
-        init_p = principal.principal_id if principal else None
+        if principal is not None:
+            init_h, init_p = principal.human_id, principal.principal_id
+        else:
+            # Legacy (authz-off) mode still writes explicit identity markers
+            # so the DB-level approver!=initiator gate stays meaningful and
+            # NULL-attributed rows are never produced by the API (R5-1).
+            init_h, init_p = "legacy:creators", "api:create"
         with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
                              timeout=10.0) as conn:
             conn.execute(
@@ -549,8 +556,10 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if req.decision not in ("approve", "deny"):
             raise HTTPException(400, "decision must be approve|deny")
         principal = getattr(request.state, "principal", None)
-        appr_h = principal.human_id if principal else None
-        appr_p = principal.principal_id if principal else None
+        if principal is not None:
+            appr_h, appr_p = principal.human_id, principal.principal_id
+        else:
+            appr_h, appr_p = "legacy:operators", "api:decide"
         new_status = "approved" if req.decision == "approve" else "denied"
         try:
             with sqlite3.connect(os.path.join(data_dir, "isolation.db"),

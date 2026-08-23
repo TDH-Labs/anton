@@ -5,6 +5,7 @@ HEAD 82ba79c. Each test pins one finding so it cannot silently regress.
 """
 import time
 import unittest
+import unittest.mock
 
 from helpers import build_env, raw_sqlite
 
@@ -368,22 +369,85 @@ class R4LegacyApprovalHardening(unittest.TestCase):
             conn.close()
 
     def test_legacy_null_rows_still_work(self):
-        # fully-legacy rows (all identity NULL) remain decidable — the
-        # pre-authz behavior is preserved, not regressed
+        # fully-legacy rows (all identity NULL) are decidable ONLY after an
+        # explicit adoption stamp (system:legacy) — the all-NULL direct
+        # forge is closed (R5-1).
         import sqlite3
         conn = sqlite3.connect(self.env.isolation_db)
         try:
             conn.execute(
                 "INSERT INTO approvals(nonce, action, status, ts)"
                 " VALUES('z','job3','pending','now')")
+            conn.commit()
+            # forge: NULL->NULL decided is refused
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE approvals SET status='approved' WHERE nonce='z'")
+                conn.commit()
+            conn.rollback()
+
+            # adoption then decision works
             conn.execute(
-                "UPDATE approvals SET status='approved' WHERE nonce='z'")
+                "UPDATE approvals SET initiator_human='system:legacy',"
+                " initiator_principal='system:legacy' WHERE nonce='z'")
+            conn.commit()
+            conn.execute(
+                "UPDATE approvals SET status='approved', approver_human='owner',"
+                " approver_principal='owner' WHERE nonce='z'")
             conn.commit()
         finally:
             conn.close()
         rows = raw_sqlite(self.env.isolation_db,
                           "SELECT status FROM approvals WHERE nonce='z'")
         self.assertEqual(rows[0][0], "approved")
+
+    def test_all_null_two_step_forge_refused(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, status, ts)"
+                " VALUES('forge','money-job','pending','now')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE approvals SET status='approved' WHERE nonce='forge'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='forge'")
+        self.assertEqual(rows[0][0], "pending")
+
+    def test_consumed_approval_is_terminal(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, status, ts,"
+                " initiator_human, initiator_principal)"
+                " VALUES('r1','job','pending','now','bob','bob')")
+            conn.commit()
+            conn.execute(
+                "UPDATE approvals SET status='approved', approver_human='alice',"
+                " approver_principal='alice' WHERE nonce='r1'")
+            conn.commit()
+            conn.execute(
+                "UPDATE approvals SET status='consumed' WHERE nonce='r1'")
+            conn.commit()
+            # replay attempt: consumed -> approved must be refused
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE approvals SET status='approved', approver_human='alice',"
+                    " approver_principal='alice' WHERE nonce='r1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='r1'")
+        self.assertEqual(rows[0][0], "consumed")
 
 
 class R4ExecutionUpdateRejected(unittest.TestCase):
@@ -415,3 +479,58 @@ class R4ExecutionUpdateRejected(unittest.TestCase):
             conn.rollback()
         finally:
             conn.close()
+
+
+class R5MigrationRefusalAudited(unittest.TestCase):
+    """MINOR R5-4: refused migrations must leave an audit-chain row."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_refused_migration_audited(self):
+        from anton.authz.boot import MigrationIntegrityError, run_migration
+        from anton.authz.principals import MigrationPrincipal
+        with self.assertRaises(MigrationIntegrityError):
+            run_migration(self.store, self.audit,
+                          principal=MigrationPrincipal(migration_name="r5-a"),
+                          name="r5-a", sql="DROP TRIGGER trg_grant_no_self;")
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT event_type FROM audit_chain "
+                          "WHERE event_type='migration_refused'")
+        self.assertTrue(rows)
+
+
+class R5BreakglassOverLimitNoDelivery(unittest.TestCase):
+    """MAJOR R5-3: over-limit break-glass must NOT fire channels and MUST
+    be audited."""
+
+    def test_over_limit_does_not_page_and_is_audited(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        audit = self.env.app.state.authz_audit
+        owner_p = store.principal_of("owner")
+        fired = []
+
+        from anton.authz.breakglass import (BreakGlassRateLimited,
+                                            request_breakglass)
+        request_breakglass(store, audit, principal=owner_p, reason="one",
+                           duration_min=5,
+                           channels=[lambda m: fired.append(m) or True])
+        with self.assertRaises(BreakGlassRateLimited):
+            request_breakglass(store, audit, principal=owner_p, reason="two",
+                               duration_min=5,
+                               channels=[lambda m: fired.append(m) or True])
+        # second attempt paged nobody new, and its refusal is in the chain
+        self.assertEqual(len(fired), 1)
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT event_type FROM audit_chain "
+                          "WHERE event_type='breakglass_rate_limited'")
+        self.assertEqual(len(rows), 1)

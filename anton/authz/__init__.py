@@ -58,6 +58,24 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     boot_check(store, audit, mode="first_boot" if store.count_users() == 0
                else mode)
 
+    # The scheduler's real money/outbound gate lives in isolation.db; its
+    # approvals triggers must survive too (R5-7). Fail closed on drift.
+    import sqlite3 as _sq
+    from ..db import isolation_approvals_integrity as _iso_check
+    iso_path = os.path.join(data_dir, "isolation.db")
+    if os.path.exists(iso_path):
+        _iso = _sq.connect(iso_path)
+        try:
+            drift = _iso_check(_iso)
+        finally:
+            _iso.close()
+        if drift:
+            audit.append("schema_mismatch", payload={
+                "scope": "isolation_db_approvals", "drift": drift})
+            raise RuntimeError(
+                "isolation.db approvals trigger set drifted (" +
+                "".join(drift) + ") — refusing multi-user start")
+
     # First-run Owner claim: explicit, out-of-band, single-use (R1-F12).
     claim_path = os.path.join(azdir, "owner-claim")
     if store.count_users() == 0 and not os.path.exists(claim_path):

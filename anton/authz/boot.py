@@ -55,7 +55,7 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     # live schema and run the full name+body gate there, BEFORE the real
     # database is touched (review R4-1). A rejected migration must leave
     # the live DB byte-identical.
-    _validate_migration_sql(store, sql)
+    _validate_migration_sql(store, sql, audit=audit, name=name)
     # Apply to the real DB (validate-first already refused any migration
     # that would weaken the invariant set, so this cannot launder).
     store.conn.executescript(sql)
@@ -63,6 +63,7 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     missing = missing_critical_triggers(store.conn)
     weakened = weakened_critical_objects(store.conn)
     if missing or weakened:  # belt-and-braces after a validated apply
+        _audit_refusal(audit, name, sql, missing, weakened)
         raise MigrationIntegrityError(
             f"migration {name!r} violated the invariant set post-apply: "
             f"missing={missing} weakened={weakened}")
@@ -74,10 +75,21 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     return sig
 
 
-def _validate_migration_sql(store, sql: str) -> None:
+def _audit_refusal(audit, name: str, sql: str, missing, weakened) -> None:
+    try:
+        audit.append("migration_refused", payload={
+            "name": name,
+            "sql_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+            "missing": missing, "weakened": weakened})
+    except Exception:
+        pass
+
+
+def _validate_migration_sql(store, sql: str, audit=None, name: str = "") -> None:
     """Apply the migration to a scratch in-memory clone of the live schema
     and assert the invariant gate there. This is the authoritative refusal:
-    the live DB is never written when the gate would fail."""
+    the live DB is never written when the gate would fail. Refusals are
+    written to the audit chain (R5-4)."""
     import sqlite3
     scratch = sqlite3.connect(":memory:")
     try:
@@ -94,6 +106,7 @@ def _validate_migration_sql(store, sql: str) -> None:
     finally:
         scratch.close()
     if missing or weakened:
+        _audit_refusal(audit, name, sql, missing, weakened)
         raise MigrationIntegrityError(
             f"migration would violate the authZ invariant set: "
             f"missing={missing} weakened={weakened}")

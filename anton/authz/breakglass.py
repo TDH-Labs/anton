@@ -41,6 +41,17 @@ def request_breakglass(store, audit, principal, reason: str,
     cutoff = _epoch() - window_s
     cutoff_str = dt.datetime.fromtimestamp(
         cutoff, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Cheap unlocked pre-check BEFORE any delivery: over-limit attempts must
+    # not page every channel (R5-3). The authoritative count+INSERT still
+    # happens atomically under the lock below.
+    pre = store.conn.execute(
+        "SELECT COUNT(*) FROM breakglass_events WHERE ts > ?",
+        (cutoff_str,)).fetchone()[0]
+    if pre >= max_count:
+        audit.append("breakglass_rate_limited", actor=principal,
+                     payload={"reason": reason})
+        raise BreakGlassRateLimited(
+            f"break-glass limited to {max_count} per {window_s}s")
     # Deliver channels OUTSIDE the write lock — never hold the global authz
     # write lock across unbounded network I/O (R4-4 regression fix): a hung
     # channel must not wedge login/sessions/grants/audit.
@@ -64,14 +75,16 @@ def request_breakglass(store, audit, principal, reason: str,
         raise BreakGlassDeliveryFailed(
             "break-glass refused: no notification channel delivered")
 
-    # Rate check + insert happen atomically under the write lock; the
-    # (slow) delivery already happened above so the critical section is
-    # short and concurrent requests cannot both observe n < limit (R3B-4).
+    # Authoritative rate check + insert are atomic under the write lock; a
+    # concurrent pair that both passed the pre-check is resolved here — at
+    # most one elevates (R3B-4).
     with store.lock:
         n = store.conn.execute(
             "SELECT COUNT(*) FROM breakglass_events WHERE ts > ?",
             (cutoff_str,)).fetchone()[0]
         if n >= max_count:
+            audit.append("breakglass_rate_limited", actor=principal,
+                         payload={"reason": reason})
             raise BreakGlassRateLimited(
                 f"break-glass limited to {max_count} per {window_s}s")
         expires = _epoch() + duration_min * 60

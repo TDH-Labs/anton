@@ -444,8 +444,10 @@ class CredentialBroker:
         if self._revoked(execution_id=lease.execution_id,
                          principal_id=lease.principal_id):
             raise RevokedState("revoked")
-        if lease.session_id and self.session_validator is not None \
-                and not self.session_validator(lease.session_id):
+        # Fail-closed session binding (R5-6): same helper as check_capability,
+        # so lease and mint cannot diverge from fetch when the validator is
+        # unwired.
+        if self._session_dead(lease.session_id):
             raise LeaseInvalid("issuing session no longer valid")
 
     # -- validation -----------------------------------------------------------
@@ -816,6 +818,16 @@ def main() -> None:
     serve.add_argument("--uid", action="append", type=int, default=None)
     args = ap.parse_args()
     if args.cmd == "serve":
+        if not args.uid:
+            # The broker can only attest executors it shares OS-identity
+            # machinery with; a watchdog without wiring is a security
+            # misconfiguration, not a deployment. Refuse to start rather
+            # than serve actors with no grant/session validation (R5-7).
+            print("refusing to start: broker serve requires --uid "
+                  "(explicit executor OS identity); wire grant/session "
+                  "validators in the application, not via standalone serve.",
+                  file=sys.stderr)
+            raise SystemExit(2)
         broker = CredentialBroker(args.db, args.keys, args.sock,
                                   allowed_uids=args.uid)
         print(f"broker serving on {args.sock}", flush=True)
