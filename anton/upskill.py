@@ -371,9 +371,9 @@ def run_upskill(engine, subject: str, *, min_sources: int = 5, min_types: int = 
             nonce = f"upskill-{slug}-{uuid.uuid4().hex[:12]}"
             conn.execute(
                 "INSERT INTO approvals(nonce, action, amount, recipient, status,"
-                " hmac, ts, initiator_human, initiator_principal) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
-                (nonce, f"upskill_promote:{slug}", "", "", "pending", "",
+                " ts, initiator_human, initiator_principal) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (nonce, f"upskill_promote:{slug}", "", "", "pending",
                  dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                  "system", "system:upskill"))
             conn.commit()
@@ -399,17 +399,35 @@ def _promote_staged_skill(data_dir: str, slug: str, out_dir: str) -> None:
 def approve_pending_promotion(engine, slug: str) -> bool:
     """Complete a promotion left pending_approval by run_upskill, once an
     operator approves `upskill_promote:<slug>` in the approvals table
-    (dashboard.py's existing POST /api/approvals/{aid} flow)."""
+    (dashboard.py's existing POST /api/approvals/{aid} flow).
+
+    R9-BLOCKER: this consumer enforces the SAME countermeasures as the
+    scheduler gate — trigger-integrity drift check, keyed decision-hmac
+    verification when a secret is configured, atomic consume."""
     db_path = os.path.join(engine.data_dir, "isolation.db")
-    with sqlite3.connect(db_path, timeout=10.0) as conn:
-        row = conn.execute(
-            "SELECT id FROM approvals WHERE action=? AND status='approved' "
-            "ORDER BY id DESC LIMIT 1",
-            (f"upskill_promote:{slug}",)).fetchone()
-        if not row:
+    from .db import consume_verified_approval
+    secret = getattr(engine, "_decision_secret", None) or None
+    conn = sqlite3.connect(db_path, timeout=10.0, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            ok, reason = consume_verified_approval(
+                conn, f"upskill_promote:{slug}", secret=secret)
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            return False  # fail closed on lock contention
+        if not ok:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
             return False
-        conn.execute("UPDATE approvals SET status='consumed' WHERE id=?", (row[0],))
         conn.commit()
+    finally:
+        conn.close()
     out_dir = os.path.join(engine.data_dir, "staging", slug)
     _promote_staged_skill(engine.data_dir, slug, out_dir)
     return True

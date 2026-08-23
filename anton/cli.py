@@ -109,10 +109,14 @@ def _build(config: dict, data_dir: str, executor_name: str):
         executor = EXECUTORS.get(executor_name, FakeExecutor)()
     ledger = Ledger(os.path.join(data_dir, "runs.jsonl"))
     engine = JobEngine(jobs, ledger, executor, config, data_dir=data_dir)
-    # R8-1: the scheduler only consumes approved rows whose decision hmac
-    # matches the shared decision secret (set alongside the dashboard's).
-    engine._decision_secret = (config.get("authz") or {}).get(
-        "decision_secret") or ""
+    # R8-1/R9: the scheduler only consumes approved rows whose decision hmac
+    # matches the shared decision secret. An authz-enabled deployment without
+    # one is a configuration error (wire_authz refuses it too).
+    az = config.get("authz") or {}
+    engine._decision_secret = az.get("decision_secret") or ""
+    if az.get("enabled") and not engine._decision_secret:
+        raise RuntimeError(
+            "authz.enabled requires authz.decision_secret in config.yaml")
     return jobs, ledger, engine
 
 

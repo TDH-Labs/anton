@@ -68,18 +68,23 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
 -- DB including ones created by earlier rounds that shipped weaker triggers
 -- under the trg_approvals_no_self_approve name (R5-2).
 
--- Pending-only INSERT: decided rows can never be created directly, and
--- the approver identity can NEVER be preset at creation — a sign-off is
--- only lawful when written by the guarded decision UPDATE (R8-1). hmac is
--- likewise reserved for the decision path.
+-- Pending-only INSERT: decided rows can never be created directly, the
+-- approver identity can NEVER be preset at creation (a sign-off is only
+-- lawful when written by the guarded decision UPDATE), hmac is reserved for
+-- the decision path (the sole exception being the son-of-anton bypass
+-- marker on a direct-consumed row), and raw 'consumed' INSERTs without
+-- that marker are execution-marker forgery (R9-MINOR).
 CREATE TRIGGER IF NOT EXISTS trg_approvals_pending_only_insert
 BEFORE INSERT ON approvals
 FOR EACH ROW
 WHEN NEW.status IN ('approved', 'denied')
   OR NEW.approver_human IS NOT NULL
   OR NEW.approver_principal IS NOT NULL
+  OR (NEW.hmac IS NOT NULL AND NEW.hmac != 'son_of_anton_bypass')
+  OR (NEW.status = 'consumed' AND NEW.hmac != 'son_of_anton_bypass')
 BEGIN
-    SELECT RAISE(ABORT, 'approvals must be created pending with no approver');
+    SELECT RAISE(ABORT,
+        'approvals must be created pending with no approver/hmac');
 END;
 
 -- Approvals are historical records: deletion (evidence destruction) is
@@ -109,7 +114,11 @@ WHEN (
       -- (R7-2)
       OR NEW.action IS NOT OLD.action
       OR NEW.amount IS NOT OLD.amount
-      OR NEW.recipient IS NOT OLD.recipient)
+      OR NEW.recipient IS NOT OLD.recipient
+      -- evidence/timeline fields are immutable too (R9-MINOR)
+      OR NEW.nonce IS NOT OLD.nonce
+      OR NEW.ts IS NOT OLD.ts
+      OR NEW.org_id IS NOT OLD.org_id)
      AND NOT (OLD.status = 'pending' AND NEW.status = 'pending'
               AND OLD.initiator_human IS NULL
               AND OLD.initiator_principal IS NULL
@@ -117,6 +126,11 @@ WHEN (
               AND NEW.approver_principal IS NULL
               AND NEW.initiator_human = 'system:legacy'
               AND NEW.initiator_principal = 'system:legacy'))
+    -- the decision hmac may only be written by the guarded decided
+    -- transition; it is immutable afterwards (R9-MINOR)
+    OR (OLD.status = 'pending' AND NEW.hmac IS NOT OLD.hmac
+        AND NEW.status NOT IN ('approved', 'denied'))
+    OR (OLD.status != 'pending' AND NEW.hmac IS NOT OLD.hmac)
 
     -- adoption is ONLY valid from an all-NULL pending row: any other
     -- initiator write is covered above; a second adoption write is refused
@@ -235,6 +249,45 @@ def adopt_legacy_approval(conn: sqlite3.Connection, nonce: str, audit=None):
     if cur.rowcount == 0:
         raise LookupError(f"no pending all-NULL approval with nonce {nonce}")
     return True
+
+
+def consume_verified_approval(conn: sqlite3.Connection, action: str,
+                              secret: str | None = None):
+    """THE verified consumer for the money/outbound/skill-promotion gates:
+    trigger-integrity drift check + optional decision-hmac verification +
+    one-shot consume, atomically orderable inside a caller's BEGIN
+    IMMEDIATE (R9-BLOCKER: upskill consumed forgeries because R8-1 lived
+    only in the scheduler). Returns (ok, reason)."""
+    import hashlib as _hashlib
+    import hmac as _hmac
+    drift = isolation_approvals_integrity(conn)
+    if drift:
+        return False, "gate_triggers_drifted"
+    if secret:
+        row = conn.execute(
+            "SELECT id, hmac, nonce FROM approvals WHERE action=? AND "
+            "status='approved' ORDER BY id DESC LIMIT 1", (action,)).fetchone()
+        if row is None:
+            return False, "no_approval"
+        if not row[1]:
+            return False, "unverified_hmac"
+        expected = _hmac.new(secret.encode(), str(row[0]).encode(),
+                             _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(row[1], expected):
+            return False, "unverified_hmac"
+        aid = row[0]
+    else:
+        row = conn.execute(
+            "SELECT id FROM approvals WHERE action=? AND status='approved' "
+            "ORDER BY id DESC LIMIT 1", (action,)).fetchone()
+        if row is None:
+            return False, "no_approval"
+        aid = row[0]
+    cur = conn.execute(
+        "UPDATE approvals SET status='consumed' WHERE id=? "
+        "AND status='approved'", (aid,))
+    conn.commit()
+    return (cur.rowcount > 0), "nonce_consumed"
 
 
 def isolation_approvals_integrity(conn: sqlite3.Connection) -> list[str]:

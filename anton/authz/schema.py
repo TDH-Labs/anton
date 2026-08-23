@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS approval_decisions (
     approval_id INTEGER NOT NULL,
     approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,
     decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+    evidence_hmac TEXT,
     ts TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS approval_executions (

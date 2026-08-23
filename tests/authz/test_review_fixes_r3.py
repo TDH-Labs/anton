@@ -911,3 +911,150 @@ class R9ApprovalsNoDelete(unittest.TestCase):
         rows = raw_sqlite(self.env.isolation_db,
                           "SELECT status FROM approvals WHERE nonce='del1'")
         self.assertEqual(rows[0][0], "consumed")
+
+
+# =========================================================================
+# Round 9 (verification of round-8 fixes)
+# =========================================================================
+
+class R9UpskillPromotionVerified(unittest.TestCase):
+    """BLOCKER R9-1: the upskill promotion gate enforces the same hmac +
+    drift countermeasures as the scheduler gate."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.engine = self.env.engine
+        import os
+        self.engine.data_dir = os.path.join(self.env.dir, "data")
+        self.engine._decision_secret = "test-decision-secret"
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def _seed(self, with_valid_hmac):
+        import sqlite3
+        import hmac as hm
+        import hashlib
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                     " initiator_human, initiator_principal)"
+                     " VALUES('up1','upskill_promote:demo','pending','now',"
+                     "'system','system:upskill')")
+        conn.commit()
+        aid = conn.execute("SELECT id FROM approvals WHERE nonce='up1'").fetchone()[0]
+        if with_valid_hmac:
+            mac = hm.new(b"test-decision-secret", str(aid).encode(),
+                         hashlib.sha256).hexdigest()
+            conn.execute("UPDATE approvals SET status='approved',"
+                         " approver_human='alice', approver_principal='alice',"
+                         " hmac=? WHERE id=?", (mac, aid))
+        else:
+            conn.execute("UPDATE approvals SET status='approved',"
+                         " approver_human='alice', approver_principal='alice'"
+                         " WHERE id=?", (aid,))
+        conn.commit()
+        conn.close()
+
+    def test_forged_promotion_refused(self):
+        from anton.upskill import approve_pending_promotion
+        self._seed(with_valid_hmac=False)
+        self.assertFalse(approve_pending_promotion(self.engine, "demo"))
+
+    def test_valid_hmac_promotion_accepted(self):
+        from anton.upskill import approve_pending_promotion
+        self._seed(with_valid_hmac=True)
+        # promotion will fail on missing staging dir, but the GATE must pass:
+        # distinguish by checking the approval was consumed
+        try:
+            approve_pending_promotion(self.engine, "demo")
+        except Exception:
+            pass
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='up1'")
+        self.assertEqual(rows[0][0], "consumed")
+
+
+class R9DecisionSecretRequired(unittest.TestCase):
+    """MAJOR R9-2: authz-enabled without a decision secret refuses boot."""
+
+    def test_missing_secret_refuses(self):
+        import shutil
+        with self.assertRaises(RuntimeError):
+            build_env(authz_enabled=True,
+                      extra_authz={"decision_secret": ""})
+
+
+class R9EgressEvidenceHmac(unittest.TestCase):
+    """MAJOR R9-3: execute_send refuses a raw-SQL fabricated decision."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_fabricated_decision_refused(self):
+        import sqlite3
+        from anton.authz.approvals import execute_approved
+        from anton.authz.egress import build_send_payload
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute(
+            "INSERT INTO authz_approvals(id, initiator_principal,"
+            " initiator_human, payload_hash, payload_json, policy_version,"
+            " created) VALUES(1,'p1','eve','deadbeef','{}','v1','now')")
+        conn.execute(
+            "INSERT INTO approval_decisions(approval_id, approver_principal,"
+            " approver_human, decision, ts) VALUES(1,'p2','carol','approved','now')")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(Exception):
+            execute_approved(self.store, self.audit, approval_id=1,
+                             current_payload={"anything": 1})
+
+
+class R9InsertGuardReservesHmac(unittest.TestCase):
+    """MINOR R9-4/5: hmac reserved at INSERT (bypass marker excepted);
+    direct consumed INSERT without the marker refused; ts/nonce immutable."""
+
+    def test_preset_hmac_insert_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                             " hmac) VALUES('h1','j','pending','now','forged')")
+                conn.commit()
+            conn.rollback()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                             " hmac) VALUES('h2','j','consumed','now','x')")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_ts_mutation_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                         " initiator_human, initiator_principal)"
+                         " VALUES('ts1','j','pending','now','bob','bob')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE approvals SET ts='1970-01-01' "
+                             "WHERE nonce='ts1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()

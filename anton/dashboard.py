@@ -943,11 +943,13 @@ def _set_hmac_secret(secret: str) -> None:
 
 
 def _decision_hmac(secret: str, aid: int) -> str:
-    """The scheduler verifies approved rows against this before consuming;
-    without a configured secret the field stays NULL and the boundary is
-    documented (legacy single-process mode). R8-1 authenticity marker."""
+    """KEYED authenticity marker for decided rows (R9: unkeyed sha256 let a
+    reader offline-crack a low-entropy secret). The scheduler/upskill
+    verifier recomputes it with the shared decision secret."""
     import hashlib
-    return hashlib.sha256(f"decision:{secret}:{aid}".encode()).hexdigest()
+    import hmac as _hmac
+    return _hmac.new(secret.encode(), str(aid).encode(),
+                     hashlib.sha256).hexdigest()
 
 
 def _age_str(ts: Optional[str]) -> str:

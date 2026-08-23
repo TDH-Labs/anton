@@ -27,13 +27,21 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
 
     azcfg = (config.get("authz") or {})
     mode = azcfg.get("mode", "multi_user")
+    # R9-MAJOR: authz-enabled without a decision secret silently falls back
+    # to the legacy fail-open consumer. Refuse the configuration instead.
+    if not (azcfg.get("decision_secret") or "").strip():
+        raise RuntimeError(
+            "authz.enabled requires authz.decision_secret in config.yaml — "
+            "without it approved sign-offs cannot be authenticated and the "
+            "money/outbound gate would be forgeable.")
     from ..dashboard import _set_hmac_secret
-    _set_hmac_secret(azcfg.get("decision_secret") or "")
+    _set_hmac_secret(azcfg["decision_secret"])
     azdir = os.path.join(data_dir, "authz")
     os.makedirs(azdir, exist_ok=True)
 
     store = open_store(os.path.join(data_dir, "authz.db"))
     store.enabled_roles = enabled_roles(config)
+    store.decision_secret = (azcfg.get("decision_secret") or "") or None
     audit = AuditLog(store)
 
     broker = CredentialBroker(

@@ -86,7 +86,8 @@ def build_env(authz_enabled=True, mode="multi_user", extra_authz=None) -> Env:
     # into every other app built in the same process.
     cfg["general"] = dict(cfg.get("general") or {})
     cfg["general"]["dashboard_token"] = "s3cret-legacy"
-    az = {"enabled": authz_enabled, "mode": mode}
+    az = {"enabled": authz_enabled, "mode": mode,
+          "decision_secret": "test-decision-secret"}
     if extra_authz:
         az.update(extra_authz)
     cfg["authz"] = az

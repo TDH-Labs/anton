@@ -293,3 +293,44 @@ token-gated (dashboard `_require_token`).
   dashboard decision="always" writes a `kind` column that isolation.db's
   approvals table does not have (OperationalError -> 500, fail-closed).
   CONV-1 stays closed for these; 2 MAJOR findings returned.
+
+## Review
+
+Round 9 adversarial verification (HEAD 7a3d16d) — angle: AUTH BYPASS / FAIL-OPEN on the
+scheduler money/outbound gate + hmac/replay + adoption/legacy abuse. All 120 tests pass
+(`tests/authz -q`). Probes run with real committed code paths.
+
+### Verified genuine (round-8/9 fixes hold)
+- R8-1 authentic: with `engine._decision_secret` set, a raw-SQL forged approved row
+  (INSERT pending{initiator} -> UPDATE approved{distinct approver}, no hmac) is refused
+  by `_is_approved` with `unverified_hmac`; the check->select->consume path is one
+  BEGIN IMMEDIATE transaction.
+- Replay closed: a legit-hmac approved row is one-shot (2nd consume -> `no_approval`);
+  explicit-id INSERT reuse conflicts on PK; DELETE refused (R9-1 `trg_approvals_no_delete`);
+  adopt endpoint pinned to `approvals.decide`; decision/execution tables append-only.
+
+### New findings (returned as JSON)
+1. BLOCKER — `upskill.approve_pending_promotion` (upskill.py:399) consumes
+   `status='approved'` rows with NO hmac verification, NO `isolation_approvals_integrity`
+   drift check, no transaction. Repro: authz mode + secret set, forged two-step
+   `upskill_promote:{slug}` row -> scheduler refuses the same table, this consumer
+   CONSUMES it and promotes the staged code into data/skills/. The forge is codified
+   by tests/test_upskill.py:200.
+2. MAJOR — authz-enabled without `decision_secret` silently runs the legacy fail-open
+   branch (`_is_approved` falsy-secret path); nothing enforces secret presence;
+   `decision_secret` appears nowhere in docs/AUTHZ-SPEC.md — the "documented boundary"
+   is a scheduler code comment only. Repro: authz on, secret empty -> forged row consumed.
+3. MAJOR — canonical authz approvals spine (egress outbound gate,
+   `anton/authz/approvals.py` + `egress.submit_send/execute_send`) has NO shared-key
+   authenticity evidence: raw-SQL fabricated approval+decision triple (distinct fake
+   humans) passes `execute_approved` and the sender fires; R8-1's hmac standard was
+   applied only to the isolation scheduler table. `approve()` lacks an Approver-role
+   check at the data layer.
+4. MINOR — hmac scheme: plain `sha256("decision:{secret}:{id}")`, unkeyed, no
+   nonce/salt, sequential id -> offline dictionary crack of weak secrets from one
+   stored (id,hmac); no freshness bound (approved-but-unconsumed rows spendable
+   indefinitely); secret mode consumes most-recent (DESC) vs legacy oldest (ASC).
+5. MINOR — field-level immutability gaps: INSERT trigger allows preset `hmac`
+   (contradicts its own comment); transition guard omits `ts`/`hmac`/`org_id`/`nonce`
+   -> timeline/evidence laundering on "historical" rows (R9-1 covers DELETE only).
+   Repro: consumed row ts backdated, nonce/org_id/hmac rewritten.

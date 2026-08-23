@@ -191,56 +191,32 @@ class JobEngine:
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
             return False, "no_db"
-        # R6-1/R7-1: the money gate only means something while its triggers
-        # exist with CANONICAL BODIES — name presence is not enough. A
-        # same-name weak-body swap must fail the decision, not just the next
-        # boot. R8-1: an approved sign-off without a verifiable decision
-        # hmac is refused whenever a decision secret is configured (authz
-        # mode). In legacy mode (no secret) NULL hmac rows pass — documented
-        # boundary: the DB layer cannot distinguish writer-fabricated from
-        # real rows without shared-key evidence.
-        import hashlib as _hashlib
-        secret = getattr(self, "_decision_secret", None)
-        # Single write transaction: gate check + select + consume are atomic
-        # so no writer can interleave a trigger swap between validation and
-        # consumption (R8-3).
+        # R6/R7/R8/R9: the gate decision runs inside one BEGIN IMMEDIATE
+        # transaction via the SHARED verified consumer (drift check + keyed
+        # decision-hmac verification + one-shot consume) so every consumer of
+        # this table enforces identical countermeasures. Transient write-lock
+        # contention fails closed as 'gate_locked' instead of killing the
+        # scheduler process.
+        secret = getattr(self, "_decision_secret", None) or None
+        from .db import consume_verified_approval
         conn = sqlite3.connect(p, timeout=10.0, isolation_level=None)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            drift = isolation_approvals_integrity(conn)
-            if drift:
+            try:
+                ok, reason = consume_verified_approval(conn, job_id,
+                                                       secret=secret)
+            except sqlite3.OperationalError:
+                try:
+                    conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                return False, "gate_locked"
+            if not ok and reason in ("gate_triggers_drifted", "unverified_hmac",
+                                     "no_approval"):
                 conn.execute("ROLLBACK")
-                return False, "gate_triggers_drifted"
-            if secret:
-                row = conn.execute(
-                    "SELECT id, hmac FROM approvals WHERE action=? AND "
-                    "status='approved' ORDER BY id DESC LIMIT 1",
-                    (job_id,)).fetchone()
-                if row is None:
-                    conn.execute("ROLLBACK")
-                    return False, "no_approval"
-                if not row[1] or row[1] != _hashlib.sha256(
-                        f"decision:{secret}:{row[0]}".encode()).hexdigest():
-                    conn.execute("ROLLBACK")
-                    return False, "unverified_hmac"
-                aid = row[0]
-                cur = conn.execute(
-                    "UPDATE approvals SET status='consumed' WHERE id=? "
-                    "AND status='approved'", (aid,))
+            else:
                 conn.commit()
-                return (cur.rowcount > 0), "nonce_consumed"
-            row = conn.execute(
-                "SELECT id FROM approvals WHERE action=? AND status='approved' "
-                "ORDER BY id ASC LIMIT 1", (job_id,)).fetchone()
-            if not row:
-                conn.execute("ROLLBACK")
-                return False, "no_approval"
-            aid = row[0]
-            cur = conn.execute(
-                "UPDATE approvals SET status='consumed' WHERE id=? "
-                "AND status='approved'", (aid,))
-            conn.commit()
-            return (cur.rowcount > 0), "nonce_consumed"
+            return ok, reason
         finally:
             conn.close()
 

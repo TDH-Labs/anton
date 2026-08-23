@@ -62,16 +62,26 @@ def approve(store, audit, approver, approval_id: int,
         (approval_id,)).fetchone()
     if already:
         raise ApprovalRejected("approval already decided")
+    # R9: shared-key decision evidence — a raw-SQL writer cannot fabricate a
+    # valid evidence hmac without the decision secret.
+    import hashlib as _hashlib
+    import hmac as _hmac
+    secret = getattr(store, "decision_secret", None)
+    evidence = None
+    if secret:
+        evidence = _hmac.new(secret.encode(),
+                             f"{approval_id}:{row['payload_hash']}".encode(),
+                             _hashlib.sha256).hexdigest()
     try:
         with store.lock:
             # ux_decision_once makes the decision one-per-approval at the
             # schema level; two concurrent approvers race on the INSERT.
             store.conn.execute(
                 "INSERT INTO approval_decisions(approval_id,"
-                " approver_principal, approver_human, decision, ts)"
-                " VALUES(?,?,?,?,?)",
+                " approver_principal, approver_human, decision, evidence_hmac, ts)"
+                " VALUES(?,?,?,?,?,?)",
                 (approval_id, approver.principal_id, approver.human_id,
-                 decision, _now()))
+                 decision, evidence, _now()))
             store.conn.commit()
     except sqlite3.IntegrityError as e:
         audit.append("authorization_denied", actor=approver, payload={
@@ -96,13 +106,29 @@ def execute_approved(store, audit, approval_id: int,
     if row is None:
         raise KeyError(f"no such approval {approval_id}")
     decision = store.conn.execute(
-        "SELECT decision FROM approval_decisions WHERE approval_id=?",
-        (approval_id,)).fetchone()
+        "SELECT decision, evidence_hmac FROM approval_decisions "
+        "WHERE approval_id=?", (approval_id,)).fetchone()
     if decision is None or decision["decision"] != "approved":
         audit.append("authorization_denied", payload={
             "reason": "execution_without_approved_decision",
             "approval_id": approval_id})
         raise ApprovalRejected("no approved decision for this approval")
+    # R9: shared-key evidence — a raw-SQL fabricated decision (two fake
+    # humans) cannot produce a valid hmac.
+    secret = getattr(store, "decision_secret", None)
+    if secret:
+        import hashlib as _hashlib
+        import hmac as _hmac
+        expected = _hmac.new(secret.encode(),
+                             f"{approval_id}:{row['payload_hash']}".encode(),
+                             _hashlib.sha256).hexdigest()
+        got = decision["evidence_hmac"]
+        if not got or not _hmac.compare_digest(got, expected):
+            audit.append("authorization_denied", payload={
+                "reason": "decision_evidence_invalid",
+                "approval_id": approval_id})
+            raise ApprovalRejected(
+                f"decision evidence invalid (approval {approval_id})")
     if _payload_hash(current_payload) != row["payload_hash"]:
         audit.append("approval_tamper", payload={
             "approval_id": approval_id,
