@@ -52,3 +52,15 @@
 
 Commits: 648f714, 5ebab33 (spec), 3f02481 (#10 spine), 2e7766d (#12),
 10a7fb1 (#11), 988fae1 (#5).
+
+## Review run 2 (2026-08-22)
+
+- **0 BLOCKER / 5 MAJOR / 2 MINOR / 3 observations** survived; all nine
+  round-1 fixes independently verified genuine
+  (docs/AUTHZ-CONSENSUS-REVIEW-FINAL.md).
+- All round-2 findings fixed in 82ba79c, pinned by regression tests:
+  R2A-1 stub route, R2A-2 clock staircase, R2A-3 NULL-party grants,
+  R2A-4 migration gate + baseline laundering, R2A-5 WebSocket scope gap,
+  R2A-6 silent break-glass, R2A-7/O-* doc + hardening.
+- Run 3 launched against 82ba79c — determines whether the CONV-1 PROCEED
+  streak begins.
