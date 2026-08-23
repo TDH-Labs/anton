@@ -27,19 +27,18 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
 
     azcfg = (config.get("authz") or {})
     mode = azcfg.get("mode", "multi_user")
-    # R9-MAJOR: authz-enabled without a decision secret silently falls back
-    # to the legacy fail-open consumer. Refuse the configuration instead.
-    if not (azcfg.get("decision_secret") or "").strip():
-        raise RuntimeError(
-            "authz.enabled requires authz.decision_secret in config.yaml — "
-            "without it approved sign-offs cannot be authenticated and the "
-            "money/outbound gate would be forgeable.")
     azdir = os.path.join(data_dir, "authz")
+    # R9-MAJOR resolution (self-deploy): a missing decision secret no longer
+    # refuses boot — it is AUTO-PROVISIONED (crypto-random, persisted 0600)
+    # so hardened mode is the default with zero human configuration.
+    from .provision import ensure_decision_secret, ensure_webhook_secret
+    decision_secret = ensure_decision_secret(data_dir, config)
+    ensure_webhook_secret(data_dir, config)
     os.makedirs(azdir, exist_ok=True)
 
     store = open_store(os.path.join(data_dir, "authz.db"))
     store.enabled_roles = enabled_roles(config)
-    store.decision_secret = ((azcfg.get("decision_secret") or "").strip()) or None
+    store.decision_secret = decision_secret or None
     # R13-B1: surface the pre-heal drift refusal BEFORE anything heals the DB.
     if store.preheal_refusal:
         audit = AuditLog(store)
@@ -108,6 +107,16 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
             "DB has no baseline/history — the database was wiped or "
             "restored improperly.")
     boot_check(store, audit, mode="first_boot" if pristine else mode)
+    # REQ-AUDIT-02 (commercial hardening): anchor the chain head into the
+    # append-only file at EVERY boot, and verify continuity of prior
+    # anchors — a DB-level tail truncation is caught here.
+    anchor_path = os.path.join(azdir, "audit.anchor")
+    ok_a, detail_a = audit.verify_anchor(anchor_path)
+    if not ok_a and detail_a not in ("no anchor file",):
+        audit.append("anchor_mismatch", payload={"detail": detail_a})
+        raise RuntimeError("audit anchor verification failed: " + detail_a)
+    audit.anchor(anchor_path)
+    app.state.audit_anchor_path = anchor_path
     # R16-B: write whenever MISSING (idempotent) — a crash between baseline
     # commit and stamp write must not leave the install permanently
     # disarmed. Never restored to a wiped DB (that path is refused above).
@@ -137,7 +146,11 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     claim_path = os.path.join(azdir, "owner-claim")
     if store.count_users() == 0 and not os.path.exists(claim_path):
         import secrets as pysecrets
-        write_private_file(claim_path, pysecrets.token_hex(16))
+        code = pysecrets.token_hex(16)
+        write_private_file(claim_path, code)
+        # Self-deploy: operator reads this from container logs; the 0600
+        # file is the durable copy.
+        print(f"[authz] FIRST-RUN OWNER CLAIM CODE: {code}", flush=True)
 
     codes = None
     if store.kv_get("recovery_codes") is None:

@@ -166,14 +166,16 @@ class AuthzStore:
                                 kind="service", human_id=owning_human_id)
 
     def get_user(self, user_id: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM users WHERE id=?",
-                                (user_id,)).fetchone()
-        return dict(row) if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM users WHERE id=?",
+                                    (user_id,)).fetchone()
+            return dict(row) if row else None
 
     def get_user_by_username(self, username: str) -> dict | None:
-        row = self.conn.execute("SELECT * FROM users WHERE username=?",
-                                (username,)).fetchone()
-        return dict(row) if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM users WHERE username=?",
+                                    (username,)).fetchone()
+            return dict(row) if row else None
 
     def set_password(self, user_id: str, password: str) -> None:
         """Password reset revokes every outstanding session immediately."""
@@ -200,6 +202,10 @@ class AuthzStore:
         self.revoke_user_sessions(user_id)
 
     def role_of(self, user_id: str) -> str | None:
+        with self.lock:
+            return self._role_of_locked(user_id)
+
+    def _role_of_locked(self, user_id: str) -> str | None:
         row = self.conn.execute(
             "SELECT role FROM role_assignments WHERE user_id=? "
             "ORDER BY id DESC LIMIT 1", (user_id,)).fetchone()
@@ -270,6 +276,10 @@ class AuthzStore:
         return token
 
     def resolve_session(self, token: str) -> UserPrincipal | None:
+        with self.lock:
+            return self._resolve_session_locked(token)
+
+    def _resolve_session_locked(self, token: str) -> UserPrincipal | None:
         digest = _token_digest("session", token)
         row = self.conn.execute(
             "SELECT s.id AS sid, s.expires, s.revoked, u.* "
@@ -331,6 +341,10 @@ class AuthzStore:
         return token, jti
 
     def resolve_machine_token(self, token: str) -> UserPrincipal | None:
+        with self.lock:
+            return self._resolve_machine_token_locked(token)
+
+    def _resolve_machine_token_locked(self, token: str) -> UserPrincipal | None:
         digest = _token_digest("machine", token)
         row = self.conn.execute(
             "SELECT m.id AS jti, m.revoked, m.expires, u.* FROM machine_tokens m "

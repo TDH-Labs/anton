@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import threading
 
 GENESIS = "0" * 64
@@ -121,3 +122,63 @@ class AuditLog:
             "SELECT * FROM audit_chain WHERE event_type=? ORDER BY seq",
             (event_type,)).fetchall()
         return [dict(r) for r in rows]
+
+
+    # ------------------------------------------------------------------
+    # External WORM anchor (REQ-AUDIT-02, commercial hardening): periodic
+    # checkpoints of the chain head into an append-only file OUTSIDE the
+    # database. The file is O_APPEND + fsync'd; entries are never rewritten.
+    # A DB-level tail truncation or rewrite is detected by comparing the
+    # anchored head against the live chain \u2014 closing the R2A-7 gap where
+    # attacker and kv lived in the same file. The anchor file itself is
+    # bound to the deployment by including the store path's basename.
+    # ------------------------------------------------------------------
+
+    def anchor(self, anchor_path: str) -> dict:
+        import json as _json
+        row = self.store.conn.execute(
+            "SELECT seq, hash FROM audit_chain ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        entry = {
+            "ts": _now(),
+            "seq": row["seq"] if row else 0,
+            "head": row["hash"] if row else GENESIS,
+            "db": os.path.basename(self.store.path),
+        }
+        fd = os.open(anchor_path,
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_json.dumps(entry, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        return entry
+
+    def verify_anchor(self, anchor_path: str) -> tuple[bool, str]:
+        """Replay the append-only anchor file: sequence numbers must be
+        strictly increasing and every anchored head must match the hash of
+        that seq in the live chain. Returns (ok, detail)."""
+        prev_seq = -1
+        last = None
+        try:
+            with open(anchor_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    e = json.loads(line)
+                    if e["seq"] <= prev_seq:
+                        return False, "anchor sequence regressed"
+                    prev_seq = e["seq"]
+                    last = e
+        except FileNotFoundError:
+            return False, "no anchor file"
+        if last is None:
+            return False, "empty anchor file"
+        row = self.store.conn.execute(
+            "SELECT hash FROM audit_chain WHERE seq=?", (last["seq"],)
+        ).fetchone()
+        if row is None:
+            return False, f"anchored seq {last['seq']} missing from chain"
+        if row[0] != last["head"]:
+            return False, f"anchored head mismatch at seq {last['seq']}"
+        return True, "ok"

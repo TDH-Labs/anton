@@ -192,9 +192,10 @@ class CredentialBroker:
         return self.current_key_version
 
     def kv_get(self, key: str) -> str | None:
-        row = self.conn.execute("SELECT value FROM broker_kv WHERE key=?",
-                                (key,)).fetchone()
-        return row["value"] if row else None
+        with self.lock:
+            row = self.conn.execute("SELECT value FROM broker_kv WHERE key=?",
+                                    (key,)).fetchone()
+            return row["value"] if row else None
 
     def kv_set(self, key: str, value: str) -> None:
         with self.lock:
@@ -594,7 +595,7 @@ class CredentialBroker:
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         srv.bind(self.socket_path)
         os.chmod(self.socket_path, 0o660)
-        srv.listen(8)
+        srv.listen(128)
         self._server_sock = srv
         self._running = True
         self._thread = threading.Thread(target=self._serve, daemon=True,
@@ -610,41 +611,65 @@ class CredentialBroker:
                 pass
 
     def _serve(self) -> None:
+        # R16-load: thread-per-connection — concurrent executors must not
+        # be serialized behind one slow client (or dropped by backlog
+        # overflow). Handler exceptions never take down the accept loop.
         while self._running:
             try:
                 conn, _ = self._server_sock.accept()
             except OSError:
                 break
-            with conn:
-                try:
-                    conn.settimeout(5)
-                    buf = b""
-                    while b"\n" not in buf:
-                        chunk = conn.recv(65536)
-                        if not chunk:
-                            break
-                        buf += chunk
-                    if not buf.strip():
-                        continue
-                    req = json.loads(buf.decode())
-                    try:
-                        resp = self._dispatch(req, _peer_uid(conn))
-                    except BrokerDenied as e:
-                        resp = {"ok": False, "error": type(e).__name__,
-                                "detail": str(e)}
-                    except Exception:
-                        # never leak internals (paths, crypto details) over
-                        # the socket — callers get a generic denial
-                        resp = {"ok": False, "error": "BrokerDenied",
-                                "detail": "request refused"}
-                except Exception:
-                    resp = {"ok": False, "error": "malformed_request"}
-                try:
-                    conn.sendall((json.dumps(resp) + "\n").encode())
-                except OSError:
-                    pass
+            t = threading.Thread(target=self._handle_conn,
+                                 args=(conn,), daemon=True)
+            t.start()
+
+    def _handle_conn(self, conn: socket.socket) -> None:
+        try:
+            self._serve_conn(conn)
+        except Exception:
+            pass
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+    def _serve_conn(self, conn: socket.socket) -> None:
+        conn.settimeout(5)
+        try:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            if not buf.strip():
+                return
+            req = json.loads(buf.decode())
+            try:
+                resp = self._dispatch(req, _peer_uid(conn))
+            except BrokerDenied as e:
+                resp = {"ok": False, "error": type(e).__name__,
+                        "detail": str(e)}
+            except Exception:
+                # never leak internals (paths, crypto details) over the
+                # socket — callers get a generic denial
+                resp = {"ok": False, "error": "BrokerDenied",
+                        "detail": "request refused"}
+            except Exception:
+                resp = {"ok": False, "error": "malformed_request"}
+            conn.sendall((json.dumps(resp) + "\n").encode())
+        except OSError:
+            pass
 
     def _dispatch(self, req: dict, peer_uid: int | None) -> dict:
+        # R16-load: all socket ops share one broker connection; serialize
+        # dispatch so concurrent executors cannot interleave raw sqlite
+        # calls on it (ops are sub-millisecond — no contention risk).
+        with self.lock:
+            return self._dispatch_locked(req, peer_uid)
+
+    def _dispatch_locked(self, req: dict, peer_uid: int | None) -> dict:
         op = req.get("op")
         # Every socket op is peer-attested: an unresolvable or non-allowed
         # OS peer cannot lease, mint, or poll — REQ-CRED-02 (R3A-2).

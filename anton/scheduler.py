@@ -73,9 +73,17 @@ class JobEngine:
         self._jobs_mtime: Optional[float] = None
         self._prime_jobs_mtime()
         # R11-obs: shared secret required on /hooks/* triggers; unset means
-        # webhook triggers are refused (fail-closed).
+        # webhook triggers are refused (fail-closed). Self-deploy: auto-
+        # provisioned to data/authz/webhook.secret when absent.
         self.webhook_secret = config.get("general", {}).get(
             "webhook_secret") or None
+        if self.data_dir and not self.webhook_secret:
+            try:
+                from .authz.provision import ensure_webhook_secret
+                self.webhook_secret = ensure_webhook_secret(
+                    self.data_dir, config)
+            except Exception:
+                pass
 
     def _jobs_file_path(self) -> Optional[str]:
         if not self.data_dir:

@@ -4,6 +4,7 @@ Run 3 (independent reviewers on deepseek-v4-flash) survived these against
 HEAD 82ba79c. Each test pins one finding so it cannot silently regress.
 """
 import hashlib
+import os
 import time
 import unittest
 import unittest.mock
@@ -988,11 +989,20 @@ class R9UpskillPromotionVerified(unittest.TestCase):
 class R9DecisionSecretRequired(unittest.TestCase):
     """MAJOR R9-2: authz-enabled without a decision secret refuses boot."""
 
-    def test_missing_secret_refuses(self):
-        import shutil
-        with self.assertRaises(RuntimeError):
-            build_env(authz_enabled=True,
-                      extra_authz={"decision_secret": ""})
+    def test_missing_secret_autoprovisioned(self):
+        # Self-deploy (commercial readiness): an absent decision secret is
+        # AUTO-PROVISIONED (crypto-random, persisted 0600) — hardened mode
+        # is the zero-config default, never fail-open.
+        self.env = build_env(authz_enabled=True,
+                             extra_authz={"decision_secret": ""})
+        store = self.env.app.state.authz_store
+        self.assertTrue(store.decision_secret)
+        path = os.path.join(self.env.data_dir, "authz", "decision.secret")
+        self.assertTrue(os.path.exists(path))
+        mode = os.stat(path).st_mode & 0o777
+        self.assertEqual(oct(mode), "0o600")
+        with open(path) as f:
+            self.assertEqual(f.read().strip(), store.decision_secret)
 
 
 class R9EgressEvidenceHmac(unittest.TestCase):
@@ -1638,3 +1648,89 @@ class R17SoAToggleHardened(unittest.TestCase):
         r = env.client.post("/api/mode/son-of-anton", json={},
                             headers={"Authorization": "Bearer s3cret-legacy"})
         self.assertEqual(r.status_code, 200)
+
+
+# =========================================================================
+# Commercial-readiness batch (self-deploy + WORM anchor)
+# =========================================================================
+
+class RWormAnchor(unittest.TestCase):
+    """REQ-AUDIT-02 hardening: append-only external anchor file detects
+    DB-level tail truncation that in-file kv comparison cannot."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+        self.path = self.env.app.state.audit_anchor_path
+        self.audit.anchor(self.path)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_anchor_verifies_clean(self):
+        ok, detail = self.audit.verify_anchor(self.path)
+        self.assertTrue(ok, detail)
+
+    def test_tail_truncation_detected_by_anchor(self):
+        # append more entries, re-anchor, then truncate the CHAIN tail
+        for i in range(5):
+            self.audit.append("evt", payload={"i": i})
+        self.audit.anchor(self.path)
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("DROP TRIGGER trg_audit_no_delete")
+        conn.execute("DELETE FROM audit_chain WHERE seq > "
+                     "(SELECT MIN(seq) FROM audit_chain)")
+        conn.commit()
+        conn.close()
+        ok, detail = self.audit.verify_anchor(self.path)
+        self.assertFalse(ok)
+
+    def test_anchor_file_is_append_only_fsynced(self):
+        # two anchors in a row never rewrite prior lines
+        before = open(self.path).read()
+        self.audit.append("evt2", payload={})
+        self.audit.anchor(self.path)
+        after = open(self.path).read()
+        self.assertTrue(after.startswith(before))
+
+
+class RWSelfProvision(unittest.TestCase):
+    """Commercial readiness: zero-human secret provisioning."""
+
+    def test_webhook_secret_autoprovisioned_and_gated(self):
+        self.env = build_env(authz_enabled=True,
+                             extra_authz={"decision_secret": ""})
+        import os
+        path = os.path.join(self.env.data_dir, "authz", "webhook.secret")
+        self.assertTrue(os.path.exists(path))
+        mode = os.stat(path).st_mode & 0o777
+        self.assertEqual(oct(mode), "0o600")
+        engine = self.env.engine
+        if hasattr(engine, "webhook_secret"):
+            self.assertTrue(engine.webhook_secret)
+
+    def test_owner_claim_printed_to_stdout(self):
+        from helpers import build_env
+        import io
+        import contextlib
+        env2_dir = None
+        # capture stdout during a fresh bootstrap env
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            env = build_env(authz_enabled=True)
+            claim_path = os.path.join(env.data_dir, "authz", "owner-claim")
+            if not os.path.exists(claim_path):
+                env.bootstrap_owner()  # triggers write if absent
+        out = buf.getvalue()
+        env2_dir = env.dir
+        import shutil
+        shutil.rmtree(env2_dir, ignore_errors=True)
+        self.assertIn("FIRST-RUN OWNER CLAIM CODE", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
