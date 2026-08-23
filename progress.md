@@ -476,3 +476,75 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
     (resolve_machine_token JOIN has no u.disabled=0 check, unlike
     resolve_session) — a disabled service identity's token still passes the
     /api/exec/result allowlist (static echo response only). (store.py:285-289)
+
+## Review — adversarial round 13 (AUTH BYPASS + FAIL-OPEN final sweep; HEAD cd16448)
+
+- Round-12 fixes verified GENUINE (code read + pinned tests pass 2/2):
+  - R12-1: `_upgrade_approval_decision_columns` ALTERs/re-baselines ONLY when
+    baseline is non-None AND equals the live signature; a tampered DB
+    (column dropped + kv schema_hash deleted) stays un-healed and
+    boot_check's `baseline_missing` refusal fires (store.py:92-95, boot.py:25-34).
+    Race tolerance via PRAGMA column re-check under lock is correct.
+  - R12-3: `resolve_machine_token` now honors `users.disabled` (u.* join),
+    `revoke_machine_token()` present (store.py:307-320); machine_tokens.revoked
+    has DEFAULT 0 so the revoke UPDATE cannot fail on old rows (schema.py:38-43).
+- Final sweep — approval consumers (scheduler `_is_approved`, upskill
+  `approve_pending_promotion`, egress submit/execute, approvals
+  approve/execute) and broker (lease/mint/fetch/poll): no BLOCKER/MAJOR.
+  Shared `consume_verified_approval` = drift check + keyed-hmac verify +
+  one-shot consume under BEGIN IMMEDIATE; lock contention → 'gate_locked';
+  broker peer-uid attestation on every socket op, unwired
+  grant/session/principal validators deny, lease sig checks, kv-vs-current
+  key-version check, epoch high-water mark — all fail closed.
+- Findings: 1 OBSERVATION (machine-token revocation not enforced against
+  already-issued leases/cap tokens — bounded ≤ lease TTL window).
+
+## OBSERVATION (bounded): R12-3 "tokens die with it" only at resolve time — outstanding broker leases/cap tokens outlive a machine-token revoke
+- mechanism: `lease` op resolves the machine token once via
+  `principal_validator`; leases for service principals bind no session_id
+  (store.py resolve returns session_id=None → broker embeds sid=""). At
+  `mint`/`fetch`, `_session_dead("")` returns False and `revoke_machine_token`
+  /`users.disabled` are never re-checked — only `grant_checker`,
+  kill_switch, and short TTLs (lease ≤300s, cap ≤600s) bound the window.
+- evidence: mint cap token → resolve_machine_token → set users.disabled=1 /
+  revoke jti → fetch still returns the secret until cap exp.
+- fix: embed the machine-token jti in leases for service principals and
+  re-validate it in `_validate_lease`/`_check_capability` (broker already
+  has `_token_revoked_row`), or have the grant/session validators consulted
+  at fetch time for sid-less principals.
+
+## Review — Round 13 (adversarial B: schema invariants / TOCTOU / migrations / upgrades)
+
+- Correct: R12-1 strict baseline==live-signature guard is genuine — tamper
+  (DROP COLUMN evidence_hmac + DELETE kv schema_hash) stays un-healed and
+  boot_check refuses (store.py:99-102, boot.py:25-34); the ALTER is
+  serialized under RLock with a PRAGMA-fallback for concurrent openers and
+  converges. R12-3 revoked/disabled/expiry all fail-closed at
+  resolve_machine_token; revoke_machine_token() present.
+- MAJOR A — cold-trigger-drop is silently healed before the boot gate:
+  AuthzStore.__init__ runs ensure_schema (CREATE ... IF NOT EXISTS) BEFORE
+  wire_authz calls boot_check, so a hand-dropped critical trigger is
+  recreated, schema_signature == kv baseline, and "hand-dropped trigger
+  blocks multi-user boot" (CI-T-APPR-05) never fires on restart. End-to-end
+  probe: drop trg_grant_no_self+trg_grant_no_cycle offline, plant a forged
+  active connection_grants row (owner→same-human puppet, which the guarded
+  API refuses), reopen → boot PASSES, trigger restored, forged row honored
+  by has_active_grant/broker grant_checker, zero audit trail. The R12
+  premise "leave it for boot_check's fail-closed refusals" is vacuous for
+  the trigger-drop shape.
+- MAJOR B — first_boot discriminator launders ANY tamper: boot_check mode
+  is "first_boot" iff count_users()==0, and first_boot re-baselines without
+  comparing (boot.py:22-24). Probe: drop column + delete kv baseline +
+  DELETE FROM users → wire_authz boots, new schema_hash recorded (11bd13...),
+  evidence_hmac stays dropped; owner-claim file persists, so a fresh Owner
+  re-claim on the laundered DB is possible.
+- OBSERVATION — revoke_machine_token() is store-only: no route/caller
+  performs rotation (mint→switch→revoke) yet; mint does not refuse a
+  disabled service identity; the R12 OBS on broker leases (revoke kills
+  leases only at resolve time) remains open — jti is never embedded in
+  leases. Bounded by lease/cap TTLs.
+- Note: both MAJORs share the root cause — the gate's discriminating state
+  (kv baseline, object set, user count) is compared at a point where it can
+  be silently normalized (heal-before-check; first_boot re-baseline).
+  Fundamental self-referential-baseline limit (attacker who rewrites kv to
+  match is out of scope); these two vectors need NO kv rewrite.

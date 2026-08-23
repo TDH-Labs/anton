@@ -40,6 +40,13 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     store = open_store(os.path.join(data_dir, "authz.db"))
     store.enabled_roles = enabled_roles(config)
     store.decision_secret = ((azcfg.get("decision_secret") or "").strip()) or None
+    # R13-B1: surface the pre-heal drift refusal BEFORE anything heals the DB.
+    if store.preheal_refusal:
+        audit = AuditLog(store)
+        audit.append("schema_mismatch", payload={
+            "reason": "preheal_drift", "detail": store.preheal_refusal})
+        raise RuntimeError("refusing multi-user start: "
+                           + store.preheal_refusal)
     audit = AuditLog(store)
 
     broker = CredentialBroker(
@@ -63,8 +70,15 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
         return has_active_grant(store, principal_id, connection_id)
     broker.grant_checker = _grant_allowed
 
-    boot_check(store, audit, mode="first_boot" if store.count_users() == 0
-               else mode)
+    # R13-B2: first_boot means a genuinely pristine DB — no recorded
+    # baseline AND no audit history. A wiped-users+tampered DB has history,
+    # so it takes the full gate (which refuses the missing baseline).
+    has_history = bool(store.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='audit_chain'").fetchone()) and store.conn.execute(
+        "SELECT COUNT(*) FROM audit_chain").fetchone()[0] > 0
+    pristine = (store.kv_get("schema_hash") is None and not has_history)
+    boot_check(store, audit, mode="first_boot" if pristine else mode)
 
     # The scheduler's real money/outbound gate lives in isolation.db; its
     # approvals triggers must survive too (R5-7). Fail closed on drift.

@@ -1298,3 +1298,66 @@ class R12DisabledServiceIdentity(unittest.TestCase):
             store.commit_flag = True
             store.conn.commit()
         self.assertIsNone(store.resolve_machine_token(tok))
+
+
+# =========================================================================
+# Round 13 (verification of round-12 fixes)
+# =========================================================================
+
+class R13ColdDropTamperRefused(unittest.TestCase):
+    """MAJOR R13-B1: a trigger dropped while the app is STOPPED must be
+    refused at the next open — not silently healed before boot_check."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_cold_drop_refused_on_reopen(self):
+        import sqlite3
+        # close everything, tamper offline, reopen
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("DROP TRIGGER trg_grant_no_self")
+        conn.execute("DROP TRIGGER trg_grant_no_cycle")
+        conn.commit()
+        conn.close()
+        from anton.authz.store import open_store
+        store = open_store(self.env.authz_db)
+        self.assertIsNotNone(store.preheal_refusal)
+        # the dropped trigger was NOT healed by construction
+        names = {r[0] for r in store.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='trigger'")}
+        self.assertNotIn("trg_grant_no_self", names)
+        store.close()
+
+
+class R13FirstBootLaunderRefused(unittest.TestCase):
+    """MAJOR R13-B2: wiping users + baseline does NOT launder a tampered DB
+    into a 'first boot' — audit history forces the full gate."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_wipe_users_and_baseline_still_refused(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN evidence_hmac")
+        conn.execute("DELETE FROM kv WHERE key='schema_hash'")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+        from anton.authz.store import open_store
+        from anton.authz.boot import boot_check, SchemaHashMismatch
+        store = open_store(self.env.authz_db)
+        audit = __import__("anton.authz.audit", fromlist=["AuditLog"]).AuditLog(store)
+        with self.assertRaises(SchemaHashMismatch):
+            boot_check(store, audit, mode="multi_user")
+        store.close()

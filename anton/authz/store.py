@@ -60,14 +60,31 @@ class AuthzStore:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
+        self.enabled_roles: list[str] | None = None
+        self.token_rotator = None  # type: ignore
+        self.decision_secret: str | None = None
+        self.broker = None
+        # R13-B1: gate BEFORE heal. If a recorded baseline exists and does
+        # NOT match the raw on-disk state, something was dropped/weakened
+        # while the app was stopped — running ensure_schema here would
+        # silently recreate it and launder the tamper past boot_check.
+        # Refuse instead; wire_authz surfaces the refusal.
+        self.preheal_refusal = None
+        has_kv = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'"
+        ).fetchone())
+        if has_kv:
+            from .schema import schema_signature
+            baseline = self.kv_get("schema_hash")
+            if baseline is not None:
+                live = schema_signature(self.conn)
+                if live != baseline:
+                    self.preheal_refusal = (
+                        f"authz schema drifted while stopped "
+                        f"(recorded {baseline[:16]}…, on-disk {live[:16]}…)")
+                    return  # do not heal; caller must refuse
         ensure_schema(self.conn)
         self._upgrade_approval_decision_columns()
-        # Roles permitted in the current deployment mode; set by wire_authz
-        # (single-operator mode collapses to Owner-only — REQ-APPR-05c).
-        self.enabled_roles: list[str] | None = None
-        # Provider refresh-token rotation callback (set by callers with an
-        # OAuth integration; REQ-GRNT-01 revoke triggers rotation).
-        self.token_rotator = None  # type: ignore
 
     def _upgrade_approval_decision_columns(self) -> None:
         """Sanctioned ADDITIVE migration for pre-R9 authz.db files: add
