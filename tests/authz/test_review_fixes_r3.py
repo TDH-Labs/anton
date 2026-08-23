@@ -892,10 +892,15 @@ class R9ApprovalsNoDelete(unittest.TestCase):
         conn = sqlite3.connect(self.env.isolation_db)
         try:
             conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
-                         " initiator_human, initiator_principal,"
-                         " approver_human, approver_principal, hmac)"
-                         " VALUES('del1','job','consumed','now','bob','bob',"
-                         "'alice','alice','h')")
+                         " initiator_human, initiator_principal)"
+                         " VALUES('del1','job','pending','now','bob','bob')")
+            conn.commit()
+            conn.execute("UPDATE approvals SET status='approved',"
+                         " approver_human='alice', approver_principal='alice',"
+                         " hmac='h' WHERE nonce='del1'")
+            conn.commit()
+            conn.execute("UPDATE approvals SET status='consumed' "
+                         "WHERE nonce='del1'")
             conn.commit()
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("DELETE FROM approvals WHERE nonce='del1'")
