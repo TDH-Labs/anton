@@ -25,6 +25,14 @@ from dataclasses import dataclass, field
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from .secretrefs import RefResolutionError, SecretRefResolver, _split_ref  # noqa: F401
+
+
+def default_resolver(vault_root: str | None = None):
+    from . import secretrefs
+    return secretrefs.default_resolver(vault_root)
+
+
 BROKER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS broker_secrets (
     id TEXT PRIMARY KEY, connection_id TEXT NOT NULL,
@@ -135,6 +143,7 @@ class CredentialBroker:
         self.allowed_uids = allowed_uids or [os.getuid()]
         self.session_validator = None   # callable(session_id) -> bool
         self.grant_checker = None       # callable(principal_id, connection_id) -> bool
+        self._resolver = None           # SecretRefResolver (lazy default)
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         os.makedirs(keys_dir, exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -204,11 +213,24 @@ class CredentialBroker:
                                        "reported": reported_time})
 
     # -- secrets ------------------------------------------------------------
-    def register_secret(self, secret_id: str, plaintext: str,
+    def set_ref_adapters(self, adapters: dict) -> None:
+        """BYO password-manager adapters (handoff #12): map of scheme ->
+        callable(ref) or SecretAdapter. Replaces the default op://bw://
+        vault:// set wholesale."""
+        from .secretrefs import CallableAdapter, SecretAdapter, SecretRefResolver
+        normalized = {}
+        for scheme, a in (adapters or {}).items():
+            if isinstance(a, SecretAdapter):
+                normalized[scheme] = a
+            else:
+                normalized[scheme] = CallableAdapter(scheme, a)
+        self._resolver = SecretRefResolver(normalized)
+
+    def register_secret(self, secret_id: str, plaintext_or_ref: str,
                         connection_id: str) -> None:
         nonce = os.urandom(12)
         ct = AESGCM(self._keys[self.current_key_version]).encrypt(
-            nonce, plaintext.encode(), secret_id.encode())
+            nonce, plaintext_or_ref.encode(), secret_id.encode())
         blob = nonce + ct
         with self.lock:
             self.conn.execute(
@@ -226,10 +248,53 @@ class CredentialBroker:
         if row is None:
             raise BrokerDenied(f"unknown secret {secret_id}")
         self._load_key(row["key_version"])
-        pt = AESGCM(self._keys[row["key_version"]]).decrypt(
+        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
             bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
-            secret_id.encode())
-        return pt.decode(), row["connection_id"]
+            secret_id.encode()).decode()
+        return self._materialize(secret_id, stored), row["connection_id"]
+
+    def _stored_value(self, secret_id: str) -> tuple[str, str]:
+        """Raw stored material (inline secret OR reference text) without
+        resolving references — used for grant checks at mint time."""
+        row = self.conn.execute(
+            "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
+            "WHERE id=?", (secret_id,)).fetchone()
+        if row is None:
+            raise BrokerDenied(f"unknown secret {secret_id}")
+        self._load_key(row["key_version"])
+        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
+            bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
+            secret_id.encode()).decode()
+        return stored, row["connection_id"]
+
+    def _materialize(self, secret_id: str, stored: str) -> str:
+        """Inline secrets pass through; references resolve here inside the
+        broker — resolution errors surface as an explicit degraded denial
+        and never echo the reference text back to the caller."""
+        from .secretrefs import RefResolutionError, SecretRefResolver, \
+            _split_ref
+        try:
+            scheme, _ = _split_ref(stored)
+        except RefResolutionError:
+            return stored  # not a reference: inline secret material
+        if self._resolver is None:
+            self._resolver = default_resolver()
+        if scheme not in self._resolver.adapters:
+            # Name the failure class without echoing the scheme value.
+            if self.audit is not None:
+                self.audit.append("secret_ref_degraded", payload={
+                    "secret_id": secret_id, "reason": "unknown_scheme"})
+            raise BrokerDenied(
+                f"secret {secret_id} unavailable: unsupported reference scheme")
+        try:
+            return self._resolver.resolve(stored)
+        except RefResolutionError:
+            if self.audit is not None:
+                self.audit.append("secret_ref_degraded", payload={
+                    "secret_id": secret_id, "scheme": scheme})
+            raise BrokerDenied(
+                f"secret {secret_id} unavailable: reference could not be "
+                f"resolved")
 
     def rotate_master_key(self) -> int:
         """Master-key rotation: new key version, full re-encryption. Tokens
@@ -294,7 +359,7 @@ class CredentialBroker:
         is caught (REQ-DATA-02)."""
         self._validate_lease(lease)
         for sid in secret_ids:
-            _, connection_id = self.get_secret(sid)
+            _, connection_id = self._stored_value(sid)
             if not self._grant_allowed(lease.principal_id, connection_id):
                 if self.audit is not None:
                     self.audit.append(
