@@ -879,3 +879,30 @@ class R8AuditorSeesAuthzRouter(unittest.TestCase):
                           "SELECT initiator_human FROM approvals "
                           "WHERE nonce='adopt1'")
         self.assertEqual(rows[0][0], "system:legacy")
+
+
+class R9ApprovalsNoDelete(unittest.TestCase):
+    """R9-1 (leaked from a crashed round-9 probe): DELETE of consumed
+    approval rows was allowed — evidence destruction. Now refused."""
+
+    def test_approval_delete_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                         " initiator_human, initiator_principal,"
+                         " approver_human, approver_principal, hmac)"
+                         " VALUES('del1','job','consumed','now','bob','bob',"
+                         "'alice','alice','h')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("DELETE FROM approvals WHERE nonce='del1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='del1'")
+        self.assertEqual(rows[0][0], "consumed")

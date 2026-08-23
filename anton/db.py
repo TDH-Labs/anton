@@ -82,6 +82,14 @@ BEGIN
     SELECT RAISE(ABORT, 'approvals must be created pending with no approver');
 END;
 
+-- Approvals are historical records: deletion (evidence destruction) is
+-- never legitimate — the scheduler consumes, it never deletes (R9-1).
+CREATE TRIGGER IF NOT EXISTS trg_approvals_no_delete
+BEFORE DELETE ON approvals
+BEGIN
+    SELECT RAISE(ABORT, 'approvals are historical records; deletion refused');
+END;
+
 -- Decided transitions require a distinct human approver; initiator fields
 -- are immutable; a consumed/denied approval is terminal (no re-run of the
 -- scheduler money/outbound gate from a dated sign-off — R5-5). Pre-authz
@@ -199,6 +207,7 @@ def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
 CRITICAL_ISOLATION_TRIGGERS = (
     "trg_approvals_pending_only_insert",
     "trg_approvals_transition_guard",
+    "trg_approvals_no_delete",
 )
 
 
