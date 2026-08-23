@@ -1,6 +1,6 @@
 # Anton Multi-User Authorization — Binding Build Spec
 
-Status: **FROZEN v1.0** (2026-08-22). This document is the binding build
+Status: **FROZEN v1.1** (2026-08-22; v1.0 + hostile self-critique amendments). This document is the binding build
 spec for Anton's multi-user authZ. Implementation is measured against the
 requirements herein; deviations require a spec amendment commit, not code
 comments.
@@ -114,8 +114,13 @@ of executor); direct DB read of credentials table yields ciphertext.
 ### REQ-CRED-02 — Per-execution scoped capability tokens [MUST]
 Broker issues short-TTL capability tokens that are (a) secret-granular
 (one token names exactly the connections/scope it may read), (b)
-time-boxed to the execution, (c) attested to a live execution context
-(broker refuses requests not carrying valid execution attestation).
+time-boxed to the execution, (c) attested to a live execution context:
+attestation = broker-issued execution lease (bound to execution id +
+calling principal + permitted connection set) AND a socket-level
+SO_PEERCRED uid check so only the executor OS user can authenticate at
+all. The broker refuses requests lacking either. Lease attestation is
+transport+lease, never "code attestation" — a compromised MCP server is a
+legitimate client and is contained by REQ-MCP-01 isolation instead.
 Per-fetch audit rows record requester, secret id, and purpose.
 Traces: R2-I2; R1-F6.
 Test: `CI-T-CRED-02` — unattested socket request denied; token replay
@@ -232,7 +237,9 @@ denied; elevation auto-expires.
 At install, generate an offline recovery artifact (recovery codes / signed
 recovery token) stored off-machine by the operator. Its use works with all
 channels down and no second approver, triggers mandatory post-hoc audit
-entry, and forces re-keying of broker secrets.
+entry, and forces re-keying of broker secrets (broker master-key rotation
+plus forced refresh of all connector tokens; a documented degraded period
+while providers re-auth is acceptable and must be surfaced, not hidden).
 Traces: R3-O6.
 Test: `CI-T-APPR-04` — full lockdown simulation (all channels down,
 Owner factor lost); recovery artifact unlocks; audit entry written;
@@ -241,7 +248,10 @@ broker re-key executed and old secrets invalid.
 ### REQ-APPR-05 — Single-operator mode [MUST]
 Declared explicitly at install when Owner=Admin=Approver=Operator is one
 human. In this mode: (a) sensitive-action constraints downgrade to
-time-delay + loud self-attestation instead of hard blocks; (b) a
+time-delay + loud self-attestation instead of hard blocks — implemented
+NOT by dropping triggers but by triggers that write into a pending-actions
+table with a mandatory delay window applied by a scheduled job, so the
+schema invariant set is identical in both modes; (b) a
 schema-hash of ALL triggers/constraints is recorded in the audit chain at
 boot — hand-dropped triggers are detected at next startup and block boot
 into multi-user mode; (c) RBAC collapses to Owner-only with the other four
@@ -278,8 +288,10 @@ disjoint entries.
 Before ANY outbound channel (email, Slack, webhook, channel post,
 calendar invite, shared-folder write, webhook-config edit), the gate
 checks recipient clearance vs. payload tag. Mismatch = block + flag, not
-warn. Confirmation prompts are budgeted (fatigue control): repeated
-prompts escalate to hard block rather than decaying into click-through.
+warn. Confirmation prompts are budgeted (fatigue control): each principal has
+a per-day confirmation budget (default 10, Admin-configurable ≥ 5); when
+exhausted, pending gated actions convert to HARD BLOCK routed to Approver
+review — the system must never relax to auto-approve under volume.
 Traces: GOV §4d; R2-I5 (paraphrase/base64/splitting bypasses);
 R2-N3; R3-O16.
 Test: `CI-T-EGRESS-03` — exfil attempts via paraphrase, base64 encoding,
@@ -449,6 +461,19 @@ Test: `CI-T-MCP-03` — fixture MCP output containing instruction text is
 delimited, tagged UNTRUSTED, screened, and cannot trigger a gated action
 without confirmation.
 
+
+### REQ-DEPLOY-01 — Reverse-proxy and static-asset trust boundary [MUST]
+Identity is never accepted from proxy-injected headers unless the peer is
+on an explicit trusted-proxy allowlist; `X-Forwarded-*`/identity headers
+from untrusted peers are stripped and their presence logged. Static
+mounts and the shipped UI bundle contain no debug/admin routes. First-run
+Owner claim requires an explicit out-of-band confirmation step, never a
+predictable default.
+Traces: R1-F12.
+Test: `CI-T-DEPLOY-01` — spoofed identity header from untrusted peer is
+ignored (request unauthenticated); trusted-proxy allowlist path works;
+static asset tree scanned in CI for admin/debug route artifacts.
+
 ## 11. Convergence Threshold & Framework Mapping
 
 ### CONV-1 — Convergence definition [BINDING]
@@ -521,6 +546,8 @@ constraint-integrity assertions.
 | R3-O14 | REQ-EGRESS-04 |
 | R3-O15 | REQ-EGRESS-05 |
 | R3-O16 | REQ-EGRESS-06 |
+| R2-N3 (budget) | REQ-EGRESS-03 (confirmation budget) |
+| R1-F12 (proxy/headers) | REQ-DEPLOY-01 |
 
 ## Appendix B — Open items carried forward (non-blocking)
 
