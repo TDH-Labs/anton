@@ -53,6 +53,49 @@
 Commits: 648f714, 5ebab33 (spec), 3f02481 (#10 spine), 2e7766d (#12),
 10a7fb1 (#11), 988fae1 (#5).
 
+## CONV-1 CONVERGENCE RECORD (2026-08-23)
+
+Implementation-phase adversarial verification ran 15 rounds (2 independent
+reviewers per round from round 3, deepseek-v4-flash via the working
+provider route after stealth/ox-alpha outage). Every BLOCKER/MAJOR found
+was fixed and pinned by regression tests in tests/authz/test_review_fixes_r3.py:
+
+| Round | Blocking findings | Fix commit |
+|---|---|---|
+| 1 | 6 BLOCKER + 4 MAJOR | 21605cd |
+| 2 | 5 MAJOR | 82ba79c |
+| 3 | 4 MAJOR (+8 minor) | 0949e9f |
+| 4 | 4 MAJOR + 1 MINOR | 1d902ee |
+| 5 | 3 MAJOR + 3 MINOR | 3ff567b |
+| 6 | 2 MAJOR + minors | c923c4d |
+| 7 | 2 MAJOR + minors | 15f0f3e |
+| 8 | 2 MAJOR + 2 MINOR | 8e7fcea |
+| 9 | 1 BLOCKER + 3 MAJOR | bf5670e |
+| 10 | 2 MAJOR + 2 MINOR | 3a59d18 |
+| 11 | **0 blocking** (3 MINOR/OBS) | 01737b7 |
+| 12 | 1 MAJOR (baseline-None laundering) | cd16448 |
+| 13 | 2 MAJOR (boot-order heal/launder) | 137fa63 |
+| 14 | 1 MAJOR (first_boot canonical gate) | e1787b6 |
+| 15 | **PROCEED both reviewers** (2 MINOR + OBS) | 0e5844d / 8b14463 |
+
+**CONV-1 satisfied**: rounds 15-A and 15-B are two consecutive independent
+adversarial reviews issuing PROCEED verdicts with zero BLOCKER/MAJOR
+against running code (HEAD 8b14463). Suite at convergence: 354 passed +
+75 RBAC matrix subtests; all prior-round regression pins still green.
+
+### Open tracked items (MINOR/OBS, non-blocking per CONV-1)
+1. Out-of-DB genesis marker for the kv-drop launder (audit-chain table-drop
+   shape heals before first_boot gate) — needs a file-based seeding marker;
+   design decision for Adam.
+2. Son-of-anton flag is raw-writable in isolation.db — operator-only trust
+   boundary; consider keyed HMAC on the flag row.
+3. run_migration applies DDL then re-baselines in separate transactions
+   (crash window; test-only path today).
+4. Broker lease/mint issuance not audit-chained (fetch is).
+5. Approval freshness window (no expiry on approved-but-unconsumed rows).
+6. Machine-token revocation reach-through into live broker leases (TTL-bounded).
+7. Webhook trigger endpoints unauthenticated by design (documented).
+
 ## Review run 3 (2026-08-22) — DEFERRED, provider outage
 
 - Run 3 launched against 82ba79c twice: the first (mt5aglx2-7b9kbu) was
