@@ -334,3 +334,82 @@ scheduler money/outbound gate + hmac/replay + adoption/legacy abuse. All 120 tes
    (contradicts its own comment); transition guard omits `ts`/`hmac`/`org_id`/`nonce`
    -> timeline/evidence laundering on "historical" rows (R9-1 covers DELETE only).
    Repro: consumed row ts backdated, nonce/org_id/hmac rewritten.
+
+## Review (adversarial round 10, reviewer B — schema invariants / TOCTOU / upgrade paths)
+
+Verified round-9 fixes genuine: `consume_verified_approval` shared by scheduler
+`_is_approved` and upskill `approve_pending_promotion` (drift + keyed hmac + one-shot
+consume inside BEGIN IMMEDIATE); wire_authz/cli._build refuse authz-enabled without
+decision_secret; evidence_hmac stamped at approve(), verified at execute_approved;
+INSERT guard reserves hmac (marker excepted) and refuses raw consumed inserts.
+Suite green: 126 passed + 75 matrix subtests (tests/authz).
+
+Probed (all try/except wrapped):
+- Son-of-anton still works with the tightened INSERT guard (`_is_approved` -> True,
+  marker row (`consumed`, `son_of_anton_bypass`) inserted; raw consumed INSERT without
+  the marker still refused).
+- Concurrent BEGIN IMMEDIATE consumers: 4-way race on one approved row -> exactly one
+  consumes, three fail closed "no_approval", no deadlock.
+- UPGRADE PATH (new): a pre-R9 authz.db (approval_decisions without evidence_hmac)
+  boots fine (schema_signature is self-referential vs the recorded kv baseline; DDL
+  unchanged by CREATE TABLE IF NOT EXISTS) but `approve()` crashes with uncaught
+  `sqlite3.OperationalError: table approval_decisions has no column named
+  evidence_hmac`; `execute_approved()` likewise. There is NO production migration for
+  the new column: `run_migration`/`MigrationPrincipal` have zero production callers
+  (test-only), and even a manual `ALTER TABLE` would then trip the boot gate
+  (signature != baseline) with no sanctioned re-baseline path. Authz test suite has no
+  upgrade-from-old-authz.db test (R6/R7 pin isolation.db upgrades only).
+- TOCTOU (new, minor): in `_is_approved` and `approve_pending_promotion` the
+  `BEGIN IMMEDIATE` statement sits OUTSIDE the `except sqlite3.OperationalError`
+  recovery. With a write lock held >10 s, the raw "database is locked" escapes
+  (verified: 20.9 s uncaught) — contradicting the code's own "fails closed as
+  'gate_locked' instead of killing the scheduler process" intent; cmd_serve's poll
+  loop has no try/except around run_job, so a transient lock kills the process.
+- OBSERVATION: the son-of-anton bypass switch (`app_settings.son_of_anton_mode`) and
+  the public bypass marker are raw-writable in the DB layer; a raw-DB writer (the
+  exact adversary the keyed-hmac countermeasures model) can set the flag and nullify
+  the whole money/outbound gate.
+
+## Review (adversarial round 10, reviewer A — auth bypass / fail-open on all approval consumers)
+
+Verified round-9 fixes genuine (code + probes, all probes try/except-wrapped):
+`consume_verified_approval` is shared by scheduler `_is_approved` AND upskill
+`approve_pending_promotion` (drift check + keyed decision-hmac + one-shot consume,
+BEGIN IMMEDIATE); wire_authz and cli._build both refuse authz-enabled without a
+non-empty decision_secret; evidence_hmac = HMAC(decision_secret, approval_id|payload_hash)
+stamped at approve() and verified at execute_approved; INSERT trigger reserves hmac
+(son_of_anton_bypass excepted) and refuses raw consumed inserts; ts/nonce/org_id
+immutable; _decision_hmac is keyed HMAC. Suite green: 126 passed + 75 matrix
+subtests (tests/authz) + 216 legacy tests; live E2E dashboard decide -> scheduler
+consume works with the keyed hmac.
+
+Probed against all three consumers (scheduler, upskill, egress execute_send):
+- Forged-row matrix with decision_secret set — preset hmac 'son_of_anton_bypass',
+  empty-string hmac, NULL hmac, cross-id hmac copy, adoption+forge combos: ALL
+  refused (unverified_hmac) by every consumer. Trigger level: preset hmac/approver
+  at INSERT refused; approved rows with empty/NULL/marker hmac blocked at consume.
+- Evidence-hmac cross-approval replay: two approvals with the SAME payload_hash;
+  copying approval A's decision row (incl. evidence) onto B — execute_approved(B)
+  refused (evidence binds approval_id). No replay. ux_decision_once + executions
+  PK hold one-shot.
+- decision_secret requirement: no legit legacy flow broken (full 342-test matrix +
+  live egress/upskill paths). Legacy (authz-off) mode documented boundary intact.
+
+New findings: (1) MAJOR upgrade break — existing multi-user authz.db (pre-R9) has
+approval_decisions WITHOUT evidence_hmac; ensure_schema's CREATE TABLE IF NOT EXISTS
+never alters; NO migration exists and a manual ALTER would trip boot_check's
+schema-hash gate (run_migration is test-only) -> first approve() after upgrade raises
+uncaught OperationalError (reproduced). (2) MAJOR — the R9 "fails closed as
+'gate_locked'" claim is false for the actual lock point: BEGIN IMMEDIATE sits outside
+the except sqlite3.OperationalError (scheduler.py:204, upskill.py:412); a held write
+lock surfaced uncaught OperationalError 'database is locked' after 20.9s in a live
+_is_approved call; cmd_serve's poll loop has no try around run_job -> transient lock
+kills the scheduler process. (3) MINOR — split-brain trust point: decision_secret
+configured while authz.enabled=false makes the dashboard write empty-key hmacs
+(_set_hmac_secret only in wire_authz) while the scheduler verifies with the config
+key -> every legit approval permanently unconsumable, no boot error. (4) MINOR —
+consume picks ORDER BY id DESC LIMIT 1; one planted max-id approved junk row (NULL
+hmac; triggers permit hmac-less approve writes) permanently parks all legit
+approvals behind unverified_hmac (reproduced). (5) OBSERVATION — approvals.id is not
+in the transition-guard immutability list; row renumbering invalidates keyed hmacs
+(DoS / tamper-evidence) — add NEW.id IS NOT OLD.id.

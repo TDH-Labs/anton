@@ -34,8 +34,6 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
             "authz.enabled requires authz.decision_secret in config.yaml — "
             "without it approved sign-offs cannot be authenticated and the "
             "money/outbound gate would be forgeable.")
-    from ..dashboard import _set_hmac_secret
-    _set_hmac_secret(azcfg["decision_secret"])
     azdir = os.path.join(data_dir, "authz")
     os.makedirs(azdir, exist_ok=True)
 

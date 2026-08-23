@@ -212,6 +212,12 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     global _active_oauth_server
     app = FastAPI(title="anton")
     ledger = engine.ledger
+    # R10-3: the decision-hmac secret has ONE trust point — config's
+    # authz.decision_secret — read here regardless of authz.enabled so the
+    # write side (decide endpoints) and verify side (scheduler) can never
+    # split-brain on a partial config.
+    _set_hmac_secret(
+        ((config.get("authz") or {}).get("decision_secret") or "").strip())
     token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("ANTON_DASHBOARD_TOKEN") or _os.environ.get("HARBOR_DASHBOARD_TOKEN") or ""
     if token:
         app.state.dashboard_token = token

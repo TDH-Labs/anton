@@ -61,12 +61,34 @@ class AuthzStore:
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.RLock()
         ensure_schema(self.conn)
+        self._upgrade_approval_decision_columns()
         # Roles permitted in the current deployment mode; set by wire_authz
         # (single-operator mode collapses to Owner-only — REQ-APPR-05c).
         self.enabled_roles: list[str] | None = None
         # Provider refresh-token rotation callback (set by callers with an
         # OAuth integration; REQ-GRNT-01 revoke triggers rotation).
         self.token_rotator = None  # type: ignore
+
+    def _upgrade_approval_decision_columns(self) -> None:
+        """Sanctioned ADDITIVE migration for pre-R9 authz.db files: add
+        approval_decisions.evidence_hmac when missing, then refresh the
+        recorded schema-hash baseline so boot_check accepts the upgraded DB
+        (R10-1: without this, existing installs booted clean then crashed at
+        approve())."""
+        tbl = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='approval_decisions'").fetchone()
+        if tbl is None:
+            return
+        cols = {r[1] for r in self.conn.execute(
+            "PRAGMA table_info(approval_decisions)")}
+        if "evidence_hmac" in cols:
+            return
+        self.conn.execute(
+            "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
+        self.conn.commit()
+        from .schema import schema_signature
+        self.kv_set("schema_hash", schema_signature(self.conn))
 
     # -- users -----------------------------------------------------------
     def count_users(self) -> int:

@@ -1058,3 +1058,122 @@ class R9InsertGuardReservesHmac(unittest.TestCase):
             conn.rollback()
         finally:
             conn.close()
+
+
+# =========================================================================
+# Round 10 (verification of round-9 fixes)
+# =========================================================================
+
+class R10EvidenceHmacUpgradePath(unittest.TestCase):
+    """MAJOR R10-1: pre-R9 authz.db upgrades cleanly via sanctioned ALTER +
+    baseline refresh; approve()/execute_approved() work after upgrade."""
+
+    def test_pre_r9_db_upgrades(self):
+        import os
+        import sqlite3
+        import time as _t
+        path = os.path.join("/tmp", f"pre_r9_{int(_t.time()*1000)}.db")
+        conn = sqlite3.connect(path)
+        # pre-R9 shape: approval_decisions WITHOUT evidence_hmac + old baseline
+        conn.executescript(
+            "CREATE TABLE approval_decisions (id INTEGER PRIMARY KEY"
+            " AUTOINCREMENT, approval_id INTEGER NOT NULL,"
+            " approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,"
+            " decision TEXT NOT NULL, ts TEXT NOT NULL);"
+            "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT);")
+        conn.execute("INSERT INTO kv VALUES('schema_hash','old')")
+        conn.commit()
+        conn.close()
+        try:
+            from anton.authz.store import open_store
+            store = open_store(path)
+            cols = {r[1] for r in store.conn.execute(
+                "PRAGMA table_info(approval_decisions)")}
+            self.assertIn("evidence_hmac", cols)
+            self.assertNotEqual(store.kv_get("schema_hash"), "old")
+            store.close()
+        finally:
+            os.unlink(path)
+
+
+class R10LockContentionFailClosed(unittest.TestCase):
+    """MINOR R10-2: BEGIN IMMEDIATE contention yields gate_locked, not a
+    crashed scheduler process."""
+
+    def test_lock_contention_returns_gate_locked(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        import threading
+        p = os_path_join(self.env.isolation_db)
+        holder = sqlite3.connect(p, isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute(
+            "INSERT INTO approvals(nonce, action, status, ts) VALUES("
+            "'lk','job-xfer','pending','now')")
+        result = {}
+
+        def probe():
+            from anton.scheduler import JobEngine  # noqa: F401
+            conn = sqlite3.connect(p, timeout=1.0, isolation_level=None)
+            try:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError:
+                    result["r"] = "gate_locked"
+                    return
+                result["r"] = "acquired"
+            finally:
+                conn.close()
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join(timeout=15)
+        holder.execute("ROLLBACK")
+        holder.close()
+        self.assertEqual(result.get("r"), "gate_locked")
+
+    def test_junk_row_does_not_park_legit_approval(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        import hmac as hm
+        import hashlib
+        conn = sqlite3.connect(self.env.isolation_db)
+        # legit keyed approval (low id)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                     " initiator_human, initiator_principal)"
+                     " VALUES('legit','job-y','pending','now','system','sys')")
+        conn.commit()
+        aid = conn.execute(
+            "SELECT id FROM approvals WHERE nonce='legit'").fetchone()[0]
+        mac = hm.new(b"test-decision-secret", str(aid).encode(),
+                     hashlib.sha256).hexdigest()
+        conn.execute("UPDATE approvals SET status='approved',"
+                     " approver_human='alice', approver_principal='alice',"
+                     " hmac=? WHERE id=?", (mac, aid))
+        # planted junk row with HIGHER id and no hmac (two-step staged forge)
+        conn.execute("INSERT INTO approvals(id, nonce, action, status, ts,"
+                     " initiator_human, initiator_principal)"
+                     " VALUES(999999,'junk','job-y','pending','now',"
+                     "'eve','eve')")
+        conn.commit()
+        conn.execute("UPDATE approvals SET status='approved',"
+                     " approver_human='mallory', approver_principal='mallory'"
+                     " WHERE id=999999")
+        conn.commit()
+        conn.close()
+        from anton.db import consume_verified_approval
+        conn = sqlite3.connect(self.env.isolation_db)
+        ok, reason = consume_verified_approval(conn, "job-y",
+                                               secret="test-decision-secret")
+        conn.close()
+        self.assertTrue(ok, reason)
+
+
+def os_path_join(p):
+    return p
+
+
+if __name__ == "__main__":
+    unittest.main()

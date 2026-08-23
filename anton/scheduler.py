@@ -201,7 +201,10 @@ class JobEngine:
         from .db import consume_verified_approval
         conn = sqlite3.connect(p, timeout=10.0, isolation_level=None)
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                return False, "gate_locked"
             try:
                 ok, reason = consume_verified_approval(conn, job_id,
                                                        secret=secret)

@@ -409,7 +409,10 @@ def approve_pending_promotion(engine, slug: str) -> bool:
     secret = getattr(engine, "_decision_secret", None) or None
     conn = sqlite3.connect(db_path, timeout=10.0, isolation_level=None)
     try:
-        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError:
+            return False  # fail closed on lock contention
         try:
             ok, reason = consume_verified_approval(
                 conn, f"upskill_promote:{slug}", secret=secret)

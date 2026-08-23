@@ -109,6 +109,7 @@ WHEN (
     -- initiator in place of a NULL.
     ((NEW.initiator_human IS NOT OLD.initiator_human
       OR NEW.initiator_principal IS NOT OLD.initiator_principal
+      OR NEW.id IS NOT OLD.id
       -- decision-significant payload fields are immutable after INSERT:
       -- an approved sign-off is for the action/amount/recipient it named
       -- (R7-2)
@@ -264,18 +265,24 @@ def consume_verified_approval(conn: sqlite3.Connection, action: str,
     if drift:
         return False, "gate_triggers_drifted"
     if secret:
-        row = conn.execute(
+        # R10-4: iterate candidates newest-first and consume the FIRST one
+        # whose keyed hmac verifies — a single planted NULL-hmac junk row
+        # cannot park legit approvals behind unverified_hmac forever.
+        rows = conn.execute(
             "SELECT id, hmac, nonce FROM approvals WHERE action=? AND "
-            "status='approved' ORDER BY id DESC LIMIT 1", (action,)).fetchone()
-        if row is None:
-            return False, "no_approval"
-        if not row[1]:
-            return False, "unverified_hmac"
-        expected = _hmac.new(secret.encode(), str(row[0]).encode(),
-                             _hashlib.sha256).hexdigest()
-        if not _hmac.compare_digest(row[1], expected):
-            return False, "unverified_hmac"
-        aid = row[0]
+            "status='approved' ORDER BY id DESC", (action,)).fetchall()
+        verified = None
+        for row in rows:
+            if not row[1]:
+                continue
+            expected = _hmac.new(secret.encode(), str(row[0]).encode(),
+                                 _hashlib.sha256).hexdigest()
+            if _hmac.compare_digest(row[1], expected):
+                verified = row
+                break
+        if verified is None:
+            return False, ("no_approval" if not rows else "unverified_hmac")
+        aid = verified[0]
     else:
         row = conn.execute(
             "SELECT id FROM approvals WHERE action=? AND status='approved' "
