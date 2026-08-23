@@ -63,11 +63,12 @@ class WizardPicksReq(BaseModel):
 
 
 def _require_token(request: Request, token: str) -> None:
-    if not token:
-        return
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {token}":
-        raise HTTPException(401, "missing or invalid bearer token")
+    # Delegates to the dashboard's guard so the authZ spine (per-user
+    # sessions, capability checks) governs ops routes too — a private copy
+    # here would keep accepting the legacy shared token after the
+    # migration flag flips and reject valid sessions.
+    from .dashboard import _require_token as _dashboard_require_token
+    _dashboard_require_token(request, token)
 
 
 def register_ops_routes(app: FastAPI, engine: JobEngine, data_dir: str, config: dict, token: str) -> None:

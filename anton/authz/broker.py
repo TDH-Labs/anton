@@ -558,9 +558,18 @@ class CredentialBroker:
                     if not buf.strip():
                         continue
                     req = json.loads(buf.decode())
-                    resp = self._dispatch(req, _peer_uid(conn))
-                except Exception as e:
-                    resp = {"ok": False, "error": str(e)}
+                    try:
+                        resp = self._dispatch(req, _peer_uid(conn))
+                    except BrokerDenied as e:
+                        resp = {"ok": False, "error": type(e).__name__,
+                                "detail": str(e)}
+                    except Exception:
+                        # never leak internals (paths, crypto details) over
+                        # the socket — callers get a generic denial
+                        resp = {"ok": False, "error": "BrokerDenied",
+                                "detail": "request refused"}
+                except Exception:
+                    resp = {"ok": False, "error": "malformed_request"}
                 try:
                     conn.sendall((json.dumps(resp) + "\n").encode())
                 except OSError:
