@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS approval_decisions (
     approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,
     decision TEXT NOT NULL, ts TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approval_executions (
+    approval_id INTEGER PRIMARY KEY,
+    executed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS breakglass_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     principal TEXT NOT NULL, reason TEXT,
@@ -86,6 +90,19 @@ CREATE TABLE IF NOT EXISTS pending_actions (
     kind TEXT NOT NULL, payload_json TEXT NOT NULL,
     ready_at REAL NOT NULL, applied INTEGER NOT NULL DEFAULT 0,
     ts TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS egress_channels (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    address TEXT NOT NULL,
+    recipient_name TEXT DEFAULT '',
+    clearance TEXT NOT NULL DEFAULT 'INTERNAL',
+    opt_in INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT NOT NULL, created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS egress_optins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL, actor_id TEXT NOT NULL, ts TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY, value TEXT

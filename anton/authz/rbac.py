@@ -31,6 +31,8 @@ CAPABILITY_SETS: dict[str, frozenset[str]] = {
     "Approver": frozenset({
         "approvals.decide", "approvals.submit",
         "vault.read", "connections.read", "audit.read",
+        # REQ-EGRESS-06: egress channel creation/deletion is Approver-gated.
+        "egress.channels.manage",
     }),
     "Operator": frozenset({
         "jobs.run", "approvals.submit",

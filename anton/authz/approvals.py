@@ -86,7 +86,8 @@ decide_approval = approve
 def execute_approved(store, audit, approval_id: int,
                      current_payload: dict) -> None:
     """TOCTOU gate: any edit to the payload after approval invalidates the
-    approval (hash mismatch detected at execution time)."""
+    approval (hash mismatch detected at execution time). One-shot: an
+    approval is consumed by its first execution."""
     row = store.conn.execute(
         "SELECT * FROM authz_approvals WHERE id=?", (approval_id,)).fetchone()
     if row is None:
@@ -106,4 +107,16 @@ def execute_approved(store, audit, approval_id: int,
             "actual": _payload_hash(current_payload)})
         raise PayloadTamperError(
             f"payload mutated after approval (approval {approval_id})")
+    try:
+        with store.lock:
+            store.conn.execute(
+                "INSERT INTO approval_executions(approval_id, executed_at)"
+                " VALUES(?,?)", (approval_id, _now()))
+            store.conn.commit()
+    except sqlite3.IntegrityError as e:
+        audit.append("authorization_denied", payload={
+            "reason": "approval_already_executed",
+            "approval_id": approval_id})
+        raise ApprovalRejected(
+            f"approval {approval_id} already executed") from e
     audit.append("approval_executed", payload={"approval_id": approval_id})
