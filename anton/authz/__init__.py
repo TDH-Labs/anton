@@ -108,7 +108,10 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
             "DB has no baseline/history — the database was wiped or "
             "restored improperly.")
     boot_check(store, audit, mode="first_boot" if pristine else mode)
-    if pristine:
+    # R16-B: write whenever MISSING (idempotent) — a crash between baseline
+    # commit and stamp write must not leave the install permanently
+    # disarmed. Never restored to a wiped DB (that path is refused above).
+    if not os.path.exists(stamp):
         from .secrets import write_private_file
         write_private_file(stamp, "genesis")
 

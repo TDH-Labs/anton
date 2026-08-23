@@ -83,6 +83,7 @@ FOR EACH ROW
 WHEN NEW.status IN ('approved', 'denied')
   OR NEW.approver_human IS NOT NULL
   OR NEW.approver_principal IS NOT NULL
+  OR NEW.decided_at IS NOT NULL
   OR (NEW.hmac IS NOT NULL AND NEW.hmac != 'son_of_anton_bypass')
   OR (NEW.status = 'consumed'
       AND COALESCE(NEW.hmac, '') != 'son_of_anton_bypass')
@@ -136,6 +137,13 @@ WHEN (
     OR (OLD.status = 'pending' AND NEW.hmac IS NOT OLD.hmac
         AND NEW.status NOT IN ('approved', 'denied'))
     OR (OLD.status != 'pending' AND NEW.hmac IS NOT OLD.hmac)
+    -- decided_at follows the same discipline as hmac (R16-A): writable only
+    -- on the pending->decided hop, immutable afterwards; a decided row may
+    -- not exist without its stamp
+    OR (OLD.status = 'pending' AND NEW.decided_at IS NOT OLD.decided_at
+        AND NEW.status NOT IN ('approved', 'denied'))
+    OR (OLD.status != 'pending' AND NEW.decided_at IS NOT OLD.decided_at)
+    OR (NEW.status IN ('approved', 'denied') AND NEW.decided_at IS NULL)
 
     -- adoption is ONLY valid from an all-NULL pending row: any other
     -- initiator write is covered above; a second adoption write is refused
@@ -212,11 +220,21 @@ def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
     if tbl is None:
         return  # fresh DB: SCHEMA creates it with the columns already
     cols = {r[1] for r in conn.execute("PRAGMA table_info(approvals)")}
+    changed = False
     for name in ("initiator_human", "initiator_principal",
                  "approver_human", "approver_principal", "decided_at"):
         if name not in cols:
             conn.execute(f"ALTER TABLE approvals ADD COLUMN {name} TEXT")
-    conn.commit()
+            changed = True
+    # R16-OBS: backfill decided_at for already-decided pre-batch rows so the
+    # freshness window uses their creation time instead of bricking them.
+    if "decided_at" in {r[1] for r in conn.execute(
+            "PRAGMA table_info(approvals)")}:
+        conn.execute(
+            "UPDATE approvals SET decided_at = ts WHERE decided_at IS NULL "
+            "AND status IN ('approved', 'consumed', 'denied')")
+    if changed:
+        conn.commit()
 
 
 # The legacy approvals trigger set is the scheduler's real money/outbound

@@ -394,7 +394,8 @@ class R4LegacyApprovalHardening(unittest.TestCase):
             conn.commit()
             conn.execute(
                 "UPDATE approvals SET status='approved', approver_human='owner',"
-                " approver_principal='owner' WHERE nonce='z'")
+                " approver_principal='owner', decided_at='2026-08-23T00:00:00Z'"
+                " WHERE nonce='z'")
             conn.commit()
         finally:
             conn.close()
@@ -432,7 +433,8 @@ class R4LegacyApprovalHardening(unittest.TestCase):
             conn.commit()
             conn.execute(
                 "UPDATE approvals SET status='approved', approver_human='alice',"
-                " approver_principal='alice' WHERE nonce='r1'")
+                " approver_principal='alice', decided_at='2026-08-23T00:00:00Z'"
+                " WHERE nonce='r1'")
             conn.commit()
             conn.execute(
                 "UPDATE approvals SET status='consumed' WHERE nonce='r1'")
@@ -579,8 +581,8 @@ class R6ApprovedRevertRefused(unittest.TestCase):
                          " VALUES('ap1','job','pending','now','bob','bob')")
             conn.commit()
             conn.execute("UPDATE approvals SET status='approved',"
-                         " approver_human='alice', approver_principal='alice'"
-                         " WHERE nonce='ap1'")
+                         " approver_human='alice', approver_principal='alice',"
+                         " decided_at='2026-08-23T00:00:00Z' WHERE nonce='ap1'")
             conn.commit()
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("UPDATE approvals SET status='pending' "
@@ -734,8 +736,8 @@ class R7ApprovedToDeniedRefused(unittest.TestCase):
                          " VALUES('ad9','job','pending','now','bob','bob')")
             conn.commit()
             conn.execute("UPDATE approvals SET status='approved',"
-                         " approver_human='alice', approver_principal='alice'"
-                         " WHERE nonce='ad9'")
+                         " approver_human='alice', approver_principal='alice',"
+                         " decided_at='2026-08-23T00:00:00Z' WHERE nonce='ad9'")
             conn.commit()
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute("UPDATE approvals SET status='denied',"
@@ -815,8 +817,8 @@ class R8PresetApproverForgeClosed(unittest.TestCase):
                      " VALUES('pf2','job','pending','now','bob','bob')")
         # forged approve: no hmac (raw writer)
         conn.execute("UPDATE approvals SET status='approved',"
-                     " approver_human='alice', approver_principal='alice'"
-                     " WHERE nonce='pf2'")
+                     " approver_human='alice', approver_principal='alice',"
+                     " decided_at='2026-08-23T00:00:00Z' WHERE nonce='pf2'")
         conn.commit()
         conn.close()
         # engine with decision secret configured must refuse
@@ -898,7 +900,8 @@ class R9ApprovalsNoDelete(unittest.TestCase):
             conn.commit()
             conn.execute("UPDATE approvals SET status='approved',"
                          " approver_human='alice', approver_principal='alice',"
-                         " hmac='h' WHERE nonce='del1'")
+                         " hmac='h', decided_at='2026-08-23T00:00:00Z'"
+                         " WHERE nonce='del1'")
             conn.commit()
             conn.execute("UPDATE approvals SET status='consumed' "
                          "WHERE nonce='del1'")
@@ -950,11 +953,16 @@ class R9UpskillPromotionVerified(unittest.TestCase):
                          hashlib.sha256).hexdigest()
             conn.execute("UPDATE approvals SET status='approved',"
                          " approver_human='alice', approver_principal='alice',"
-                         " hmac=? WHERE id=?", (mac, aid))
+                         " hmac=?, decided_at=? WHERE id=?",
+                         (mac, "2026-08-23T00:00:00Z", aid))
         else:
+            # wrong-key hmac passes schema guards, refused by consumer verify
+            import hashlib as _h
+            bad = hm.new(b"wrong-secret", str(aid).encode(), _h.sha256).hexdigest()
             conn.execute("UPDATE approvals SET status='approved',"
-                         " approver_human='alice', approver_principal='alice'"
-                         " WHERE id=?", (aid,))
+                         " approver_human='alice', approver_principal='alice',"
+                         " hmac=?, decided_at=? WHERE id=?",
+                         (bad, "2026-08-23T00:00:00Z", aid))
         conn.commit()
         conn.close()
 
@@ -1156,7 +1164,8 @@ class R10LockContentionFailClosed(unittest.TestCase):
                      hashlib.sha256).hexdigest()
         conn.execute("UPDATE approvals SET status='approved',"
                      " approver_human='alice', approver_principal='alice',"
-                     " hmac=? WHERE id=?", (mac, aid))
+                     " hmac=?, decided_at=? WHERE id=?",
+                     (mac, "2026-08-23T00:00:00Z", aid))
         # planted junk row with HIGHER id and no hmac (two-step staged forge)
         conn.execute("INSERT INTO approvals(id, nonce, action, status, ts,"
                      " initiator_human, initiator_principal)"
@@ -1164,8 +1173,8 @@ class R10LockContentionFailClosed(unittest.TestCase):
                      "'eve','eve')")
         conn.commit()
         conn.execute("UPDATE approvals SET status='approved',"
-                     " approver_human='mallory', approver_principal='mallory'"
-                     " WHERE id=999999")
+                     " approver_human='mallory', approver_principal='mallory',"
+                     " decided_at='2026-08-23T00:00:00Z' WHERE id=999999")
         conn.commit()
         conn.close()
         from anton.db import consume_verified_approval
@@ -1440,15 +1449,16 @@ class R16ApprovalFreshnessWindow(unittest.TestCase):
         import shutil
         shutil.rmtree(self.env.dir, ignore_errors=True)
 
-    def _seed_approved(self, decided_at):
+    def _seed_approved(self, decided_at, nonce="fw1"):
         import sqlite3
         import hmac as hm
         conn = sqlite3.connect(self.env.isolation_db)
         conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
                      " initiator_human, initiator_principal)"
-                     " VALUES('fw1','job-fw','pending','now','system','sys')")
+                     " VALUES(?,'job-fw','pending','now','system','sys')",
+                     (nonce,))
         aid = conn.execute(
-            "SELECT id FROM approvals WHERE nonce='fw1'").fetchone()[0]
+            "SELECT id FROM approvals WHERE nonce=?", (nonce,)).fetchone()[0]
         mac = hm.new(b"test-decision-secret", str(aid).encode(),
                      hashlib.sha256).hexdigest()
         conn.execute("UPDATE approvals SET status='approved',"
@@ -1464,7 +1474,7 @@ class R16ApprovalFreshnessWindow(unittest.TestCase):
         import datetime as dt
         old_ts = (dt.datetime.now(dt.timezone.utc)
                   - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        aid = self._seed_approved(old_ts)
+        aid = self._seed_approved(old_ts, nonce="fw-stale")
         conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
         conn.execute("BEGIN IMMEDIATE")
         ok, reason = consume_verified_approval(
@@ -1474,30 +1484,30 @@ class R16ApprovalFreshnessWindow(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(reason, "approval_expired")
 
-    def test_fresh_decision_accepted_and_missing_timestamp_refused(self):
+    def test_fresh_decision_accepted_and_stale_refused(self):
+        # NOTE: the no_decision_timestamp branch is unreachable through
+        # guarded paths (the transition trigger requires the stamp on every
+        # pending->decided hop), so both cases here carry stamps.
         from anton.db import consume_verified_approval
         import sqlite3
         import datetime as dt
-        now_ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        # missing timestamp -> refused when secret configured
-        aid = self._seed_approved(None)
+
+        # stale decision (2h old, 1h window) -> approval_expired
+        old_ts = (dt.datetime.now(dt.timezone.utc)
+                  - dt.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        aid = self._seed_approved(old_ts, nonce="fw-stale")
         conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
         conn.execute("BEGIN IMMEDIATE")
         ok, reason = consume_verified_approval(
             conn, "job-fw", secret="test-decision-secret", max_age_s=3600)
         conn.execute("ROLLBACK")
         conn.close()
-        self.assertEqual(reason, "no_decision_timestamp")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "approval_expired")
 
-        # backfill a FRESH timestamp via the legal decide path shape
-        mac = raw_sqlite(self.env.isolation_db,
-                         "SELECT hmac FROM approvals WHERE id=?",
-                         (aid,))[0][0]
-        conn2 = sqlite3.connect(self.env.isolation_db)
-        conn2.execute("UPDATE approvals SET decided_at=? WHERE id=?",
-                      (now_ts, aid))
-        conn2.commit()
-        conn2.close()
+        # fresh decision -> consumed exactly once
+        now_ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        aid2 = self._seed_approved(now_ts, nonce="fw-fresh")
         conn = sqlite3.connect(self.env.isolation_db, isolation_level=None)
         conn.execute("BEGIN IMMEDIATE")
         ok, reason = consume_verified_approval(
@@ -1505,6 +1515,9 @@ class R16ApprovalFreshnessWindow(unittest.TestCase):
         conn.commit()
         conn.close()
         self.assertTrue(ok, reason)
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE id=?", (aid2,))
+        self.assertEqual(rows[0][0], "consumed")
 
 
 class R16GenesisMarker(unittest.TestCase):

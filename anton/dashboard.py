@@ -296,6 +296,11 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         no request body (mirrors /api/mode/son-of-anton's boolean, fixed false)."""
         _require_token(request, token)
         if getattr(app.state, "authz_middleware_active", False):
+            principal = getattr(request.state, "principal", None)
+            audit_log = getattr(app.state, "authz_audit", None)
+            if audit_log is not None and principal is not None:
+                audit_log.append("soa_toggle_refused", actor=principal,
+                                 payload={"requested": False})
             raise HTTPException(
                 403, "son-of-anton bypass is disabled in authz mode "
                      "(operator-managed via config only)")

@@ -607,3 +607,9 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
   first_boot mode). Refusal-path audit append can raise unhandled
   OperationalError when audit_chain itself was dropped (fail-closed, ugly).
   run_migration is unwired dead code; evidence_hmac ALTER is unaudited.
+
+## Review (round 16 — adversarial B, schema invariants + TOCTOU + upgrade paths)
+
+- Correct: decided_at ALTER upgrade path works on old isolation.db (`_upgrade_approvals_columns` appends; probe: column added, old rows NULL). Freshness check typed correctly (ISO-parse + compare, mismatch fail-closed). Scheduler consume sits inside caller's BEGIN IMMEDIATE; all consumers route through `consume_verified_approval`. `credential_alive` machine: parsing is injection/collision-clean (uuid4-hex jti + parameterized SQL; session sids are uuid4-hex so `machine:` prefix cannot collide; `amt_`/`ast_` token prefixes distinct). Webhook gate fail-closed + constant-time compare, auth before resource-existence disclosure. SoA fiat works: hardened gate ignores flag; raw-DB flip unreachable. Concurrent first boots benign (same hash bless, idempotent stamp).
+
+- Fixed: nothing changed in code (review findings below).

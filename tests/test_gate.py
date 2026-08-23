@@ -50,7 +50,9 @@ class TestGate(unittest.TestCase):
                  "system", "system:gate"))
             conn.execute(
                 "UPDATE approvals SET status='approved', approver_human='owner',"
-                " approver_principal='owner' WHERE nonce=?", (nonce,))
+                " approver_principal='owner', decided_at=? WHERE nonce=?",
+                (dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 nonce))
             conn.commit()
 
     def test_outbound_job_runs_after_approval(self):

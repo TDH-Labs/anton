@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 
 from .principals import MigrationPrincipal, PrincipalTypeError, require_nonhuman
 from .schema import (missing_critical_triggers, schema_signature,
@@ -80,23 +81,44 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     with store.lock:
         store.conn.execute("BEGIN IMMEDIATE")
         try:
-            store.conn.executescript(sql)
+            # R16-A: executescript() silently COMMITs the pending transaction
+            # before running — statements must be executed individually so
+            # the gate failure ROLLBACK is real. complete_statement() handles
+            # trigger BEGIN...END bodies correctly.
+            buf = ""
+            for line in sql.splitlines(keepends=True):
+                buf += line
+                if sqlite3.complete_statement(buf):
+                    store.conn.execute(buf)
+                    buf = ""
+            if buf.strip():
+                store.conn.execute(buf)
             missing = missing_critical_triggers(store.conn)
             weakened = weakened_critical_objects(store.conn)
             if missing or weakened:  # belt-and-braces after a validated apply
                 raise MigrationIntegrityError(
                     f"migration {name!r} violated the invariant set "
                     f"post-apply: missing={missing} weakened={weakened}")
+            # audit + baseline refresh INSIDE the transaction: apply, WORM
+            # record, and baseline commit or roll back atomically (R16-B).
+            audit.append("migration", actor=principal, payload={
+                "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
+            sig = schema_signature(store.conn)
+            store.kv_set("schema_hash", sig)
             store.conn.commit()
+            return sig
         except Exception:
             try:
                 store.conn.execute("ROLLBACK")
             except Exception:
                 pass
-            audit.append("migration_refused", payload={
-                "name": name,
-                "sql_sha256": hashlib.sha256(sql.encode()).hexdigest(),
-                "reason": "apply_or_gate_failure_rolled_back"})
+            try:
+                audit.append("migration_refused", payload={
+                    "name": name,
+                    "sql_sha256": hashlib.sha256(sql.encode()).hexdigest(),
+                    "reason": "apply_or_gate_failure_rolled_back"})
+            except Exception:
+                pass
             raise
     audit.append("migration", actor=principal, payload={
         "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})

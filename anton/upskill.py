@@ -407,6 +407,7 @@ def approve_pending_promotion(engine, slug: str) -> bool:
     db_path = os.path.join(engine.data_dir, "isolation.db")
     from .db import consume_verified_approval
     secret = getattr(engine, "_decision_secret", None) or None
+    max_age_s = getattr(engine, "_approval_max_age_s", None)
     conn = sqlite3.connect(db_path, timeout=10.0, isolation_level=None)
     try:
         try:
@@ -415,7 +416,8 @@ def approve_pending_promotion(engine, slug: str) -> bool:
             return False  # fail closed on lock contention
         try:
             ok, reason = consume_verified_approval(
-                conn, f"upskill_promote:{slug}", secret=secret)
+                conn, f"upskill_promote:{slug}", secret=secret,
+                max_age_s=max_age_s)
         except sqlite3.OperationalError:
             try:
                 conn.execute("ROLLBACK")
