@@ -67,11 +67,18 @@ def revoke_grant(store, audit, actor, grant_id: int) -> None:
             (_now(), grant_id))
         store.conn.commit()
     # REQ-GRNT-01: revoke triggers server-side refresh-token rotation.
+    # A rotation failure is LOUD: audited + alerted, never silently no-op.
     if store.token_rotator is not None:
         try:
             store.token_rotator(row["connection_id"])
-        except Exception:
-            pass
+        except Exception as e:
+            audit.append("grant_rotation_failed", actor=actor, payload={
+                "grant_id": grant_id,
+                "connection_id": row["connection_id"],
+                "error_class": type(e).__name__})
+            store.add_alert("grant_rotation_failed",
+                            f"connection {row['connection_id']} revoked but "
+                            "provider token rotation failed")
     audit.append("grant_revoked", actor=actor, payload={
         "grant_id": grant_id, "connection_id": row["connection_id"],
         "grantee": row["grantee_id"]})

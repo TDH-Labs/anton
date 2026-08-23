@@ -79,9 +79,11 @@ class TestAudit01ChainIntegrity(unittest.TestCase):
         self._append(10)
         ok, _ = self.audit.verify()
         self.assertTrue(ok)
-        # tamper with one row
+        # out-of-band tampering: drop the append-only trigger (attacker with
+        # raw DB access), rewrite one row — the chain must still detect it
         import sqlite3
         conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("DROP TRIGGER trg_audit_append_only")
         conn.execute("UPDATE audit_chain SET payload_json='{\"evil\":1}' "
                      "WHERE seq=5")
         conn.commit()
@@ -94,6 +96,7 @@ class TestAudit01ChainIntegrity(unittest.TestCase):
         self._append(10)
         import sqlite3
         conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("DROP TRIGGER trg_audit_no_delete")
         conn.execute("DELETE FROM audit_chain WHERE seq > 7")
         conn.commit()
         conn.close()

@@ -15,6 +15,24 @@ class BootstrapReq(BaseModel):
     claim: str
 
 
+class EgressChannelReq(BaseModel):
+    channel_id: str
+    kind: str
+    address: str
+    clearance: str = "INTERNAL"
+    recipient_name: str = ""
+
+
+class EgressOptInReq(BaseModel):
+    channel_id: str
+
+
+class EgressSendReq(BaseModel):
+    channel_id: str
+    tag: str
+    body: str
+
+
 class LoginReq(BaseModel):
     username: str
     password: str
@@ -111,6 +129,60 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
             raise HTTPException(403,
                                 f"role {principal.role!r} lacks {capability}")
         return {"ok": True, "capability": capability, "role": principal.role}
+
+    # -- egress channels (handoff #11 HTTP surface) -------------------------
+    @router.post("/api/authz/egress/channels")
+    def create_egress_channel(request: Request):
+        from pydantic import BaseModel as _BM
+
+        class _Req(_BM):
+            channel_id: str
+            kind: str
+            address: str
+            clearance: str = "INTERNAL"
+            recipient_name: str = ""
+
+        # body parsed by FastAPI below; capability enforced by middleware
+        return {"todo": True}
+
+    # -- egress channels (handoff #11 HTTP surface) -------------------------
+    @router.post("/api/authz/egress/channels")
+    def create_egress_channel(req: EgressChannelReq, request: Request):
+        principal = _principal(request)
+        from .egress import create_channel
+        try:
+            create_channel(store, audit, actor=principal,
+                           channel_id=req.channel_id, kind=req.kind,
+                           address=req.address, clearance=req.clearance,
+                           recipient_name=req.recipient_name)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return {"status": "created", "channel_id": req.channel_id,
+                "opt_in": False}
+
+    @router.post("/api/authz/egress/opt-in")
+    def opt_in_egress_channel(req: EgressOptInReq, request: Request):
+        principal = _principal(request)
+        from .egress import opt_in
+        try:
+            opt_in(store, audit, actor=principal, channel_id=req.channel_id)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        return {"status": "opted_in", "channel_id": req.channel_id}
+
+    @router.post("/api/authz/egress/send")
+    def submit_egress_send(req: EgressSendReq, request: Request):
+        principal = _principal(request)
+        from .egress import EgressBlocked, submit_send
+        try:
+            aid = submit_send(store, audit, actor=principal,
+                              channel_id=req.channel_id, tag=req.tag,
+                              body=req.body)
+        except EgressBlocked as e:
+            raise HTTPException(403, str(e))
+        return {"status": "pending_approval", "approval_id": aid}
 
     # -- minimal machine-token callback (REQ-CRED-03) ---------------------------
     @router.post("/api/exec/result")

@@ -44,6 +44,9 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     # Session revocation reach-through: capability tokens die with their
     # issuing session within one validation pass (REQ-AUTH-02/REQ-CRED-04).
     broker.session_validator = store.session_active
+    # Full socket flow: lease/mint requests present a live session token;
+    # the broker resolves the principal itself (REQ-CRED-02 attestation).
+    broker.principal_validator = store.resolve_session
     # Grant re-check at mint/fetch; Owner/Admin are the privileged tier.
     def _grant_allowed(principal_id: str, connection_id: str) -> bool:
         p = store.principal_by_id(principal_id)

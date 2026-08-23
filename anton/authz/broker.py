@@ -130,6 +130,11 @@ def _peer_uid(conn: socket.socket) -> int | None:
 
 # --------------------------------------------------------------------------
 
+# In-process callers are the broker itself (trusted); socket requests must
+# present a resolvable peer uid.
+_INPROCESS = object()
+
+
 class CredentialBroker:
     def __init__(self, db_path: str, keys_dir: str, socket_path: str,
                  audit=None, allowed_uids: list[int] | None = None,
@@ -143,7 +148,9 @@ class CredentialBroker:
         self.allowed_uids = allowed_uids or [os.getuid()]
         self.session_validator = None   # callable(session_id) -> bool
         self.grant_checker = None       # callable(principal_id, connection_id) -> bool
+        self.principal_validator = None  # callable(session_token) -> principal | None
         self._resolver = None           # SecretRefResolver (lazy default)
+        self._mono_anchor = None        # (monotonic_at_start, wall_at_start)
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         os.makedirs(keys_dir, exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -199,9 +206,27 @@ class CredentialBroker:
 
     # -- time authority (REQ-CRED-06) --------------------------------------
     def epoch_now(self) -> float:
-        """Seconds since the signed issuance epoch. All TTL validation is
-        computed here — never against a worker's wall clock."""
-        return time.time() - float(self.kv_get("epoch_base_wall"))
+        """Seconds since the signed issuance epoch. Wall-clock based, but a
+        BACKWARD jump on the broker host is detected against the last
+        observed wall time and replaced by the monotonic projection —
+        windows can never be extended by clock regression. Alarms on jump."""
+        wall = time.time()
+        mono = time.monotonic()
+        if self._mono_anchor is None:
+            last = self.kv_get("last_wall")
+            self._mono_anchor = (mono, max(wall, float(last) if last else wall))
+        anchor_mono, anchor_wall = self._mono_anchor
+        prev_wall = float(self.kv_get("last_wall") or wall)
+        if wall < prev_wall - self.skew_threshold_s:
+            if self.audit is not None:
+                self.audit.append("clock_skew_alarm", payload={
+                    "kind": "broker_host_backward_jump",
+                    "drift_s": round(prev_wall - wall, 1)})
+            projected = anchor_wall + (mono - anchor_mono)
+        else:
+            projected = max(wall, prev_wall)
+            self.kv_set("last_wall", repr(wall))
+        return projected - float(self.kv_get("epoch_base_wall"))
 
     def check_client_clock(self, reported_time: float | None) -> None:
         if reported_time is None:
@@ -463,14 +488,16 @@ class CredentialBroker:
 
     def fetch(self, token: str, secret_id: str, purpose: str,
               reported_time: float | None = None,
-              peer_uid: int | None = None) -> str:
+              peer_uid=_INPROCESS) -> str:
         """Validate attestation chain, then release one secret. Exactly one
         audit row per successful fetch (REQ-CRED-02)."""
-        if peer_uid is not None and peer_uid not in self.allowed_uids:
-            if self.audit is not None:
-                self.audit.append("authorization_denied",
-                                  payload={"reason": "peer_uid_rejected"})
-            raise BrokerDenied("unattested peer")
+        if peer_uid is not _INPROCESS:
+            # Fail closed: an unresolvable peer (None) is unauthenticated.
+            if peer_uid is None or peer_uid not in self.allowed_uids:
+                if self.audit is not None:
+                    self.audit.append("authorization_denied",
+                                      payload={"reason": "peer_uid_rejected"})
+                raise BrokerDenied("unattested peer")
         self.check_client_clock(reported_time)
         payload = self._parse_token(token)
         if payload.get("typ") != "cap":
@@ -594,7 +621,56 @@ class CredentialBroker:
                 return {"ok": True, "value": value}
             except BrokerDenied as e:
                 return {"ok": False, "error": type(e).__name__, "detail": str(e)}
+        if op == "lease":
+            # Full socket flow (REQ-CRED-02): the caller presents a live
+            # session token; the broker binds the lease to that principal
+            # and session. No master-key material leaves the broker.
+            try:
+                principal = self._require_principal(req.get("token", ""))
+                lease = self.issue_execution_lease(
+                    principal, execution_id=req.get("execution_id", ""),
+                    connection_ids=list(req.get("connection_ids") or []),
+                    ttl_s=int(req.get("ttl_s", 300)))
+                return {"ok": True, "lease": lease.token}
+            except BrokerDenied as e:
+                return {"ok": False, "error": type(e).__name__, "detail": str(e)}
+        if op == "mint":
+            try:
+                lease = self._parse_lease(req.get("lease", ""))
+                self._validate_lease(lease)
+                token = self.mint_capability_token(lease,
+                                                   list(req.get("secret_ids") or []))
+                return {"ok": True, "token": token}
+            except BrokerDenied as e:
+                return {"ok": False, "error": type(e).__name__, "detail": str(e)}
         return {"ok": False, "error": "unknown_op"}
+
+    def _require_principal(self, session_token: str):
+        if self.principal_validator is None:
+            raise BrokerDenied("no principal validation configured")
+        principal = self.principal_validator(session_token)
+        if principal is None:
+            raise BrokerDenied("invalid principal token")
+        return principal
+
+    def _parse_lease(self, lease_token: str) -> ExecutionLease:
+        try:
+            body_b64, sig = lease_token.rsplit(".", 1)
+            payload = json.loads(b64d(body_b64))
+        except Exception as e:
+            raise LeaseInvalid("malformed lease") from e
+        basis = json.dumps(payload, sort_keys=True).encode()
+        expect = hmac_mod.new(self._hmac_key(), basis,
+                              hashlib.sha256).hexdigest()
+        if not hmac_mod.compare_digest(sig, expect):
+            raise LeaseInvalid("invalid lease signature")
+        if payload.get("typ") != "lease":
+            raise LeaseInvalid("not a lease")
+        return ExecutionLease(
+            lease_id=payload["lid"], execution_id=payload["exec"],
+            principal_id=payload["pid"], session_id=payload.get("sid", ""),
+            connection_ids=list(payload.get("conns") or []),
+            expires=payload["exp"])
 
     def serve_forever(self) -> None:
         """Blocking variant for `python -m anton.authz.broker serve`."""
@@ -661,6 +737,18 @@ class BrokerClient:
                           "reported_time": self.time_source()})
         return {"revoked": resp.get("revoked", False),
                 "reason": resp.get("reason", "")}
+
+    def issue_lease(self, session_token: str, execution_id: str,
+                    connection_ids: list[str], ttl_s: int = 300) -> str:
+        resp = self.call({"op": "lease", "token": session_token,
+                          "execution_id": execution_id,
+                          "connection_ids": connection_ids, "ttl_s": ttl_s})
+        return resp["lease"]
+
+    def mint(self, lease_token: str, secret_ids: list[str]) -> str:
+        resp = self.call({"op": "mint", "lease": lease_token,
+                          "secret_ids": secret_ids})
+        return resp["token"]
 
 
 def main() -> None:

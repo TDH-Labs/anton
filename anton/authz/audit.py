@@ -56,8 +56,11 @@ class AuditLog:
                 ).fetchone()
                 seq = (row["seq"] + 1) if row else 1
                 prev_hash = row["hash"] if row else GENESIS
-                digest = self._entry_hash(prev_hash, seq, ts, event_type,
-                                          actor_str, payload_json)
+                digest = self._entry_hash(
+                    prev_hash, seq, ts, event_type, actor_str, payload_json,
+                    sponsor_user=str(sponsor), workspace=str(workspace),
+                    agent_instance=str(agent_instance),
+                    tool_credential=str(tool_credential))
                 self.store.conn.execute(
                     "INSERT INTO audit_chain(seq, ts, event_type, actor,"
                     " sponsor_user, workspace, agent_instance, tool_credential,"
@@ -70,8 +73,14 @@ class AuditLog:
         return seq
 
     @staticmethod
-    def _entry_hash(prev_hash, seq, ts, event_type, actor, payload_json) -> str:
-        basis = f"{prev_hash}|{seq}|{ts}|{event_type}|{actor}|{payload_json}"
+    def _entry_hash(prev_hash, seq, ts, event_type, actor, payload_json,
+                    sponsor_user="", workspace="default",
+                    agent_instance="", tool_credential="") -> str:
+        """Hash covers the full row INCLUDING the four-identity columns —
+        rewriting sponsor attribution is tamper-evident (REQ-AUDIT-01)."""
+        basis = "|".join(str(x) for x in (
+            prev_hash, seq, ts, event_type, actor, payload_json,
+            sponsor_user, workspace, agent_instance, tool_credential))
         return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
     def head(self) -> int:
@@ -87,7 +96,10 @@ class AuditLog:
                 "SELECT * FROM audit_chain ORDER BY seq ASC"):
             expect = self._entry_hash(
                 prev, row["seq"], row["ts"], row["event_type"], row["actor"],
-                row["payload_json"])
+                row["payload_json"], sponsor_user=row["sponsor_user"],
+                workspace=row["workspace"],
+                agent_instance=row["agent_instance"],
+                tool_credential=row["tool_credential"])
             if row["prev_hash"] != prev or row["hash"] != expect:
                 raise ChainTampered(f"chain verification failed at seq={row['seq']}")
             prev = row["hash"]

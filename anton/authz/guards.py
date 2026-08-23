@@ -30,26 +30,52 @@ MACHINE_TOKEN_ALLOWLIST = {
 }
 
 # Declarative route→capability map. Exact matches take precedence over
-# prefixes. Unmapped mutating routes fail closed at settings.write.
+# prefixes. "" = any authenticated identity. MUTATING methods with no
+# mapping fail closed at settings.write (ED-2 default deny).
 ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/approvals", "approvals.submit"),
     ("POST", "/api/approvals/", "approvals.decide"),
     ("POST", "/api/wizard/", "settings.write"),
     ("POST", "/api/mode/", "settings.write"),
+    ("POST", "/api/setup", "settings.write"),
+    ("PUT", "/api/systems/", "settings.write"),
+    ("PUT", "/api/automations/", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
     ("POST", "/api/chat", "jobs.run"),
     ("GET", "/api/vault/note", "vault.read"),
     ("GET", "/api/authz/users", "users.manage"),
+    ("DELETE", "/api/auth/sessions/", ""),
+    ("POST", "/api/auth/logout", ""),
+    ("POST", "/api/exec/result", ""),
+    # REQ-EGRESS-06: channel lifecycle is Approver-gated; sends are
+    # submissions into the approvals spine.
+    ("POST", "/api/authz/egress/channels", "egress.channels.manage"),
+    ("POST", "/api/authz/egress/opt-in", "egress.channels.manage"),
+    ("POST", "/api/authz/egress/send", "approvals.submit"),
 ]
 
+DEFAULT_MUTATING_CAPABILITY = "settings.write"
 
-def required_capability(method: str, path: str) -> str | None:
+
+def _lookup(method: str, path: str) -> str | None:
+    """Explicit map entry only; None = unmapped."""
     for m, pattern, cap in ROUTE_CAPABILITIES:
         if method != m:
             continue
         if path == pattern or (
                 pattern.endswith("/") and path.startswith(pattern)):
             return cap
+    return None
+
+
+def required_capability(method: str, path: str) -> str | None:
+    cap = _lookup(method, path)
+    if cap is not None:
+        return cap
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        # Fail closed: unmapped mutating routes demand a privileged
+        # capability rather than passing open (CI-T-DATA-01 / ED-2).
+        return DEFAULT_MUTATING_CAPABILITY
     return None
 
 
@@ -86,7 +112,7 @@ class AuthzMiddleware(BaseHTTPMiddleware):
             if principal is None:
                 return self._deny(401, "missing or invalid bearer token")
             capability = required_capability(method, path)
-            if capability is not None and not rbac.can(principal.role, capability):
+            if capability and not rbac.can(principal.role, capability):
                 self.audit.append("authorization_denied", actor=principal,
                                   payload={"capability": capability,
                                            "method": method, "path": path})
@@ -118,6 +144,10 @@ class AuthzMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 
 def audit_routes_behavioral(app) -> list[str]:
+    """Structural + coverage audit. Even when the middleware is active
+    (runtime fail-closed), every MUTATING route must carry an explicit
+    capability mapping — anything relying on the default-deny fallback is
+    flagged so the map stays deliberate, not accidental."""
     findings: list[str] = []
     guarded = getattr(getattr(app, "state", None), "authz_middleware_active",
                       False)
@@ -131,20 +161,28 @@ def _walk(router_like, findings: list[str], prefix: str, guarded: bool) -> None:
         cls = type(route).__name__
         path = getattr(route, "path", "")
         full = f"{prefix}{path}"
+        methods = set(getattr(route, "methods", None) or ())
         if cls == "Mount":
             sub_app = getattr(route, "app", None)
             if hasattr(sub_app, "routes"):
                 _walk(sub_app, findings, prefix=full, guarded=guarded)
-            else:
-                # Static mounts etc. — covered only by parent middleware.
-                if not guarded and full not in EXEMPT_PATHS:
-                    findings.append(f"unprotected mount: {full}")
+            elif not guarded and full not in EXEMPT_PATHS:
+                findings.append(f"unprotected mount: {full}")
             continue
         if cls == "WebSocketRoute":
             if not guarded and full not in EXEMPT_PATHS:
                 findings.append(f"unprotected websocket: {full}")
             continue
         if cls in ("APIRoute", "StarletteRoute", "Route"):
+            if full in EXEMPT_PATHS:
+                continue
+            for m in methods - {"HEAD", "OPTIONS"}:
+                explicit = _lookup(m, full)
+                if m in ("POST", "PUT", "PATCH", \
+                         "DELETE") and explicit is None:
+                    findings.append(
+                        f"mutating route relies on default-deny fallback: "
+                        f"{m} {full}")
             if not guarded and full not in EXEMPT_PATHS:
                 findings.append(f"unguarded route: {full}")
 
@@ -160,7 +198,7 @@ def lint_repo_file(path: str) -> list[str]:
     violations: list[str] = []
 
     class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef):  # noqa: N802
+        def _check(self, node):
             performs_io = False
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Call) and \
@@ -171,6 +209,12 @@ def lint_repo_file(path: str) -> list[str]:
             if performs_io and "principal" not in [a.arg for a in node.args.args]:
                 violations.append(node.name)
             self.generic_visit(node)
+
+        def visit_FunctionDef(self, node):  # noqa: N802
+            self._check(node)
+
+        def visit_AsyncFunctionDef(self, node):  # noqa: N802
+            self._check(node)
 
     visit = Visitor()
     visit.visit(tree)

@@ -64,6 +64,8 @@ def approve(store, audit, approver, approval_id: int,
         raise ApprovalRejected("approval already decided")
     try:
         with store.lock:
+            # ux_decision_once makes the decision one-per-approval at the
+            # schema level; two concurrent approvers race on the INSERT.
             store.conn.execute(
                 "INSERT INTO approval_decisions(approval_id,"
                 " approver_principal, approver_human, decision, ts)"
@@ -73,7 +75,8 @@ def approve(store, audit, approver, approval_id: int,
             store.conn.commit()
     except sqlite3.IntegrityError as e:
         audit.append("authorization_denied", actor=approver, payload={
-            "reason": "self_approval_rejected", "approval_id": approval_id})
+            "reason": "decision_race_or_self_approval",
+            "approval_id": approval_id})
         raise ApprovalRejected(str(e)) from e
     audit.append("approval_decided", actor=approver, payload={
         "approval_id": approval_id, "decision": decision})

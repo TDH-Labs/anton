@@ -129,12 +129,16 @@ CREATE TABLE IF NOT EXISTS audit_chain (
 """
 
 TRIGGERS = """
--- REQ-GRNT-02: no self-grants, enforced in schema, not API layer.
+-- REQ-GRNT-02: no self-grants, enforced in schema, not API layer. The
+-- check collapses service identities to their owning human, so U granting
+-- U's own service account is still a self-grant.
 CREATE TRIGGER IF NOT EXISTS trg_grant_no_self
 BEFORE INSERT ON connection_grants
-FOR EACH ROW WHEN NEW.granter_id = NEW.grantee_id
+FOR EACH ROW
+WHEN (SELECT human_id FROM users WHERE id = NEW.granter_id) =
+     (SELECT human_id FROM users WHERE id = NEW.grantee_id)
 BEGIN
-    SELECT RAISE(ABORT, 'self-grant forbidden');
+    SELECT RAISE(ABORT, 'self-grant forbidden (human match)');
 END;
 
 CREATE TRIGGER IF NOT EXISTS trg_grant_no_cycle
@@ -160,6 +164,25 @@ FOR EACH ROW
 WHEN NEW.granter_id != OLD.granter_id OR NEW.grantee_id != OLD.grantee_id
 BEGIN
     SELECT RAISE(ABORT, 'grant parties are immutable');
+END;
+
+-- Reactivating a REVOKED grant re-runs the escalation-chain check —
+-- resurrection via direct SQL cannot bypass it.
+CREATE TRIGGER IF NOT EXISTS trg_grant_no_cycle_reactivate
+BEFORE UPDATE ON connection_grants
+FOR EACH ROW
+WHEN OLD.active = 0 AND NEW.active = 1 AND EXISTS (
+    WITH RECURSIVE down(id) AS (
+        SELECT NEW.grantee_id
+        UNION
+        SELECT g.grantee_id FROM connection_grants g
+            JOIN down ON g.granter_id = down.id
+        WHERE g.active = 1
+    )
+    SELECT 1 FROM down WHERE down.id = NEW.granter_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'reactivation would create an escalation chain');
 END;
 
 -- REQ-GRNT-03: sole-admin self-elevation requires an active break-glass
@@ -201,6 +224,22 @@ WHEN NEW.approver_human = (
 BEGIN
     SELECT RAISE(ABORT, 'approver may not equal initiator (human match)');
 END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_decision_once
+ON approval_decisions(approval_id);
+
+-- REQ-AUDIT-01: the audit chain is append-only at the schema level.
+CREATE TRIGGER IF NOT EXISTS trg_audit_append_only
+BEFORE UPDATE ON audit_chain
+BEGIN
+    SELECT RAISE(ABORT, 'audit chain is append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete
+BEFORE DELETE ON audit_chain
+BEGIN
+    SELECT RAISE(ABORT, 'audit chain is append-only');
+END;
 """
 
 # The trigger set whose presence is asserted after every migration and at
@@ -211,6 +250,8 @@ CRITICAL_TRIGGERS = (
     "trg_role_no_self_modify",
     "trg_approval_append_only",
     "trg_approval_no_self_approve",
+    "trg_audit_append_only",
+    "trg_audit_no_delete",
 )
 
 
