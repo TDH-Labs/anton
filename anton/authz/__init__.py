@@ -43,8 +43,11 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     # R13-B1: surface the pre-heal drift refusal BEFORE anything heals the DB.
     if store.preheal_refusal:
         audit = AuditLog(store)
-        audit.append("schema_mismatch", payload={
-            "reason": "preheal_drift", "detail": store.preheal_refusal})
+        try:
+            audit.append("schema_mismatch", payload={
+                "reason": "preheal_drift", "detail": store.preheal_refusal})
+        except Exception:
+            pass  # the drift may include the audit chain itself (R14-B2)
         raise RuntimeError("refusing multi-user start: "
                            + store.preheal_refusal)
     audit = AuditLog(store)

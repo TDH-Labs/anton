@@ -23,20 +23,37 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
     hash so later escalation to multi-user is still checked."""
     sig = schema_signature(store.conn)
     baseline = store.kv_get("schema_hash")
-    if mode != "first_boot":
-        if baseline is None:
+    if mode == "first_boot":
+        # R14-B1: a genuinely fresh DB is canonical by construction
+        # (ensure_schema ran in open_store before this check) — so even the
+        # first_boot path must assert the canonical object set before
+        # recording its baseline. A wiped-history tamper that weakened a
+        # trigger cannot be blessed as 'first boot'.
+        missing = missing_critical_triggers(store.conn)
+        weakened = weakened_critical_objects(store.conn)
+        if missing or weakened:
             audit.append("schema_mismatch", payload={
-                "expected": None, "actual": sig, "mode": mode,
-                "reason": "baseline_missing"})
+                "mode": mode, "missing": missing, "weakened": weakened})
             raise SchemaHashMismatch(
-                "authZ schema-hash baseline is MISSING — the DB was tampered "
-                "or restored improperly. Refusing to start into multi-user.")
-        if baseline != sig:
-            audit.append("schema_mismatch", payload={
-                "expected": baseline, "actual": sig, "mode": mode})
-            raise SchemaHashMismatch(
-                "authZ schema-hash mismatch — triggers/constraints were "
-                "altered out-of-band. Refusing to start.")
+                f"'first boot' refused: DB is not pristine canonical "
+                f"(missing={missing} weakened={weakened})")
+    if mode == "first_boot":
+        store.kv_set("schema_hash", sig)
+        audit.append("boot", payload={"mode": mode, "schema_hash": sig})
+        return sig
+    if baseline is None:
+        audit.append("schema_mismatch", payload={
+            "expected": None, "actual": sig, "mode": mode,
+            "reason": "baseline_missing"})
+        raise SchemaHashMismatch(
+            "authZ schema-hash baseline is MISSING — the DB was tampered "
+            "or restored improperly. Refusing to start into multi-user.")
+    if baseline != sig:
+        audit.append("schema_mismatch", payload={
+            "expected": baseline, "actual": sig, "mode": mode})
+        raise SchemaHashMismatch(
+            "authZ schema-hash mismatch — triggers/constraints were "
+            "altered out-of-band. Refusing to start.")
     store.kv_set("schema_hash", sig)
     audit.append("boot", payload={"mode": mode, "schema_hash": sig})
     return sig

@@ -548,3 +548,19 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
   be silently normalized (heal-before-check; first_boot re-baseline).
   Fundamental self-referential-baseline limit (attacker who rewrites kv to
   match is out of scope); these two vectors need NO kv rewrite.
+
+## Review (adversarial B, round 14 — schema invariants / TOCTOU / migrations)
+
+- Correct: R13-B1 pre-heal gate is genuine — raw `schema_signature` vs baseline
+  compared in `AuthzStore.__init__` before `ensure_schema`; refused DB is never
+  healed inside `open_store` (pinned test verified). R13-B2 discriminator works
+  for the pinned scenario (wipe users+baseline, keep audit → refused).
+  `_upgrade_approval_decision_columns` correctly requires baseline==old_sig and
+  re-baselines (SQLite rewrites sqlite_master.sql on ADD COLUMN — confirmed).
+  Migration validate-first on a scratch clone + post-apply name+body gate is sound.
+- Fixed: nothing (probes only; read-only review).
+- Note: first_boot still blesses a non-canonical object set — see MAJOR finding
+  (audit-wipe escapes R13-B2; cheap fix: canonical weakened/missing gate in
+  first_boot mode). Refusal-path audit append can raise unhandled
+  OperationalError when audit_chain itself was dropped (fail-closed, ugly).
+  run_migration is unwired dead code; evidence_hmac ALTER is unaudited.

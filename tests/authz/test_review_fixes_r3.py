@@ -1361,3 +1361,59 @@ class R13FirstBootLaunderRefused(unittest.TestCase):
         with self.assertRaises(SchemaHashMismatch):
             boot_check(store, audit, mode="multi_user")
         store.close()
+
+
+# =========================================================================
+# Round 14 (verification of round-13 fixes)
+# =========================================================================
+
+class R14FirstBootBlessesCanonicalOnly(unittest.TestCase):
+    """MAJOR R14-B1: a weakened-trigger + wiped-history tamper cannot be
+    blessed as 'first boot' — the canonical gate runs on that path too."""
+
+    def test_weakened_trigger_first_boot_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        # realistic wipe: DROP TABLE audit_chain (which also drops the
+        # trg_audit_* triggers — both are canonical objects)
+        conn.execute("DROP TABLE audit_chain")
+        conn.execute("DROP TRIGGER trg_grant_no_self")
+        conn.execute("CREATE TRIGGER trg_grant_no_self BEFORE INSERT ON "
+                     "connection_grants BEGIN SELECT RAISE(IGNORE); END;")
+        conn.execute("DELETE FROM kv WHERE key='schema_hash'")
+        conn.execute("DELETE FROM users")
+        conn.commit()
+        conn.close()
+        from anton.authz.store import open_store
+        from anton.authz.boot import boot_check, SchemaHashMismatch
+        store = open_store(self.env.authz_db)
+        audit = __import__("anton.authz.audit",
+                           fromlist=["AuditLog"]).AuditLog(store)
+        with self.assertRaises(SchemaHashMismatch):
+            boot_check(store, audit, mode="first_boot")
+        store.close()
+
+
+class R14PrehealRefusalSurvivesDroppedAuditChain(unittest.TestCase):
+    """MINOR R14-B2: the preheal refusal surfaces cleanly even when the
+    drift includes the audit_chain table itself."""
+
+    def test_dropped_audit_chain_still_refuses(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        conn.execute("DROP TABLE audit_chain")
+        conn.execute("DROP TRIGGER trg_grant_no_self")
+        conn.commit()
+        conn.close()
+        from anton.authz.store import open_store
+        store = open_store(self.env.authz_db)
+        self.assertIsNotNone(store.preheal_refusal)  # drift detected
+        store.close()
+        # wire_authz raises the clean RuntimeError, not a raw OperationalError
+        from anton.dashboard import create_app
+        with self.assertRaises(RuntimeError):
+            create_app(self.env.engine, self.env.data_dir, self.env.cfg)
