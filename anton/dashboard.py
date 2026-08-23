@@ -506,16 +506,17 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 return {"id": aid, "status": "pending", "decision": "defer"}
             new_status = "approved"
             new_kind = "standing" if req.decision == "always" else None
+            hmac = _decision_hmac(_hmac_secret, aid)
             if new_kind:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, kind=?, approver_human=?, "
-                    "approver_principal=? WHERE id=? AND status='pending'",
-                    (new_status, new_kind, appr_h, appr_p, aid))
+                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
+                    (new_status, new_kind, appr_h, appr_p, hmac, aid))
             else:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, approver_human=?, "
-                    "approver_principal=? WHERE id=? AND status='pending'",
-                    (new_status, appr_h, appr_p, aid))
+                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, aid))
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(404, "no pending approval with that id")
@@ -561,13 +562,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         else:
             appr_h, appr_p = "legacy:operators", "api:decide"
         new_status = "approved" if req.decision == "approve" else "denied"
+        hmac = _decision_hmac(_hmac_secret, aid)
         try:
             with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
                                  timeout=10.0) as conn:
                 cur = conn.execute(
                     "UPDATE approvals SET status=?, approver_human=?, "
-                    "approver_principal=? WHERE id=? AND status='pending'",
-                    (new_status, appr_h, appr_p, aid))
+                    "approver_principal=?, hmac=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, hmac, aid))
                 conn.commit()
                 if cur.rowcount == 0:
                     raise HTTPException(404, "no pending approval with that id")
@@ -930,6 +932,22 @@ def _day_ago_iso() -> str:
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_hmac_secret = ""
+
+
+def _set_hmac_secret(secret: str) -> None:
+    global _hmac_secret
+    _hmac_secret = secret
+
+
+def _decision_hmac(secret: str, aid: int) -> str:
+    """The scheduler verifies approved rows against this before consuming;
+    without a configured secret the field stays NULL and the boundary is
+    documented (legacy single-process mode). R8-1 authenticity marker."""
+    import hashlib
+    return hashlib.sha256(f"decision:{secret}:{aid}".encode()).hexdigest()
 
 
 def _age_str(ts: Optional[str]) -> str:

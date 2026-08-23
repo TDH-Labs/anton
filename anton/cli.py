@@ -109,6 +109,10 @@ def _build(config: dict, data_dir: str, executor_name: str):
         executor = EXECUTORS.get(executor_name, FakeExecutor)()
     ledger = Ledger(os.path.join(data_dir, "runs.jsonl"))
     engine = JobEngine(jobs, ledger, executor, config, data_dir=data_dir)
+    # R8-1: the scheduler only consumes approved rows whose decision hmac
+    # matches the shared decision secret (set alongside the dashboard's).
+    engine._decision_secret = (config.get("authz") or {}).get(
+        "decision_secret") or ""
     return jobs, ledger, engine
 
 

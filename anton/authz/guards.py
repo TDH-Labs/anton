@@ -54,6 +54,8 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/authz/egress/channels", "egress.channels.manage"),
     ("POST", "/api/authz/egress/opt-in", "egress.channels.manage"),
     ("POST", "/api/authz/egress/send", "approvals.submit"),
+    # adoption of pre-authz approval rows is a decision-side operation
+    ("POST", "/api/authz/approvals/adopt", "approvals.decide"),
 ]
 
 DEFAULT_MUTATING_CAPABILITY = "settings.write"
@@ -195,6 +197,14 @@ def _walk(router_like, findings: list[str], prefix: str, guarded: bool) -> None:
                 # surface them so the coverage claim stays explicit.
                 if full not in EXEMPT_PATHS:
                     findings.append(f"mount without own auth dependency: {full}")
+            continue
+        if cls == "_IncludedRouter":
+            # FastAPI records include_router() as a lazy wrapper; recurse
+            # into the real router so authz routes are enumerated (R8-2).
+            sub = getattr(route, "original_router", None) or getattr(
+                route, "router", None)
+            if sub is not None:
+                _walk(sub, findings, prefix=prefix, guarded=guarded)
             continue
         if cls in ("WebSocketRoute", "APIWebSocketRoute"):
             # Phase-1 policy: no WebSocket routes; runtime denies the scope

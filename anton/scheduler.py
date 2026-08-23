@@ -194,20 +194,55 @@ class JobEngine:
         # R6-1/R7-1: the money gate only means something while its triggers
         # exist with CANONICAL BODIES — name presence is not enough. A
         # same-name weak-body swap must fail the decision, not just the next
-        # boot.
-        with sqlite3.connect(p, timeout=10.0) as conn:
+        # boot. R8-1: an approved sign-off without a verifiable decision
+        # hmac is refused whenever a decision secret is configured (authz
+        # mode). In legacy mode (no secret) NULL hmac rows pass — documented
+        # boundary: the DB layer cannot distinguish writer-fabricated from
+        # real rows without shared-key evidence.
+        import hashlib as _hashlib
+        secret = getattr(self, "_decision_secret", None)
+        # Single write transaction: gate check + select + consume are atomic
+        # so no writer can interleave a trigger swap between validation and
+        # consumption (R8-3).
+        conn = sqlite3.connect(p, timeout=10.0, isolation_level=None)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             drift = isolation_approvals_integrity(conn)
             if drift:
+                conn.execute("ROLLBACK")
                 return False, "gate_triggers_drifted"
+            if secret:
+                row = conn.execute(
+                    "SELECT id, hmac FROM approvals WHERE action=? AND "
+                    "status='approved' ORDER BY id DESC LIMIT 1",
+                    (job_id,)).fetchone()
+                if row is None:
+                    conn.execute("ROLLBACK")
+                    return False, "no_approval"
+                if not row[1] or row[1] != _hashlib.sha256(
+                        f"decision:{secret}:{row[0]}".encode()).hexdigest():
+                    conn.execute("ROLLBACK")
+                    return False, "unverified_hmac"
+                aid = row[0]
+                cur = conn.execute(
+                    "UPDATE approvals SET status='consumed' WHERE id=? "
+                    "AND status='approved'", (aid,))
+                conn.commit()
+                return (cur.rowcount > 0), "nonce_consumed"
             row = conn.execute(
-                "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
-                (job_id,)).fetchone()
+                "SELECT id FROM approvals WHERE action=? AND status='approved' "
+                "ORDER BY id ASC LIMIT 1", (job_id,)).fetchone()
             if not row:
+                conn.execute("ROLLBACK")
                 return False, "no_approval"
             aid = row[0]
-            cur = conn.execute("UPDATE approvals SET status='consumed' WHERE id=? AND status='approved'", (aid,))
+            cur = conn.execute(
+                "UPDATE approvals SET status='consumed' WHERE id=? "
+                "AND status='approved'", (aid,))
             conn.commit()
             return (cur.rowcount > 0), "nonce_consumed"
+        finally:
+            conn.close()
 
     def by_id(self, job_id: str) -> Optional[Job]:
         return next((j for j in self.jobs if j.id == job_id), None)

@@ -403,7 +403,8 @@ def approve_pending_promotion(engine, slug: str) -> bool:
     db_path = os.path.join(engine.data_dir, "isolation.db")
     with sqlite3.connect(db_path, timeout=10.0) as conn:
         row = conn.execute(
-            "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
+            "SELECT id FROM approvals WHERE action=? AND status='approved' "
+            "ORDER BY id DESC LIMIT 1",
             (f"upskill_promote:{slug}",)).fetchone()
         if not row:
             return False

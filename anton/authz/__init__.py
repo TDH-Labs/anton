@@ -27,6 +27,8 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
 
     azcfg = (config.get("authz") or {})
     mode = azcfg.get("mode", "multi_user")
+    from ..dashboard import _set_hmac_secret
+    _set_hmac_secret(azcfg.get("decision_secret") or "")
     azdir = os.path.join(data_dir, "authz")
     os.makedirs(azdir, exist_ok=True)
 

@@ -68,13 +68,18 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
 -- DB including ones created by earlier rounds that shipped weaker triggers
 -- under the trg_approvals_no_self_approve name (R5-2).
 
--- Pending-only INSERT: decided rows can never be created directly.
+-- Pending-only INSERT: decided rows can never be created directly, and
+-- the approver identity can NEVER be preset at creation — a sign-off is
+-- only lawful when written by the guarded decision UPDATE (R8-1). hmac is
+-- likewise reserved for the decision path.
 CREATE TRIGGER IF NOT EXISTS trg_approvals_pending_only_insert
 BEFORE INSERT ON approvals
 FOR EACH ROW
 WHEN NEW.status IN ('approved', 'denied')
+  OR NEW.approver_human IS NOT NULL
+  OR NEW.approver_principal IS NOT NULL
 BEGIN
-    SELECT RAISE(ABORT, 'approvals must be created pending');
+    SELECT RAISE(ABORT, 'approvals must be created pending with no approver');
 END;
 
 -- Decided transitions require a distinct human approver; initiator fields
@@ -164,9 +169,10 @@ def _converge_approvals_triggers(conn: sqlite3.Connection) -> None:
         scratch.close()
     for (name, sql) in conn.execute(
             "SELECT name, sql FROM sqlite_master "
-            "WHERE name IS NOT NULL AND name LIKE 'trg_approvals_%'"):
+            "WHERE type='trigger' AND name IS NOT NULL AND name LIKE "
+            "'trg_approvals_%'"):
         if canon.get(name) != (sql or ""):
-            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+            conn.execute(f"DROP TRIGGER IF EXISTS \"{name.replace(chr(34), chr(34)+chr(34))}\"")
     conn.commit()
 
 
@@ -235,15 +241,16 @@ def isolation_approvals_integrity(conn: sqlite3.Connection) -> list[str]:
         scratch.close()
     live = {r[0]: (r[1] or "") for r in conn.execute(
         "SELECT name, sql FROM sqlite_master "
-        "WHERE name IS NOT NULL")}
+        "WHERE type='trigger' AND name IS NOT NULL")}
     out = []
     for name in CRITICAL_ISOLATION_TRIGGERS:
         if name not in live:
             out.append(f"{name}:missing")
         elif live[name] != canon.get(name):
             out.append(f"{name}:weakened")
-    # Any approvals trigger beyond the canonical set is drift — including a
-    # superseded same-name body that survived IF NOT EXISTS (R6-1).
+    # Any approvals TRIGGER beyond the canonical set is drift — including a
+    # superseded same-name body that survived IF NOT EXISTS (R6-1). Tables/views
+    # merely prefixed trg_approvals_ are not trigger drift (R8-4).
     for name in live:
         if name.startswith("trg_approvals_") and \
                 name not in CRITICAL_ISOLATION_TRIGGERS:

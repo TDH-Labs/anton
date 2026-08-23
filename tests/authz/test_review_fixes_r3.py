@@ -776,3 +776,106 @@ class R7SonOfAntonRequiresHealthyGate(unittest.TestCase):
         ok, reason = engine._is_approved("e2e-canary")
         self.assertFalse(ok)
         self.assertEqual(reason, "gate_triggers_drifted")
+
+
+# =========================================================================
+# Round 8 (verification of round-7 fixes)
+# =========================================================================
+
+class R8PresetApproverForgeClosed(unittest.TestCase):
+    """MAJOR R8-1: approver identity must be NULL at INSERT; the two-step
+    staged forge is then closed, and with a decision secret the scheduler
+    refuses unverified sign-offs."""
+
+    def test_preset_approver_at_insert_rejected(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO approvals(nonce, action, status, ts,"
+                    " initiator_human, initiator_principal, approver_human,"
+                    " approver_principal) VALUES('pf1','job','pending','now',"
+                    "'bob','bob','alice','alice')")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_scheduler_refuses_unverified_hmac_when_secret_configured(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                     " initiator_human, initiator_principal)"
+                     " VALUES('pf2','job','pending','now','bob','bob')")
+        # forged approve: no hmac (raw writer)
+        conn.execute("UPDATE approvals SET status='approved',"
+                     " approver_human='alice', approver_principal='alice'"
+                     " WHERE nonce='pf2'")
+        conn.commit()
+        conn.close()
+        # engine with decision secret configured must refuse
+        import os as _os
+        d = self.env.dir
+        from anton.jobs import load_jobs
+        from anton.ledger import Ledger
+        from anton.executor import FakeExecutor
+        from anton.config import load_config
+        from anton.scheduler import JobEngine
+        cfg = load_config()
+        jobs_path = _os.path.join(d, "jobs.yaml")
+        engine = JobEngine(load_jobs(jobs_path),
+                           Ledger(_os.path.join(d, "runs.jsonl")),
+                           FakeExecutor(), cfg,
+                           data_dir=_os.path.join(d, "data"))
+        engine._decision_secret = "test-secret"
+        ok, reason = engine._is_approved("job")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "unverified_hmac")
+
+
+class R8AuditorSeesAuthzRouter(unittest.TestCase):
+    """MAJOR R8-2: the CI route auditor must enumerate authz router routes,
+    and the adopt endpoint must be explicitly Approver-gated."""
+
+    def test_auditor_no_longer_blind_to_authz_routes(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        from anton.authz.guards import audit_routes_behavioral, _lookup
+        # the authz router routes are enumerated; adopt is explicitly gated
+        self.assertEqual(
+            _lookup("POST", "/api/authz/approvals/adopt"),
+            "approvals.decide")
+        self.assertEqual(
+            _lookup("POST", "/api/authz/egress/channels"),
+            "egress.channels.manage")
+
+    def test_approver_can_adopt(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        owner = store.get_user_by_username("owner")
+        appr = store.create_user("appr_adopt", "Role-Pass-1!")
+        store.assign_role(appr["id"], "Approver", actor_id=owner["id"])
+        import sqlite3
+        import os
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("INSERT INTO approvals(nonce, action, status, ts)"
+                     " VALUES('adopt1','job','pending','now')")
+        conn.commit()
+        conn.close()
+        dev = store.create_device(appr["id"], "t")
+        tok = store.create_session(appr["id"], dev)
+        r = self.env.client.post(
+            "/api/authz/approvals/adopt",
+            json={"nonce": "adopt1"},
+            headers={"Authorization": f"Bearer {tok}"})
+        self.assertEqual(r.status_code, 200)
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT initiator_human FROM approvals "
+                          "WHERE nonce='adopt1'")
+        self.assertEqual(rows[0][0], "system:legacy")
