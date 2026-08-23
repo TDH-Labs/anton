@@ -792,7 +792,11 @@ class BrokerClient:
         resp = self.call({"op": "poll", "execution_id": execution_id,
                           "principal_id": principal_id,
                           "reported_time": self.time_source()})
-        return {"revoked": resp.get("revoked", False),
+        # ED-2: a response missing the revoked field is treated as REVOKED
+        # (fail closed), never as not-revoked (R15-A).
+        if "revoked" not in resp:
+            return {"revoked": True, "reason": "malformed_poll_response"}
+        return {"revoked": bool(resp["revoked"]),
                 "reason": resp.get("reason", "")}
 
     def issue_lease(self, session_token: str, execution_id: str,

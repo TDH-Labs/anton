@@ -79,8 +79,11 @@ CREATE TABLE IF NOT EXISTS approval_decisions (
     approval_id INTEGER NOT NULL,
     approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,
     decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
-    evidence_hmac TEXT,
-    ts TEXT NOT NULL
+    ts TEXT NOT NULL,
+    -- R15-A: evidence_hmac sits LAST because SQLite's ALTER TABLE ADD
+    -- COLUMN appends at the end — canonical order must equal post-ALTER
+    -- live order or legitimately upgraded DBs stay 'weakened' forever.
+    evidence_hmac TEXT
 );
 CREATE TABLE IF NOT EXISTS approval_executions (
     approval_id INTEGER PRIMARY KEY,
@@ -371,12 +374,17 @@ def _canonical_object_sql() -> dict[str, str]:
 
 
 def _normalize_sql(sql: str) -> str:
-    """Whitespace-insensitive comparison basis: SQLite rewrites table DDL
-    into normalized form after ALTER TABLE ADD COLUMN, so a sanctioned
-    upgrade must not be flagged as weakening — while any dropped CHECK/
-    NOT NULL token still diverges (R15-B)."""
+    """Comparison basis for table/trigger DDL: strips comments, the
+    IF NOT EXISTS modifier (dropped by SQLite's post-ALTER rewrite), and
+    all whitespace — so a sanctioned ADD COLUMN upgrade converges while
+    any dropped CHECK/NOT NULL token still diverges (R15-B/R15-A)."""
     import re as _re
-    return _re.sub(r"\s+", "", sql or "")
+    s = sql or ""
+    s = _re.sub(r"--[^\n]*", "", s)
+    s = _re.sub(r"/\*.*?\*/", "", s, flags=_re.S)
+    s = _re.sub(r"\bIF\s+NOT\s+EXISTS\b", "", s, flags=_re.I)
+    s = _re.sub(r"\s+", "", s)
+    return s
 
 
 def weakened_critical_objects(conn: sqlite3.Connection) -> list[str]:
