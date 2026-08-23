@@ -654,3 +654,125 @@ class R6AdoptionHelperAudited(unittest.TestCase):
         with self.assertRaises(LookupError):
             adopt_legacy_approval(conn, "ad2", audit=audit)
         conn.close()
+
+
+# =========================================================================
+# Round 7 (verification of round-6 fixes)
+# =========================================================================
+
+class R7UpgradeConvergesSameNameBody(unittest.TestCase):
+    """MAJOR R7-4: a DB holding an older-body canonical-name trigger must
+    converge to canonical on init_db, not brick at boot."""
+
+    def test_same_name_body_evolution_converges(self):
+        import os
+        import sqlite3
+        from anton.db import SCHEMA as CUR_SCHEMA
+        path = os.path.join("/tmp", f"iso_conv_{int(time.time()*1000)}.db")
+        conn = sqlite3.connect(path)
+        # round-5-era body: same canonical name but OLD (fewer WHEN branches)
+        old = ("CREATE TABLE approvals (id INTEGER PRIMARY KEY, nonce TEXT,"
+               " action TEXT, amount TEXT, recipient TEXT, status TEXT,"
+               " hmac TEXT, ts TEXT, initiator_human TEXT,"
+               " initiator_principal TEXT, approver_human TEXT,"
+               " approver_principal TEXT);"
+               "CREATE TRIGGER trg_approvals_pending_only_insert"
+               " BEFORE INSERT ON approvals WHEN NEW.status IN ('approved')"
+               " BEGIN SELECT RAISE(ABORT,'old'); END;")
+        conn.executescript(old)
+        conn.commit()
+        conn.close()
+        try:
+            from anton.db import init_db
+            from anton.db import isolation_approvals_integrity
+            conn = init_db(path)
+            drift = isolation_approvals_integrity(conn)
+            self.assertEqual(drift, [], "convergence failed: %s" % drift)
+            conn.close()
+        finally:
+            os.unlink(path)
+
+
+class R7ActionRetargetRefused(unittest.TestCase):
+    """MAJOR R7-2: decision-significant fields are immutable after INSERT."""
+
+    def test_action_mutation_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, amount,"
+                         " recipient, status, ts, initiator_human,"
+                         " initiator_principal) VALUES('ar1','newsletter','',"
+                         "'','pending','now','alice','alice')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE approvals SET action='pay-vendor' "
+                             "WHERE nonce='ar1'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT action FROM approvals WHERE nonce='ar1'")
+        self.assertEqual(rows[0][0], "newsletter")
+
+
+class R7ApprovedToDeniedRefused(unittest.TestCase):
+    """MINOR R7-3: approved rows can only exit to consumed."""
+
+    def test_approved_to_denied_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute("INSERT INTO approvals(nonce, action, status, ts,"
+                         " initiator_human, initiator_principal)"
+                         " VALUES('ad9','job','pending','now','bob','bob')")
+            conn.commit()
+            conn.execute("UPDATE approvals SET status='approved',"
+                         " approver_human='alice', approver_principal='alice'"
+                         " WHERE nonce='ad9'")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("UPDATE approvals SET status='denied',"
+                             " approver_human='carol' WHERE nonce='ad9'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='ad9'")
+        self.assertEqual(rows[0][0], "approved")
+
+
+class R7SonOfAntonRequiresHealthyGate(unittest.TestCase):
+    """MINOR R7-6: the permissionless bypass refuses to run on drift."""
+
+    def test_son_of_anton_refuses_when_triggers_drifted(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        conn.execute("DROP TRIGGER trg_approvals_pending_only_insert")
+        conn.commit()
+        conn.close()
+        from anton.scheduler import set_son_of_anton_mode, JobEngine
+        d = self.env.dir
+        import os
+        set_son_of_anton_mode(os.path.join(d, "data"), True)
+        # serve-side engine built on the drifted DB
+        jobs_path = os.path.join(d, "jobs.yaml")
+        from anton.jobs import load_jobs
+        from anton.ledger import Ledger
+        from anton.executor import FakeExecutor
+        from anton.config import load_config
+        engine = JobEngine(load_jobs(jobs_path),
+                           Ledger(os.path.join(d, "runs.jsonl")),
+                           FakeExecutor(), load_config(),
+                           data_dir=os.path.join(d, "data"))
+        ok, reason = engine._is_approved("e2e-canary")
+        self.assertFalse(ok)
+        self.assertEqual(reason, "gate_triggers_drifted")

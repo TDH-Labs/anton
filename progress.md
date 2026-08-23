@@ -226,3 +226,70 @@ findings are round-5 seams:
   real init_db + isolation_approvals_integrity code. Approved is not terminal
   (approved→pending→approved replay allows re-running the money gate on one
   dated sign-off). CONV-1 stays closed.
+
+## Review (adversarial-reviewer-B, round 7, run vs HEAD c923c4d; angle: SCHEMA INVARIANTS + TOCTOU + MIGRATIONS + UPGRADE PATHS)
+
+Suite green before probing: 327 passed + 75 matrix subtests. Round-6 fixes
+verified genuine: pending->consumed and approved->pending refused (live
+repro + pinned tests); scheduler consume (approved->consumed) unaffected;
+son-of-anton INSERT-consumed still allowed (its INSERT is outside the
+UPDATE-only guard); adopt_legacy_approval's single-statement rewrite is
+consumed by the adoption-exemption clause atomically (no re-trigger of the
+immutability clause; second adoption fails via rowcount 0); fresh-boot
+false-positive risk is nil — _assert_isolation_trigger_integrity returns
+early on a missing isolation.db and every caller (init_db, _build,
+cmd_vault) creates it first; per-decision sqlite_master lookup is one
+indexed sys-table read (negligible). One new MAJOR (upgrade-convergence),
+one MINOR (approved->denied reopen), three OBSERVATIONs.
+
+- Fixed: nothing (adversarial review only; findings returned as JSON).
+- Note: r5->r6 migration is bricked by the new boot gate: a DB created by
+  round-5 code carries trg_approvals_transition_guard under the SAME
+  canonical name with the pre-R6-3 body; round-6 init_db's CREATE TRIGGER IF
+  NOT EXISTS keeps the old body, isolation_approvals_integrity exact-string
+  compare flags it `weakened`, and the new boot assertion hard-refuses
+  serve/dashboard/vault — repro: build DB from 3ff567b SCHEMA, run round-6
+  init_db + _assert_isolation_trigger_integrity -> RuntimeError, and 2x
+  re-run init_db per the error message's own remedy leaves the drift
+  unchanged. Also found: approved->denied re-decision (walk-back of a dated
+  sign-off with a new approver stamp) is not covered by the R6-3b closure.
+  CONV-1 stays closed.
+
+## Review (adversarial-reviewer-A, round 7, run vs HEAD c923c4d; angle: AUTH BYPASS + FAIL-OPEN, scheduler money/outbound gate end-to-end)
+
+Suite green before probing: 111 passed + 75 subtests (tests/authz -q). Round-6
+fixes verified genuine where claimed: the serve-path boot gate really runs
+before any decision in the real topology (entrypoint.sh -> `anton serve` ->
+cmd_serve -> _build -> init_db + _assert_isolation_trigger_integrity, then
+the serve loop; the webhook is hosted in the SAME serve process, so it is
+covered too); the boot gate's body compare really detects weakened triggers
+(repro: `trg_approvals_pending_only_insert` recreated with a WHEN(0) body ->
+boot drift `['trg_approvals_pending_only_insert:weakened']`); init_db drops
+superseded names + ALTER-ADDs identity columns idempotently (pinned R6-2);
+the webhook cannot bypass the money gate (POST /hooks -> run_job -> _is_approved
+still applies for gate.money/outbound jobs); son-of-anton toggle API is
+token-gated (dashboard `_require_token`).
+
+- Fixed: nothing (adversarial review only; findings returned as JSON).
+- Note: two MAJOR fail-open seams on the LIVE gate, both repro'd. (1) The
+  round-6 per-decision re-verify in _is_approved checks trigger NAMES only
+  (sqlite_master subset test), never bodies nor the extra-trigger drift rule,
+  even though isolation_approvals_integrity() — the exact check the boot path
+  uses — already exists in the same module: a mid-run DROP+recreate of
+  trg_approvals_pending_only_insert with a no-op body passes the names check
+  and a forged status='approved' INSERT is then consumed by the gate. (2) The
+  transition guard covers status/initiator only; `action`/`amount`/`recipient`
+  are mutable after sign-off, so with INTACT canonical triggers and pure DML
+  an attacker retargets any real approved row to a money-gated job's action;
+  the same DML-only attacker can stage a full two-identity forge (INSERT
+  pending{alice}, approve{mallory}) since the trigger cannot attest identity
+  provenance — approver!=initiator holds syntactically with attacker-chosen
+  names. Also: son-of-anton remains the cheapest bypass (one unprotected DML
+  upsert on app_settings; gate integrity verification is skipped entirely
+  while on — designed permissionless mode, but the toggle itself is
+  DB-unprotected), and R6-4's adopt_legacy_approval is audit-after-commit
+  and not wired into any production call site (grep: tests only), so live
+  adoptions are still un-audited raw SQL. Out-of-scope observation:
+  dashboard decision="always" writes a `kind` column that isolation.db's
+  approvals table does not have (OperationalError -> 500, fail-closed).
+  CONV-1 stays closed for these; 2 MAJOR findings returned.

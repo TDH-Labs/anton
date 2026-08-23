@@ -88,8 +88,8 @@ def _assert_isolation_trigger_integrity(data_dir: str) -> None:
     if drift:
         raise RuntimeError(
             "isolation.db approvals trigger set drifted (" +
-            ",".join(drift) + ") — refusing to start. Run `anton setup` "
-            "/ re-run init_db to restore the canonical gate.")
+            ",".join(drift) + ") — refusing to start. Re-run `anton setup` "
+            "/ init_db to converge the canonical gate.")
 
 
 def _build(config: dict, data_dir: str, executor_name: str):

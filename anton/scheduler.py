@@ -10,6 +10,7 @@ import time
 from typing import List, Optional
 
 from .canary import attempt_repairs, compute_tripwires
+from .db import isolation_approvals_integrity
 from .executor import Executor
 from .jobs import Job
 from .ledger import Ledger
@@ -159,23 +160,28 @@ class JobEngine:
         if self.data_dir:
             self.son_of_anton_mode = get_son_of_anton_mode(self.data_dir)
         if self.son_of_anton_mode:
-            if self.data_dir:
-                import os
-                import sqlite3
-                import uuid
-                p = os.path.join(self.data_dir, "isolation.db")
-                if os.path.exists(p):
-                    try:
-                        with sqlite3.connect(p, timeout=10.0) as conn:
-                            nonce = f"son-of-anton-{uuid.uuid4().hex[:12]}"
-                            ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                            conn.execute(
-                                "INSERT INTO approvals (nonce, action, amount, recipient, status, hmac, ts) VALUES (?, ?, ?, ?, 'consumed', 'son_of_anton_bypass', ?)",
-                                (nonce, job_id, "BYPASS", "AUTONOMOUS", ts)
-                            )
-                            conn.commit()
-                    except Exception:
-                        pass
+            import os
+            import sqlite3
+            import uuid
+            p = os.path.join(self.data_dir, "isolation.db")
+            if os.path.exists(p):
+                # The permissionless bypass is itself gated on a healthy
+                # approvals trigger set — a drifted gate must not be
+                # rideable through the escape hatch (R7-6).
+                with sqlite3.connect(p, timeout=10.0) as conn:
+                    if isolation_approvals_integrity(conn):
+                        return False, "gate_triggers_drifted"
+                try:
+                    with sqlite3.connect(p, timeout=10.0) as conn:
+                        nonce = f"son-of-anton-{uuid.uuid4().hex[:12]}"
+                        ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                        conn.execute(
+                            "INSERT INTO approvals (nonce, action, amount, recipient, status, hmac, ts) VALUES (?, ?, ?, ?, 'consumed', 'son_of_anton_bypass', ?)",
+                            (nonce, job_id, "BYPASS", "AUTONOMOUS", ts)
+                        )
+                        conn.commit()
+                except Exception:
+                    pass
             return True, "son_of_anton_bypass"
 
         if not self.data_dir:
@@ -185,15 +191,14 @@ class JobEngine:
         p = os.path.join(self.data_dir, "isolation.db")
         if not os.path.exists(p):
             return False, "no_db"
-        # R6-1: the money gate only means something while its triggers exist
-        # with canonical bodies — re-verify before EVERY decision.
+        # R6-1/R7-1: the money gate only means something while its triggers
+        # exist with CANONICAL BODIES — name presence is not enough. A
+        # same-name weak-body swap must fail the decision, not just the next
+        # boot.
         with sqlite3.connect(p, timeout=10.0) as conn:
-            names = {r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE name LIKE "
-                "'trg_approvals_%'")}
-            if not {"trg_approvals_pending_only_insert",
-                    "trg_approvals_transition_guard"} <= names:
-                return False, "gate_triggers_missing"
+            drift = isolation_approvals_integrity(conn)
+            if drift:
+                return False, "gate_triggers_drifted"
             row = conn.execute(
                 "SELECT id FROM approvals WHERE action=? AND status='approved' ORDER BY id ASC LIMIT 1",
                 (job_id,)).fetchone()

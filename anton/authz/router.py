@@ -33,6 +33,10 @@ class EgressSendReq(BaseModel):
     body: str
 
 
+class LegacyAdoptionReq(BaseModel):
+    nonce: str
+
+
 class LoginReq(BaseModel):
     username: str
     password: str
@@ -173,6 +177,24 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
         except EgressBlocked as e:
             raise HTTPException(403, str(e))
         return {"status": "pending_approval", "approval_id": aid}
+
+    # -- legacy approval adoption (R7-5: audited, API-routed) --------------
+    @router.post("/api/authz/approvals/adopt")
+    def adopt_legacy(req: LegacyAdoptionReq, request: Request):
+        principal = _principal(request)
+        from ..db import adopt_legacy_approval
+        import sqlite3
+        iso_path = os.path.normpath(
+            os.path.join(azdir, os.pardir, "isolation.db"))
+        conn = sqlite3.connect(iso_path, timeout=10.0)
+        try:
+            adopt_legacy_approval(conn, req.nonce, audit=audit)
+        except LookupError as e:
+            raise HTTPException(404, str(e))
+        finally:
+            conn.close()
+        return {"status": "adopted", "nonce": req.nonce,
+                "by": principal.principal_id}
 
     # -- minimal machine-token callback (REQ-CRED-03) ---------------------------
     @router.post("/api/exec/result")

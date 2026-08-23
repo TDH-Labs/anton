@@ -90,7 +90,13 @@ WHEN (
     -- a pending all-NULL row may be stamped with the system:legacy
     -- initiator in place of a NULL.
     ((NEW.initiator_human IS NOT OLD.initiator_human
-      OR NEW.initiator_principal IS NOT OLD.initiator_principal)
+      OR NEW.initiator_principal IS NOT OLD.initiator_principal
+      -- decision-significant payload fields are immutable after INSERT:
+      -- an approved sign-off is for the action/amount/recipient it named
+      -- (R7-2)
+      OR NEW.action IS NOT OLD.action
+      OR NEW.amount IS NOT OLD.amount
+      OR NEW.recipient IS NOT OLD.recipient)
      AND NOT (OLD.status = 'pending' AND NEW.status = 'pending'
               AND OLD.initiator_human IS NULL
               AND OLD.initiator_principal IS NULL
@@ -115,10 +121,10 @@ WHEN (
     OR (OLD.status IN ('consumed', 'denied') AND NEW.status != OLD.status)
 
     -- pending CANNOT be skipped to consumed (audit/execution-marker
-    -- spoofing), and an approved row cannot be walked back to pending
-    -- (approver laundering / re-open of a dated sign-off) — R6-3
+    -- spoofing), and an approved row cannot be walked back or denied after
+    -- sign-off (approver laundering / dated-sign-off reopen) — R6-3/R7-3
     OR (NEW.status = 'consumed' AND OLD.status NOT IN ('approved', 'consumed'))
-    OR (OLD.status = 'approved' AND NEW.status = 'pending')
+    OR (OLD.status = 'approved' AND NEW.status NOT IN ('approved', 'consumed'))
 )
 BEGIN
     SELECT RAISE(ABORT, 'approval transition rejected (REQ-APPR-01/02)');
@@ -135,9 +141,33 @@ def init_db(path: str) -> sqlite3.Connection:
     # (R5-2/R6-1). Drop them explicitly, then install the canonical set.
     conn.execute("DROP TRIGGER IF EXISTS trg_approvals_no_self_approve")
     conn.execute("DROP TRIGGER IF EXISTS trg_approvals_no_self_approve_upd")
+    # Same-name BODY evolution: the canonical triggers themselves change
+    # between rounds (R7-4). An IF NOT EXISTS is not convergence — drop and
+    # recreate ANY approvals trigger whose body differs from canonical,
+    # so re-running init_db always restores the canonical gate.
+    _converge_approvals_triggers(conn)
     conn.executescript(SCHEMA)
     conn.commit()
     return conn
+
+
+def _converge_approvals_triggers(conn: sqlite3.Connection) -> None:
+    """Drop stale-body approvals triggers under canonical names so a re-run
+    of init_db restores the exact canonical gate (same-name body evolution)."""
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(SCHEMA)
+        canon = {r[0]: (r[1] or "") for r in scratch.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE name IS NOT NULL AND name LIKE 'trg_approvals_%'")}
+    finally:
+        scratch.close()
+    for (name, sql) in conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE name IS NOT NULL AND name LIKE 'trg_approvals_%'"):
+        if canon.get(name) != (sql or ""):
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+    conn.commit()
 
 
 def _upgrade_approvals_columns(conn: sqlite3.Connection) -> None:
@@ -170,7 +200,16 @@ def adopt_legacy_approval(conn: sqlite3.Connection, nonce: str, audit=None):
     """Single-shot adoption of a pre-authz all-NULL approval row. Only a
     row that is pending with all identity NULL may be stamped with the
     system:legacy initiator; after that it is immutable and decisions flow
-    through the guarded path. Audited when an audit log is supplied (R6-4)."""
+    through the guarded path. The audit entry is written BEFORE the stamp
+    commits (different DBs, so not one transaction): a crash in between
+    leaves an audit row without a stamp (over-audited, safe direction),
+    never a durable stamp with no record (R7-5)."""
+    if audit is not None:
+        try:
+            audit.append("legacy_approval_adopted",
+                         payload={"nonce": nonce})
+        except Exception:
+            pass
     cur = conn.execute(
         "UPDATE approvals SET initiator_human='system:legacy', "
         "initiator_principal='system:legacy' "
@@ -180,12 +219,6 @@ def adopt_legacy_approval(conn: sqlite3.Connection, nonce: str, audit=None):
     conn.commit()
     if cur.rowcount == 0:
         raise LookupError(f"no pending all-NULL approval with nonce {nonce}")
-    if audit is not None:
-        try:
-            audit.append("legacy_approval_adopted",
-                         payload={"nonce": nonce})
-        except Exception:
-            pass
     return True
 
 
