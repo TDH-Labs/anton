@@ -693,3 +693,32 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
     (always returns at 113 or raises at 120) — a duplicated audit.append +
     re-baseline that would append a second actor-less "migration" row and refresh
     the baseline outside any transaction if a future edit removes the return.
+
+## Review (round 18)
+
+- **What's correct:** validate-first scratch gate raises before any live write; BEGIN
+  IMMEDIATE is inside the try (round-17 flag-leak fixed — even a BEGIN failure resets
+  `in_migration_txn`); per-statement execution via `complete_statement` handles trigger
+  bodies; post-apply name+body gate inside the txn with ROLLBACK; `_audit_refusal` on the
+  live-gate path; WORM row + deferred kv baseline commit atomically with DDL (probed: audit
+  row seq present, schema_hash refreshed, `audit.verify()==True`); dead duplicate tail gone.
+  `store.lock` is an RLock so audit.append inside the migration lock is reentrant-safe.
+  Embedded `COMMIT;`/`END;` in migration SQL fails the scratch clone → live DB untouched.
+  Full suite: 146 passed.
+- **Fixed:** none (no BLOCKER/MAJOR).
+- **Note:** literal "byte-identical" on rejection is false — the spec-mandated
+  `migration_refused` row + `audit_head_seq` bump change bytes (R5-4 intent). Also:
+  refusal rows record `actor='None'` (audit.append called without actor), so WORM
+  can't attribute who attempted the migration.
+- **Findings (non-blocking):**
+  - MINOR boot.py:71-72 (via `_validate_migration_sql` executescript): any SQL error
+    during scratch validation (e.g. migration ending in `END;`/`COMMIT;`) raises a raw
+    `sqlite3.OperationalError` that escapes `run_migration` BEFORE the live txn/try —
+    no `migration_refused` audit row is written and no MigrationIntegrityError wraps it.
+    Probed: `CREATE TABLE junk (id INTEGER); END;` → rc OperationalError, events list
+    unchanged (no refusal row), DB clean. Violates R5-4 for the error branch; callers
+    catching MigrationIntegrityError see an unexpected type. Fix: wrap scratch
+    executescript, call `_audit_refusal(...)` then re-raise as MigrationIntegrityError.
+  - OBSERVATION boot.py:36-40 (refusal path): `migration_refused` rows store actor as
+    the literal string "None" — attempted migrations are unattributable in the WORM
+    chain. Fix: pass `actor=principal` (as the success path does).

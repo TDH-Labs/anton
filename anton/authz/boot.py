@@ -61,24 +61,35 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
 
 
 def run_migration(store, audit, principal, name: str, sql: str) -> str:
-    """Migration runner operates exclusively under MigrationPrincipal;
-    every migration is hash-recorded in the audit chain INSIDE the same
-    transaction as the DDL; post-migration the critical trigger/constraint
-    set is asserted by NAME and by BODY (REQ-PRIN-02, R3A-3, R16-B)."""
+    """Migration runner operates exclusively under MigrationPrincipal.
+
+    Every migration is applied inside ONE BEGIN IMMEDIATE transaction that
+    also contains the WORM audit row and the baseline refresh — apply,
+    record, and re-baseline commit or roll back atomically. The invariant
+    gate (name + body) runs BOTH on a scratch clone before the live DB is
+    touched AND post-apply inside the transaction. Scope note (R18-OBS):
+    the gate covers schema OBJECTS; vetting row DATA written by a
+    MigrationPrincipal is out of scope."""
     require_nonhuman(principal)
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
             "migrations require a MigrationPrincipal")
-    # VALIDATE FIRST on a scratch clone — a rejected migration never
-    # touches the live DB.
-    _validate_migration_sql(store, sql, audit=audit, name=name)
+    _validate_migration_sql(store, sql, audit=audit, name=name,
+                            principal=principal)
     with store.lock:
         store.in_migration_txn = True  # defer kv_set/audit commits
         conn = store.conn
         try:
+            foreign_txn = conn.in_transaction
+            if foreign_txn:
+                # never roll back a foreign writer's pending work (R18-3)
+                store.in_migration_txn = False
+                raise MigrationIntegrityError(
+                    "migration requires a quiescent connection")
             conn.execute("BEGIN IMMEDIATE")
-            # R16-A: executescript() silently commits; execute statements
-            # individually (complete_statement handles trigger bodies).
+            # R16-A/R18-2: executescript() silently commits; execute each
+            # COMPLETE statement individually (complete_statement handles
+            # trigger BEGIN...END bodies).
             buf = ""
             for line in sql.splitlines(keepends=True):
                 buf += line
@@ -93,12 +104,13 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
                 raise MigrationIntegrityError(
                     f"migration {name!r} violated the invariant set "
                     f"post-apply: missing={missing} weakened={weakened}")
-            # WORM record + baseline refresh commit atomically WITH the DDL.
             audit.append("migration", actor=principal, payload={
                 "name": name,
                 "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
             sig = schema_signature(conn)
-            kv_set_deferred(conn, "schema_hash", sig)
+            conn.execute(
+                "INSERT INTO kv(key, value) VALUES('schema_hash', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (sig,))
             conn.commit()
             store.in_migration_txn = False
             return sig
@@ -108,8 +120,8 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
                 conn.execute("ROLLBACK")
             except Exception:
                 pass
-            _audit_refusal(audit, name, sql,
-                           ["rolled_back"], [])
+            _audit_refusal(audit, principal, name, sql,
+                           ["apply_or_gate_failure_rolled_back"], [])
             raise
 
 
@@ -120,7 +132,8 @@ def kv_set_deferred(conn, key: str, value: str) -> None:
         (key, value))
 
 
-def _audit_refusal(audit, name: str, sql: str, missing, weakened) -> None:
+def _audit_refusal(audit, principal, name: str, sql: str, missing,
+                   weakened) -> None:
     try:
         audit.append("migration_refused", payload={
             "name": name,
@@ -130,7 +143,8 @@ def _audit_refusal(audit, name: str, sql: str, missing, weakened) -> None:
         pass
 
 
-def _validate_migration_sql(store, sql: str, audit=None, name: str = "") -> None:
+def _validate_migration_sql(store, sql: str, audit=None, name: str = "",
+                            principal=None) -> None:
     """Apply the migration to a scratch in-memory clone of the live schema
     and assert the invariant gate there. This is the authoritative refusal:
     the live DB is never written when the gate would fail. Refusals are
@@ -151,7 +165,7 @@ def _validate_migration_sql(store, sql: str, audit=None, name: str = "") -> None
     finally:
         scratch.close()
     if missing or weakened:
-        _audit_refusal(audit, name, sql, missing, weakened)
+        _audit_refusal(audit, principal, name, sql, missing, weakened)
         raise MigrationIntegrityError(
             f"migration would violate the authZ invariant set: "
             f"missing={missing} weakened={weakened}")
