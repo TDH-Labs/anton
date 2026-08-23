@@ -722,3 +722,16 @@ in the transition-guard immutability list; row renumbering invalidates keyed hma
   - OBSERVATION boot.py:36-40 (refusal path): `migration_refused` rows store actor as
     the literal string "None" — attempted migrations are unattributable in the WORM
     chain. Fix: pass `actor=principal` (as the success path does).
+
+## Review (round 20, adversarial A — auth bypass / fail-open)
+
+Verified with live probes (granted nothing):
+- **R20-1 comment-smuggled txn-control**: `run_migration` refuses `-- c\nBEGIN;`, `/* c */ COMMIT;` (leading-keyword strips comments); `-- c\nCREATE TABLE` still applies. Genuine.
+- **R20-2 drifted-baseline refusal byte-identical**: `open_store` (store.py:77-97) gates BEFORE heal; after tampering a trigger, `AuthzStore(path)` sets `preheal_refusal`, file bytes identical, trigger still absent (no heal-then-refuse brick). Genuine. (My first probe mislabeled this — sniff-order bug in the probe, re-ran correctly.)
+- **decision_secret fail-open unreachable**: `wire_authz` (authz/__init__.py:32-35) and `cli._build` (cli.py:121) hard-refuse authz.enabled without a decision secret, so the `secret or None` skips in approvals.py/consume_verified_approval exist only in documented legacy mode.
+- **son-of-anton bypass disabled by fiat**: scheduler `_is_approved` (scheduler.py:159-176) gates the permissionless bypass on `not hardened` at consumption time; dashboard toggles (dashboard.py:287) mutate state but hardened engines ignore it.
+- **Broker fail-closed**: peer-uid attested lease/mint/poll/fetch; unwired session validator ⇒ dead (broker.py `_session_dead`); unwired grant ⇒ DENY; standalone `serve` refuses without `--uid`; executors fail-closed (`BrokerDegraded`) on unreachable broker; `poll` missing `revoked` ⇒ treated revoked.
+- **Approval consumers**: scheduler + upskill both route through `consume_verified_approval` inside BEGIN IMMEDIATE (drift ⇒ `gate_triggers_drifted`; keyed hmac; newest-first scan R10-4; one-shot; max_age). Webhook 403 without `X-Anton-Secret`. Egress spine (egress.py submit/execute) enforces TOCTOU hash + hmac + one-shot.
+- Tests: `tests/authz` 146 passed + review-fix files 77 passed.
+
+Findings: 2 observations, no blockers/majors. See A's JSON.

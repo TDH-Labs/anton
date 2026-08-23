@@ -131,9 +131,9 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
             "migrations require a MigrationPrincipal")
-    _validate_migration_sql(store, sql, audit=audit, name=name,
-                            principal=principal)
     with store.lock:
+        _validate_migration_sql(store, sql, audit=audit, name=name,
+                                principal=principal)
         conn = store.conn
         # R19-A: a quiescent connection is required. If a foreign writer has
         # an open transaction we refuse WITHOUT touching it — rolling

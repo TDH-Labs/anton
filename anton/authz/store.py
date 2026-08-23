@@ -54,15 +54,6 @@ def open_store(path: str) -> "AuthzStore":
 
 
 
-def _canonical_conn():
-    """A scratch connection holding the EXACT canonical authz schema."""
-    import sqlite3 as _s3
-    from .schema import SCHEMA, TRIGGERS
-    m = _s3.connect(":memory:")
-    m.executescript(SCHEMA)
-    m.executescript(TRIGGERS)
-    return m
-
 class AuthzStore:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -84,16 +75,26 @@ class AuthzStore:
         has_kv = bool(self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'"
         ).fetchone())
-        if has_kv:
-            baseline = self.kv_get("schema_hash")
-            if baseline is not None:
-                live = schema_signature(self.conn)
-                if live != baseline:
-                    self.preheal_refusal = (
-                        f"authz schema drifted while stopped "
-                        f"(recorded {baseline[:16]}…, on-disk {live[:16]}…) "
-                        f"— re-run anton setup to rebuild the authz store.")
-                    return  # live DB left byte-identical
+        has_authz_tables = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name IN "
+            "('users', 'audit_chain')").fetchone())
+        # R20-B: a MISSING kv table alongside other authz tables is drift
+        # too (dropping it must not bypass the byte-identical refusal).
+        if has_kv or has_authz_tables:
+            baseline = self.kv_get("schema_hash") if has_kv else None
+            live = schema_signature(self.conn)
+            expected_baseline_present = baseline is not None
+            if baseline is not None and live != baseline:
+                self.preheal_refusal = (
+                    f"authz schema drifted while stopped "
+                    f"(recorded {baseline[:16]}…, on-disk {live[:16]}…) "
+                    f"— re-run anton setup to rebuild the authz store.")
+                return  # live DB left byte-identical
+            if not has_kv and has_authz_tables:
+                self.preheal_refusal = (
+                    "authz kv table missing while authz tables present "
+                    "— refusing (drift/tamper shape)")
+                return
         ensure_schema(self.conn)
         self._upgrade_approval_decision_columns()
 
@@ -143,7 +144,6 @@ class AuthzStore:
                     "PRAGMA table_info(approval_decisions)")}
                 if "evidence_hmac" not in cols:
                     raise
-            self.kv_set("schema_hash", schema_signature(self.conn))
 
     # -- users -----------------------------------------------------------
     def count_users(self) -> int:
