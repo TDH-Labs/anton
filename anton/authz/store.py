@@ -115,11 +115,19 @@ class AuthzStore:
             return
         with self.lock:
             try:
+                # single transaction: a crash between ALTER and baseline
+                # refresh cannot strand the DB in permanent preheal refusal
+                # (R15-B OBS)
+                self.conn.execute("BEGIN IMMEDIATE")
                 self.conn.execute(
                     "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
+                self.kv_set("schema_hash", schema_signature(self.conn))
                 self.conn.commit()
             except sqlite3.OperationalError as e:
-                # concurrent opener won the race — accept if present now
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass
                 cols = {r[1] for r in self.conn.execute(
                     "PRAGMA table_info(approval_decisions)")}
                 if "evidence_hmac" not in cols:

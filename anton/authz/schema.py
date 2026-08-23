@@ -370,11 +370,22 @@ def _canonical_object_sql() -> dict[str, str]:
     return canon
 
 
+def _normalize_sql(sql: str) -> str:
+    """Whitespace-insensitive comparison basis: SQLite rewrites table DDL
+    into normalized form after ALTER TABLE ADD COLUMN, so a sanctioned
+    upgrade must not be flagged as weakening — while any dropped CHECK/
+    NOT NULL token still diverges (R15-B)."""
+    import re as _re
+    return _re.sub(r"\s+", "", sql or "")
+
+
 def weakened_critical_objects(conn: sqlite3.Connection) -> list[str]:
-    """Critical objects whose live SQL text no longer matches the canonical
-    definition (same-name body weakening — R3A-3)."""
+    """Critical objects whose live SQL no longer matches the canonical
+    definition (same-name body weakening or constraint dropping — R3A-3,
+    R4-2), compared whitespace-insensitively."""
     canon = _canonical_object_sql()
     live = {r[0]: (r[1] or "") for r in conn.execute(
         "SELECT name, sql FROM sqlite_master WHERE name IS NOT NULL")}
     return [name for name in CRITICAL_OBJECTS
-            if canon.get(name) != live.get(name)]
+            if _normalize_sql(canon.get(name)) != _normalize_sql(live.get(name))]
+
