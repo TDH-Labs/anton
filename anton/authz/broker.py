@@ -267,43 +267,50 @@ class CredentialBroker:
 
     def register_secret(self, secret_id: str, plaintext_or_ref: str,
                         connection_id: str) -> None:
-        nonce = os.urandom(12)
-        ct = AESGCM(self._keys[self.current_key_version]).encrypt(
-            nonce, plaintext_or_ref.encode(), secret_id.encode())
-        blob = nonce + ct
+        # RB-B: encrypt INSIDE the lock so the ciphertext and the stored
+        # key_version can never come from different generations (a rotate
+        # landing between encrypt and insert previously bricked the row
+        # with an InvalidTag mismatch).
         with self.lock:
+            ver = self.current_key_version
+            nonce = os.urandom(12)
+            ct = AESGCM(self._keys[ver]).encrypt(
+                nonce, plaintext_or_ref.encode(), secret_id.encode())
+            blob = nonce + ct
             self.conn.execute(
                 "INSERT INTO broker_secrets(id, connection_id, ciphertext,"
                 " key_version, updated) VALUES(?,?,?,?,datetime('now')) "
                 "ON CONFLICT(id) DO UPDATE SET ciphertext=excluded.ciphertext,"
                 " key_version=excluded.key_version, updated=excluded.updated",
-                (secret_id, connection_id, blob, self.current_key_version))
+                (secret_id, connection_id, blob, ver))
             self.conn.commit()
 
     def get_secret(self, secret_id: str) -> tuple[str, str]:
-        row = self.conn.execute(
-            "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
-            "WHERE id=?", (secret_id,)).fetchone()
-        if row is None:
-            raise BrokerDenied(f"unknown secret {secret_id}")
-        self._load_key(row["key_version"])
-        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
-            bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
-            secret_id.encode()).decode()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
+                "WHERE id=?", (secret_id,)).fetchone()
+            if row is None:
+                raise BrokerDenied(f"unknown secret {secret_id}")
+            self._load_key(row["key_version"])
+            stored = AESGCM(self._keys[row["key_version"]]).decrypt(
+                bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
+                secret_id.encode()).decode()
         return self._materialize(secret_id, stored), row["connection_id"]
 
     def _stored_value(self, secret_id: str) -> tuple[str, str]:
         """Raw stored material (inline secret OR reference text) without
         resolving references — used for grant checks at mint time."""
-        row = self.conn.execute(
-            "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
-            "WHERE id=?", (secret_id,)).fetchone()
-        if row is None:
-            raise BrokerDenied(f"unknown secret {secret_id}")
-        self._load_key(row["key_version"])
-        stored = AESGCM(self._keys[row["key_version"]]).decrypt(
-            bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
-            secret_id.encode()).decode()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id, ciphertext, key_version FROM broker_secrets "
+                "WHERE id=?", (secret_id,)).fetchone()
+            if row is None:
+                raise BrokerDenied(f"unknown secret {secret_id}")
+            self._load_key(row["key_version"])
+            stored = AESGCM(self._keys[row["key_version"]]).decrypt(
+                bytes(row["ciphertext"][:12]), bytes(row["ciphertext"][12:]),
+                secret_id.encode()).decode()
         return stored, row["connection_id"]
 
     def _materialize(self, secret_id: str, stored: str) -> str:
@@ -467,8 +474,10 @@ class CredentialBroker:
 
     def _revoked(self, execution_id: str | None = None,
                  principal_id: str | None = None) -> bool:
-        for scope, state in self.conn.execute(
-                "SELECT scope, state FROM kill_switch WHERE state=1"):
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT scope, state FROM kill_switch WHERE state=1").fetchall()
+        for scope, state in rows:
             if scope == "global":
                 return True
             if principal_id and scope == f"principal:{principal_id}":
@@ -478,8 +487,10 @@ class CredentialBroker:
         return False
 
     def _token_revoked_row(self, jti: str) -> bool:
-        row = self.conn.execute(
-            "SELECT revoked FROM issued_tokens WHERE jti=?", (jti,)).fetchone()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT revoked FROM issued_tokens WHERE jti=?",
+                (jti,)).fetchone()
         return bool(row and row["revoked"])
 
     def _session_dead(self, session_id: str) -> bool:
@@ -547,9 +558,10 @@ class CredentialBroker:
         # Grant re-check BEFORE any decryption/resolution: a revoked
         # principal must never drive the external password-manager adapter
         # (R3C-4).
-        row = self.conn.execute(
-            "SELECT connection_id FROM broker_secrets WHERE id=?",
-            (secret_id,)).fetchone()
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT connection_id FROM broker_secrets WHERE id=?",
+                (secret_id,)).fetchone()
         if row is None:
             raise BrokerDenied(f"unknown secret {secret_id}")
         connection_id = row["connection_id"]
