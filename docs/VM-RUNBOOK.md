@@ -1,5 +1,23 @@
 # Anton — VM / Deployment Runbook
 
+## Git guardrail: detached-HEAD commit blocker (install once per clone)
+
+A five-day build once landed on a DETACHED HEAD and never reached GitHub.
+The repo ships `.githooks/pre-commit`, which refuses commits made in
+detached state (override deliberately with `ANTON_ALLOW_DETACHED=1`).
+
+Enable after cloning:
+
+    git config core.hooksPath .githooks
+
+Verify:
+
+    git checkout --detach HEAD~1
+    git commit --allow-empty -m x   # must be REFUSED
+    git checkout -                  # return
+
+
+
 Purpose: take the repo from "built" to "deployed" on a clean box — VM first, then a real
 Umbrel server. **Run these on the VM / Umbrel, never on the reference Mac.** The Mac is
 the case study; its fleet is untouched.

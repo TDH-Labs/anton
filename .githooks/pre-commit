@@ -1,0 +1,15 @@
+#!/bin/sh
+# Guardrail (2026-08-23 incident): 31 commits from a five-day build landed
+# on a DETACHED HEAD and never reached GitHub. Block detached-HEAD commits;
+# operators override deliberately with ANTON_ALLOW_DETACHED=1 git commit.
+if [ -z "$(git symbolic-ref -q HEAD)" ]; then
+  if [ "$ANTON_ALLOW_DETACHED" != "1" ]; then
+    echo ""
+    echo "REFUSED: committing on a DETACHED HEAD."
+    echo "Commits here are invisible to branches and cannot be pushed."
+    echo ""
+    echo "Fix:      git switch -c <branch-name>   # put the work on a branch"
+    echo "Override: ANTON_ALLOW_DETACHED=1 git commit ..."
+    exit 1
+  fi
+fi
