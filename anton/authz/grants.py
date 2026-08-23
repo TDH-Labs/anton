@@ -110,13 +110,38 @@ def has_active_grant(store, principal_id: str, connection_id: str) -> bool:
     return row is not None
 
 
+def record_connection_scopes(store, connection_id: str,
+                             oauth_scopes: list[str],
+                             policy_version: str = "v1") -> None:
+    """Connection ownership is implicit (privileged broker tier), NOT a
+    grant — a grant to oneself is schema-forbidden (REQ-GRNT-02). The
+    granted OAuth scopes are recorded here for the REQ-GRNT-04 diff."""
+    import json as _json
+    with store.lock:
+        store.conn.execute(
+            "INSERT INTO connection_scopes(connection_id, oauth_scopes_json,"
+            " policy_version, updated) VALUES(?,?,?,?) "
+            "ON CONFLICT(connection_id) DO UPDATE SET"
+            " oauth_scopes_json=excluded.oauth_scopes_json,"
+            " policy_version=excluded.policy_version, updated=excluded.updated",
+            (connection_id, _json.dumps(sorted(oauth_scopes)),
+             policy_version, _now()))
+        store.conn.commit()
+
+
 def scope_diff_report(store) -> list[dict]:
-    """Granted-vs-used OAuth scope diff per connector (REQ-GRNT-04)."""
+    """Granted-vs-used OAuth scope diff per connector (REQ-GRNT-04).
+    Reads both owned connections (connection_scopes) and delegations
+    (active grants)."""
     out = []
+    granted_by_conn: dict[str, set[str]] = {}
+    for r in store.conn.execute(
+            "SELECT connection_id, oauth_scopes_json FROM connection_scopes"):
+        granted_by_conn.setdefault(r["connection_id"], set()).update(
+            json.loads(r["oauth_scopes_json"]))
     rows = store.conn.execute(
         "SELECT connection_id, oauth_scopes_json FROM connection_grants "
         "WHERE active=1").fetchall()
-    granted_by_conn: dict[str, set[str]] = {}
     for r in rows:
         granted_by_conn.setdefault(r["connection_id"], set()).update(
             json.loads(r["oauth_scopes_json"]))

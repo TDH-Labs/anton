@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS connection_grants (
     active INTEGER NOT NULL DEFAULT 1,
     created TEXT NOT NULL, revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS connection_scopes (
+    connection_id TEXT PRIMARY KEY,
+    oauth_scopes_json TEXT NOT NULL DEFAULT '[]',
+    policy_version TEXT NOT NULL DEFAULT 'v1',
+    updated TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS used_scopes (
     connection_id TEXT PRIMARY KEY, scopes_json TEXT NOT NULL DEFAULT '[]'
 );

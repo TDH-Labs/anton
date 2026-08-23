@@ -40,6 +40,7 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
         socket_path=os.path.join(azdir, "broker.sock"),
         audit=audit,
     )
+    store.broker = broker  # revocation-rotation path for OAuth connectors
     # Session revocation reach-through: capability tokens die with their
     # issuing session within one validation pass (REQ-AUTH-02/REQ-CRED-04).
     broker.session_validator = store.session_active

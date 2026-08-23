@@ -106,6 +106,9 @@ def _set_cloud_model(install_dir: str, model: str) -> None:
     os.replace(tmp, config_path)
 
 
+class OAuthCompleteReq(BaseModel):
+    provider: str = "quickbooks"
+
 class ApprovalReq(BaseModel):
     action: str
     amount: str = "0.00"
@@ -689,6 +692,57 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                    f"&redirect_uri=http://localhost:{_active_oauth_server.port}/callback"
                    f"&response_type=code&scope={scope}")
         return {"status": "listening", "port": _active_oauth_server.port, "auth_url": auth_url}
+
+    @app.post("/api/wizard/oauth/complete")
+    def complete_oauth(request: Request, req: OAuthCompleteReq):
+        """Finishes the flow started by /oauth/start: waits for the local
+        callback, exchanges the code at the provider's token endpoint, and
+        stores tokens encrypted (credential broker when authZ is wired,
+        secrets.yaml fallback otherwise) — refresh tokens are never echoed
+        back (handoff #5 end-to-end)."""
+        _require_token(request, token)
+        global _active_oauth_server
+        from .qbo_oauth import exchange_code, load_qbo_credentials, store_tokens
+        provider = req.provider.strip() or "quickbooks"
+        server = _active_oauth_server
+        if server is None:
+            raise HTTPException(409, "no OAuth flow in progress -- "
+                                     "call /api/wizard/oauth/start first")
+        redirect_uri = f"http://localhost:{server.port}/callback"
+        try:
+            result = server.wait()
+        except TimeoutError as e:
+            raise HTTPException(504, str(e))
+        finally:
+            try:
+                server.stop()
+            except Exception:
+                pass
+            _active_oauth_server = None
+        client_id, client_secret = load_qbo_credentials()
+        oauth_cfg = (config.get("oauth") or {}).get(provider) or {}
+        client_id = oauth_cfg.get("client_id") or client_id
+        client_secret = client_secret or os.environ.get(
+            f"{provider.upper()}_CLIENT_SECRET", "")
+        if not (client_id and client_secret):
+            return {"status": "not_configured",
+                    "detail": f"no OAuth client credentials for {provider} "
+                              "(config.yaml oauth.<provider>.client_id or "
+                              "env QBO_CLIENT_ID/QBO_CLIENT_SECRET)"}
+        tokens = exchange_code(client_id, client_secret, result.get("code", ""),
+                               redirect_uri)
+        broker = getattr(app.state, "authz_broker", None)
+        principal = getattr(request.state, "principal", None)
+        if broker is not None and principal is not None:
+            store_tokens(app.state.authz_broker, app.state.authz_store,
+                         app.state.authz_audit, actor=principal,
+                         provider=provider, tokens=tokens)
+        else:
+            _save_secret(os.path.dirname(data_dir),
+                         f"{provider}:refresh_token",
+                         str(tokens.get("refresh_token", "")))
+        return {"status": "connected", "provider": provider,
+                "scopes": str(tokens.get("scope", ""))}
 
     @app.get("/api/wizard/mcp")
     def list_mcp(request: Request):
