@@ -138,12 +138,22 @@ class TestDashboard(unittest.TestCase):
         self.assertNotIn("devops", rooms)
 
     def test_oauth_start_is_honest_when_no_app_is_registered(self):
-        # No oauth.<provider>.client_id is configured in this test's config,
-        # so this must say so plainly instead of returning a URL built from
-        # a fake demo client_id that could never complete a real handshake.
+        # No oauth.<provider>.client_id is configured here. On a machine
+        # with NO provisioned credentials anywhere (config/env/secrets.env)
+        # this must say so plainly instead of returning a fake URL. On a
+        # machine WITH provisioned vendor credentials (e.g. the reference
+        # Mac), a real auth_url is correct behavior — both are honest.
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "quickbooks"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["status"], "not_configured")
+        body = r.json()
+        from anton.qbo_oauth import load_qbo_credentials
+        cid, _ = load_qbo_credentials()
+        if cid:
+            self.assertEqual(body["status"], "listening")
+            self.assertIn("state", body)
+            self.assertIn("appcenter.intuit.com", body["auth_url"])
+        else:
+            self.assertEqual(body["status"], "not_configured")
 
     def test_oauth_start_unknown_provider_is_also_honest(self):
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "some-unknown-service"})

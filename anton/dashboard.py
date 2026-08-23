@@ -5,6 +5,8 @@ import datetime as dt
 import json
 import os
 import secrets
+import urllib.parse
+import time
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import FastAPI, HTTPException, Request
@@ -106,6 +108,10 @@ def _set_cloud_model(install_dir: str, model: str) -> None:
     os.replace(tmp, config_path)
 
 
+class OAuthFinalizeReq(BaseModel):
+    state: str
+
+
 class OAuthCompleteReq(BaseModel):
     provider: str = "quickbooks"
 
@@ -204,6 +210,7 @@ def _require_token(request, token: str) -> None:
     if auth != f"Bearer {token}":
         raise HTTPException(401, "missing or invalid bearer token")
 
+_pending_oauth: dict = {}  # state -> pending OAuth flow (R-click-install)
 _active_oauth_server = None
 
 def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
@@ -723,14 +730,9 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/api/wizard/oauth/start")
     def start_oauth(request: Request, provider: str = "google"):
-        """Per-service OAuth starter, not hardcoded to one provider. This used
-        to always build a Google authorize URL with client_id=demo -- a fake
-        that could never actually complete an OAuth handshake, regardless of
-        which service the Add-ons UI claimed to be connecting. An operator
-        registers a real OAuth app for a given service (client_id, in
-        config.yaml's oauth.<provider> section) before this can do anything
-        real for that service; until then, this says so plainly instead of
-        producing a URL that silently fails."""
+        """Click-install OAuth starter (R-click-install): builds the Intuit
+        authorize URL with a redirect BACK to this dashboard, so the whole
+        flow is click -> login -> auto-connected. No terminal, no pasting."""
         _require_token(request, token)
         oauth_cfg = (config.get("oauth") or {}).get(provider) or {}
         client_id = oauth_cfg.get("client_id")
@@ -739,65 +741,72 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             return {"status": "not_configured",
                     "detail": f"Anton doesn't know {provider}'s OAuth authorize URL yet."}
         if not client_id:
+            from .qbo_oauth import load_qbo_credentials
+            env_id, _ = load_qbo_credentials()
+            client_id = env_id
+        if not client_id:
             return {"status": "not_configured",
-                    "detail": f"No OAuth app registered for {provider} yet -- "
-                              f"set oauth.{provider}.client_id in config.yaml."}
-        global _active_oauth_server
-        from .oauth import CallbackServer
-        if _active_oauth_server is not None:
-            try:
-                _active_oauth_server.stop()
-            except Exception:
-                pass
-        _active_oauth_server = CallbackServer(port=0, timeout_s=120)
-        _active_oauth_server.start()
+                    "detail": f"No {provider} app credentials provisioned — "
+                              "vendor defaults missing."}
         scope = oauth_cfg.get("scope", default_scope)
+        base = str(request.base_url).rstrip("/")
+        redirect_uri = base + "/api/wizard/oauth/callback"
+        state = secrets.token_urlsafe(24)
+        _pending_oauth[state] = {
+            "provider": provider, "redirect_uri": redirect_uri,
+            "expires": time.time() + 600,
+        }
         auth_url = (f"{authorize_url}?client_id={client_id}"
-                   f"&redirect_uri=http://localhost:{_active_oauth_server.port}/callback"
-                   f"&response_type=code&scope={scope}")
-        return {"status": "listening", "port": _active_oauth_server.port, "auth_url": auth_url}
+                    f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
+                    f"&response_type=code&scope={urllib.parse.quote(scope)}"
+                    f"&state={state}")
+        # legacy clients keyed on this status string
+        return {"status": "listening", "auth_url": auth_url, "state": state}
 
-    @app.post("/api/wizard/oauth/complete")
-    def complete_oauth(request: Request, req: OAuthCompleteReq):
-        """Finishes the flow started by /oauth/start: waits for the local
-        callback, exchanges the code at the provider's token endpoint, and
-        stores tokens encrypted (credential broker when authZ is wired,
-        secrets.yaml fallback otherwise) — refresh tokens are never echoed
-        back (handoff #5 end-to-end)."""
-        _require_token(request, token)
-        global _active_oauth_server
-        from .qbo_oauth import exchange_code, load_qbo_credentials, store_tokens
-        provider = req.provider.strip() or "quickbooks"
-        server = _active_oauth_server
-        if server is None:
-            raise HTTPException(409, "no OAuth flow in progress -- "
-                                     "call /api/wizard/oauth/start first")
-        redirect_uri = f"http://localhost:{server.port}/callback"
-        try:
-            result = server.wait()
-        except TimeoutError as e:
-            raise HTTPException(504, str(e))
-        finally:
-            try:
-                server.stop()
-            except Exception:
-                pass
-            _active_oauth_server = None
+    @app.get("/api/wizard/oauth/callback")
+    def oauth_callback(request: Request, code: str = "", state: str = "",
+                       error: str = ""):
+        """Intuit redirects HERE — no copy-paste. Exchanges the code
+        server-side; the operator finishes with one authenticated click."""
+        flow = _pending_oauth.get(state)
+        if flow is None or flow["expires"] < time.time():
+            raise HTTPException(400, "unknown or expired OAuth state")
+        if error:
+            _pending_oauth.pop(state, None)
+            raise HTTPException(400, f"provider returned error: {error}")
+        from .qbo_oauth import exchange_code, load_qbo_credentials
+        provider = flow["provider"]
         client_id, client_secret = load_qbo_credentials()
         oauth_cfg = (config.get("oauth") or {}).get(provider) or {}
         client_id = oauth_cfg.get("client_id") or client_id
         client_secret = client_secret or os.environ.get(
             f"{provider.upper()}_CLIENT_SECRET", "")
         if not (client_id and client_secret):
-            return {"status": "not_configured",
-                    "detail": f"no OAuth client credentials for {provider} "
-                              "(config.yaml oauth.<provider>.client_id or "
-                              "env QBO_CLIENT_ID/QBO_CLIENT_SECRET)"}
-        tokens = exchange_code(client_id, client_secret, result.get("code", ""),
-                               redirect_uri)
-        broker = getattr(app.state, "authz_broker", None)
+            _pending_oauth.pop(state, None)
+            raise HTTPException(500, f"no client credentials for {provider}")
+        tokens = exchange_code(client_id, client_secret, code,
+                               flow["redirect_uri"])
+        flow["tokens"] = tokens
+        flow["expires"] = time.time() + 600
+        html = ("<html><body><h2>QuickBooks connected.</h2>"
+                "<p>Return to Anton and click <b>Finish</b> to save the "
+                "connection.</p></body></html>")
+        return HTMLResponse(html)
+
+    @app.post("/api/wizard/oauth/finalize")
+    def finalize_oauth(req: OAuthFinalizeReq, request: Request):
+        _require_token(request, token)
         principal = getattr(request.state, "principal", None)
-        if broker is not None and principal is not None:
+        flow = _pending_oauth.pop(req.state, None)
+        if flow is None:
+            raise HTTPException(404, "no pending authorization for that state")
+        if principal is None:
+            raise HTTPException(401, "authentication required")
+        from .qbo_oauth import store_tokens
+        provider = flow["provider"]
+        tokens = flow["tokens"]
+        broker = getattr(app.state, "authz_broker", None)
+        if broker is not None:
             store_tokens(app.state.authz_broker, app.state.authz_store,
                          app.state.authz_audit, actor=principal,
                          provider=provider, tokens=tokens)

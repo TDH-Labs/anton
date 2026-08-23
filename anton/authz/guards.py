@@ -21,6 +21,9 @@ EXEMPT_PATHS = {
     "/", "/health",
     "/api/logo", "/api/logo/son-of-anton",
     "/api/auth/login", "/api/auth/bootstrap",
+    # Intuit redirects the operator's browser here mid-OAuth — the browser
+    # carries no bearer; state-token validation inside the route is the gate.
+    "/api/wizard/oauth/callback",
 }
 
 # REQ-CRED-03: the executor's callback identity may invoke ONLY these

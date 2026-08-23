@@ -55,8 +55,10 @@ def refresh_tokens(client_id: str, client_secret: str, refresh_token: str,
 
 def load_qbo_credentials() -> tuple[str, str]:
     """env first, then the operator's 0600 secrets.env files."""
-    cid = os.environ.get("QBO_CLIENT_ID", "")
-    csec = os.environ.get("QBO_CLIENT_SECRET", "")
+    cid = (os.environ.get("ANTON_QBO_CLIENT_ID")
+           or os.environ.get("QBO_CLIENT_ID") or "")
+    csec = (os.environ.get("ANTON_QBO_CLIENT_SECRET")
+            or os.environ.get("QBO_CLIENT_SECRET") or "")
     if cid and csec:
         return cid, csec
     for path in SECRETS_ENV_CANDIDATES:
