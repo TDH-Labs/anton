@@ -36,10 +36,19 @@
 
 ## Convergence (CONV-1) tracker
 
-- Implementation-phase adversarial review #1: RUNNING (workflow
-  adversarial-review-mt57ea2q-1xibz3). Verdicts recorded here when done.
-- Two consecutive PROCEED verdicts with zero BLOCKER/MAJOR required against
-  running code before any "shippable" claim.
+- Implementation review run 1: **NO-GO** — 15 surviving findings (6
+  BLOCKER / 4 MAJOR / 4 MINOR / 1 OBSERVATION). Full report:
+  docs/AUTHZ-IMPL-REVIEW-RUN1.md. Disposition:
+  - F1–F10 (all BLOCKER/MAJOR): FIXED in 21605cd, each pinned by a
+    regression test in tests/authz/test_review_fixes.py.
+  - F12 (machine-token expiry), F13 (async lint gap), F14 (grant
+    reactivation cycle edge): FIXED in 4764e0e / 21605cd.
+  - F11, F15 (split-vote MINOR/OBSERVATION): documented design notes in
+    code, 9caf799 — honest Phase-1 semantics, no behavior change.
+- Run 2: launched against the fixed tree (workflow
+  adversarial-review-mt595mxv-punh45); verdict recorded when done.
+- SHIPPABLE only after two consecutive PROCEED verdicts with zero
+  BLOCKER/MAJOR against running code.
 
 Commits: 648f714, 5ebab33 (spec), 3f02481 (#10 spine), 2e7766d (#12),
 10a7fb1 (#11), 988fae1 (#5).
