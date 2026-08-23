@@ -113,7 +113,9 @@ def _build(config: dict, data_dir: str, executor_name: str):
     # matches the shared decision secret. An authz-enabled deployment without
     # one is a configuration error (wire_authz refuses it too).
     az = config.get("authz") or {}
-    engine._decision_secret = az.get("decision_secret") or ""
+    # R11-1: normalize identically at EVERY trust point (dashboard seeds
+    # stripped too) so whitespace can never split writer vs verifier.
+    engine._decision_secret = (az.get("decision_secret") or "").strip()
     if az.get("enabled") and not engine._decision_secret:
         raise RuntimeError(
             "authz.enabled requires authz.decision_secret in config.yaml")

@@ -84,10 +84,17 @@ class AuthzStore:
             "PRAGMA table_info(approval_decisions)")}
         if "evidence_hmac" in cols:
             return
+        # R11-3: only a TRUE pre-R9 DB (live signature == recorded baseline)
+        # may take the sanctioned ALTER + refresh. Anything else is tampering
+        # or drift — leave it for boot_check to refuse.
+        from .schema import schema_signature
+        old_sig = schema_signature(self.conn)
+        baseline = self.kv_get("schema_hash")
+        if baseline is not None and baseline != old_sig:
+            return  # not our upgrade path; boot_check will refuse
         self.conn.execute(
             "ALTER TABLE approval_decisions ADD COLUMN evidence_hmac TEXT")
         self.conn.commit()
-        from .schema import schema_signature
         self.kv_set("schema_hash", schema_signature(self.conn))
 
     # -- users -----------------------------------------------------------

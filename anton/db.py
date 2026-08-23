@@ -81,7 +81,8 @@ WHEN NEW.status IN ('approved', 'denied')
   OR NEW.approver_human IS NOT NULL
   OR NEW.approver_principal IS NOT NULL
   OR (NEW.hmac IS NOT NULL AND NEW.hmac != 'son_of_anton_bypass')
-  OR (NEW.status = 'consumed' AND NEW.hmac != 'son_of_anton_bypass')
+  OR (NEW.status = 'consumed'
+      AND COALESCE(NEW.hmac, '') != 'son_of_anton_bypass')
 BEGIN
     SELECT RAISE(ABORT,
         'approvals must be created pending with no approver/hmac');

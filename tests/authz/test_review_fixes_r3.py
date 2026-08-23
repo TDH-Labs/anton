@@ -1076,12 +1076,16 @@ class R10EvidenceHmacUpgradePath(unittest.TestCase):
         conn = sqlite3.connect(path)
         # pre-R9 shape: approval_decisions WITHOUT evidence_hmac + old baseline
         conn.executescript(
-            "CREATE TABLE approval_decisions (id INTEGER PRIMARY KEY"
-            " AUTOINCREMENT, approval_id INTEGER NOT NULL,"
-            " approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,"
-            " decision TEXT NOT NULL, ts TEXT NOT NULL);"
-            "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT);")
-        conn.execute("INSERT INTO kv VALUES('schema_hash','old')")
+            # true pre-R9 shape: FULL canonical schema but approval_decisions
+            # lacks evidence_hmac
+            __import__("anton.authz.schema", fromlist=["SCHEMA"]).SCHEMA.replace(
+                "    evidence_hmac TEXT,\n", ""))
+        from anton.authz.schema import TRIGGERS
+        conn.executescript(TRIGGERS)
+        # a TRUE pre-R9 DB: recorded baseline == live signature
+        from anton.authz.schema import schema_signature
+        conn.execute("INSERT INTO kv VALUES('schema_hash', ?)",
+                     (schema_signature(conn),))
         conn.commit()
         conn.close()
         try:
@@ -1173,6 +1177,69 @@ class R10LockContentionFailClosed(unittest.TestCase):
 
 def os_path_join(p):
     return p
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# =========================================================================
+# Round 11 (verification of round-10 fixes)
+# =========================================================================
+
+class R11WhitespaceSplitBrain(unittest.TestCase):
+    """MINOR R11-1: whitespace in decision_secret must not split writer vs
+    verifier — all three trust points normalize identically."""
+
+    def test_stripped_everywhere(self):
+        env = build_env(authz_enabled=True,
+                        extra_authz={"decision_secret": "  ws-secret  "})
+        self.assertEqual(env.app.state.authz_store.decision_secret,
+                         "ws-secret")
+        import shutil
+        shutil.rmtree(env.dir, ignore_errors=True)
+
+
+class R11NullHmacConsumedInsertRefused(unittest.TestCase):
+    """MINOR R11-2: NULL-hmac 'consumed' INSERT is execution-marker forgery."""
+
+    def test_null_hmac_consumed_insert_refused(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO approvals(nonce, action, status, ts)"
+                             " VALUES('nullc','j','consumed','now')")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+
+
+class R11UpgradeBaselineGuard(unittest.TestCase):
+    """OBSERVATION R11-3: the sanctioned upgrade only fires on a TRUE pre-R9
+    DB (baseline matches); a tampered DB is left for boot_check to refuse."""
+
+    def test_tampered_db_not_rebaselined_by_upgrade(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        from anton.authz.store import open_store
+        # tamper: drop the column out-of-band on the CURRENT db
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        baseline = raw_sqlite(self.env.authz_db,
+                              "SELECT value FROM kv WHERE key='schema_hash'"
+                              )[0][0]
+        conn.execute("ALTER TABLE approval_decisions DROP COLUMN evidence_hmac")
+        conn.commit()
+        conn.close()
+        store = open_store(self.env.authz_db)  # upgrade path must NOT fire
+        new_baseline = store.kv_get("schema_hash")
+        # baseline untouched -> boot_check will refuse (fail-closed)
+        self.assertEqual(new_baseline, baseline)
+        store.close()
 
 
 if __name__ == "__main__":

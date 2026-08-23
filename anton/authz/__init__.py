@@ -39,7 +39,7 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
 
     store = open_store(os.path.join(data_dir, "authz.db"))
     store.enabled_roles = enabled_roles(config)
-    store.decision_secret = (azcfg.get("decision_secret") or "") or None
+    store.decision_secret = ((azcfg.get("decision_secret") or "").strip()) or None
     audit = AuditLog(store)
 
     broker = CredentialBroker(
