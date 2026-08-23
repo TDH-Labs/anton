@@ -14,7 +14,11 @@ CREATE TABLE IF NOT EXISTS initiatives (
 );
 CREATE TABLE IF NOT EXISTS approvals (
     id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
-    nonce TEXT UNIQUE, action TEXT, amount TEXT, recipient TEXT, status TEXT, hmac TEXT, ts TEXT
+    nonce TEXT UNIQUE, action TEXT, amount TEXT, recipient TEXT, status TEXT, hmac TEXT, ts TEXT,
+    -- REQ-APPR-01/02: approver != initiator on the scheduler's real money/
+    -- outbound gate. Additive; backfilled NULL until authz rewrites.
+    initiator_human TEXT, initiator_principal TEXT,
+    approver_human TEXT, approver_principal TEXT
 );
 CREATE TABLE IF NOT EXISTS budgets (
     id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
@@ -53,6 +57,24 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
     id INTEGER PRIMARY KEY AUTOINCREMENT, org_id TEXT DEFAULT 'default',
     skill_slug TEXT, kind TEXT, text TEXT, source TEXT, consumed_at TEXT, ts TEXT
 );
+
+-- REQ-APPR-01/02 on the scheduler's real money/outbound gate: a decision
+-- row may never be approved by the same human who initiated it. Initiated
+-- rows carry initiator_human at creation (dashboard stamps it); the
+-- deciding call stamps approver_human. Scripts and migrations cannot
+-- bypass this — it lives in the database.
+CREATE TRIGGER IF NOT EXISTS trg_approvals_no_self_approve
+BEFORE UPDATE ON approvals
+FOR EACH ROW
+WHEN NEW.status IN ('approved', 'denied')
+ AND OLD.initiator_human IS NOT NULL
+ AND NEW.initiator_human IS NOT NULL
+ AND OLD.initiator_human = NEW.initiator_human
+ AND NEW.approver_human IS NOT NULL
+ AND NEW.approver_human = OLD.initiator_human
+BEGIN
+    SELECT RAISE(ABORT, 'approver may not equal initiator (human match)');
+END;
 """
 
 

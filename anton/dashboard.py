@@ -493,6 +493,9 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if req.decision not in ("once", "always", "defer"):
             raise HTTPException(400, "decision must be once|always|defer")
         conn = open_isolation_db(data_dir)
+        principal = getattr(request.state, "principal", None)
+        appr_h = principal.human_id if principal else None
+        appr_p = principal.principal_id if principal else None
         try:
             if req.decision == "defer":
                 row = conn.execute("SELECT id FROM approvals WHERE id=?", (aid,)).fetchone()
@@ -503,15 +506,20 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             new_kind = "standing" if req.decision == "always" else None
             if new_kind:
                 cur = conn.execute(
-                    "UPDATE approvals SET status=?, kind=? WHERE id=? AND status='pending'",
-                    (new_status, new_kind, aid))
+                    "UPDATE approvals SET status=?, kind=?, approver_human=?, "
+                    "approver_principal=? WHERE id=? AND status='pending'",
+                    (new_status, new_kind, appr_h, appr_p, aid))
             else:
                 cur = conn.execute(
-                    "UPDATE approvals SET status=? WHERE id=? AND status='pending'",
-                    (new_status, aid))
+                    "UPDATE approvals SET status=?, approver_human=?, "
+                    "approver_principal=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, aid))
             conn.commit()
             if cur.rowcount == 0:
                 raise HTTPException(404, "no pending approval with that id")
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise HTTPException(409, "approver may not equal initiator")
         finally:
             conn.close()
         return {"id": aid, "status": new_status, "decision": req.decision}
@@ -520,11 +528,17 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     def create_approval(req: ApprovalReq, request: Request):
         _require_token(request, token)
         nonce = secrets.token_hex(16)
-        with sqlite3.connect(os.path.join(data_dir, "isolation.db"), timeout=10.0) as conn:
-            conn.execute("INSERT INTO approvals(nonce, action, amount, recipient, status, ts) "
-                         "VALUES(?,?,?,?,?,?)",
-                         (nonce, req.action, req.amount, req.recipient, "pending",
-                          dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+        principal = getattr(request.state, "principal", None)
+        init_h = principal.human_id if principal else None
+        init_p = principal.principal_id if principal else None
+        with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
+                             timeout=10.0) as conn:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, amount, recipient, status,"
+                " ts, initiator_human, initiator_principal) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (nonce, req.action, req.amount, req.recipient, "pending",
+                 _now_iso(), init_h, init_p))
             aid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.commit()
         return {"id": aid, "nonce": nonce, "status": "pending"}
@@ -534,13 +548,24 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         _require_token(request, token)
         if req.decision not in ("approve", "deny"):
             raise HTTPException(400, "decision must be approve|deny")
-        with sqlite3.connect(os.path.join(data_dir, "isolation.db"), timeout=10.0) as conn:
-            cur = conn.execute("UPDATE approvals SET status=? WHERE id=? AND status='pending'",
-                               ("approved" if req.decision == "approve" else "denied", aid))
-            conn.commit()
-            if cur.rowcount == 0:
-                raise HTTPException(404, "no pending approval with that id")
-        return {"id": aid, "status": "approved" if req.decision == "approve" else "denied"}
+        principal = getattr(request.state, "principal", None)
+        appr_h = principal.human_id if principal else None
+        appr_p = principal.principal_id if principal else None
+        new_status = "approved" if req.decision == "approve" else "denied"
+        try:
+            with sqlite3.connect(os.path.join(data_dir, "isolation.db"),
+                                 timeout=10.0) as conn:
+                cur = conn.execute(
+                    "UPDATE approvals SET status=?, approver_human=?, "
+                    "approver_principal=? WHERE id=? AND status='pending'",
+                    (new_status, appr_h, appr_p, aid))
+                conn.commit()
+                if cur.rowcount == 0:
+                    raise HTTPException(404, "no pending approval with that id")
+        except sqlite3.IntegrityError:
+            # REQ-APPR-01: approver == initiator rejected at the DB layer
+            raise HTTPException(409, "approver may not equal initiator")
+        return {"id": aid, "status": new_status}
 
     @app.get("/api/digest", response_class=PlainTextResponse)
     def digest():

@@ -398,6 +398,17 @@ class CredentialBroker:
         self._validate_lease(lease)
         for sid in secret_ids:
             _, connection_id = self._stored_value(sid)
+            # REQ-CRED-02: minted secrets must lie within the lease's
+            # permitted connection set (R3A-2).
+            if connection_id not in lease.connection_ids:
+                if self.audit is not None:
+                    self.audit.append("authorization_denied", payload={
+                        "reason": "connection_outside_lease",
+                        "connection_id": connection_id,
+                        "lease": lease.execution_id})
+                raise BrokerDenied(
+                    f"secret {sid} names connection {connection_id!r} outside "
+                    "the lease's permitted set")
             if not self._grant_allowed(lease.principal_id, connection_id):
                 if self.audit is not None:
                     self.audit.append(
@@ -523,7 +534,15 @@ class CredentialBroker:
                     "principal": payload.get("pid")})
             raise BrokerDenied(
                 f"token does not name secret {secret_id}")
-        plaintext, connection_id = self.get_secret(secret_id)
+        # Grant re-check BEFORE any decryption/resolution: a revoked
+        # principal must never drive the external password-manager adapter
+        # (R3C-4).
+        row = self.conn.execute(
+            "SELECT connection_id FROM broker_secrets WHERE id=?",
+            (secret_id,)).fetchone()
+        if row is None:
+            raise BrokerDenied(f"unknown secret {secret_id}")
+        connection_id = row["connection_id"]
         if not self._grant_allowed(payload.get("pid", ""), connection_id):
             if self.audit is not None:
                 self.audit.append("authorization_denied", payload={
@@ -532,6 +551,7 @@ class CredentialBroker:
                     "connection_id": connection_id})
             raise BrokerDenied(
                 f"no active grant for {payload.get('pid')} on {connection_id}")
+        plaintext, connection_id = self.get_secret(secret_id)
         if self.audit is not None:
             self.audit.append("secret_fetch", payload={
                 "requester": payload.get("pid"), "secret_id": secret_id,
@@ -617,6 +637,16 @@ class CredentialBroker:
 
     def _dispatch(self, req: dict, peer_uid: int | None) -> dict:
         op = req.get("op")
+        # Every socket op is peer-attested: an unresolvable or non-allowed
+        # OS peer cannot lease, mint, or poll — REQ-CRED-02 (R3A-2).
+        if op in ("lease", "mint", "poll", "fetch") and \
+                (peer_uid is None or peer_uid not in self.allowed_uids):
+            if self.audit is not None:
+                self.audit.append("authorization_denied",
+                                  payload={"reason": "peer_uid_rejected",
+                                           "op": op})
+            return {"ok": False, "error": "BrokerDenied",
+                    "detail": "unattested peer"}
         if op == "ping":
             return {"ok": True, "epoch": round(self.epoch_now(), 3)}
         if op == "poll":

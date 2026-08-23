@@ -4,7 +4,8 @@ from __future__ import annotations
 import hashlib
 
 from .principals import MigrationPrincipal, PrincipalTypeError, require_nonhuman
-from .schema import missing_critical_triggers, schema_signature
+from .schema import (missing_critical_triggers, schema_signature,
+                     weakened_critical_objects)
 
 
 class SchemaHashMismatch(Exception):
@@ -23,7 +24,14 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
     sig = schema_signature(store.conn)
     baseline = store.kv_get("schema_hash")
     if mode != "first_boot":
-        if baseline is not None and baseline != sig:
+        if baseline is None:
+            audit.append("schema_mismatch", payload={
+                "expected": None, "actual": sig, "mode": mode,
+                "reason": "baseline_missing"})
+            raise SchemaHashMismatch(
+                "authZ schema-hash baseline is MISSING — the DB was tampered "
+                "or restored improperly. Refusing to start into multi-user.")
+        if baseline != sig:
             audit.append("schema_mismatch", payload={
                 "expected": baseline, "actual": sig, "mode": mode})
             raise SchemaHashMismatch(
@@ -37,7 +45,8 @@ def boot_check(store, audit, mode: str = "multi_user") -> str:
 def run_migration(store, audit, principal, name: str, sql: str) -> str:
     """Migration runner operates exclusively under MigrationPrincipal;
     every migration is hash-recorded in the audit chain; post-migration
-    the critical trigger/constraint set is asserted (REQ-PRIN-02)."""
+    the critical trigger/constraint set is asserted by NAME and by BODY
+    (REQ-PRIN-02, R3A-3: a same-name weakened trigger is a failure)."""
     require_nonhuman(principal)
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
@@ -47,9 +56,11 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     audit.append("migration", actor=principal, payload={
         "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
     missing = missing_critical_triggers(store.conn)
-    if missing:
+    weakened = weakened_critical_objects(store.conn)
+    if missing or weakened:
         raise MigrationIntegrityError(
-            f"migration {name!r} dropped critical authZ triggers: {missing}")
+            f"migration {name!r} violates the authZ invariant set: "
+            f"missing={missing} weakened={weakened}")
     # Sanctioned migrations re-baseline the recorded schema hash.
     sig = schema_signature(store.conn)
     store.kv_set("schema_hash", sig)

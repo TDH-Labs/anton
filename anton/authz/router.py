@@ -72,8 +72,13 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
         user = store.verify_login(req.username, req.password)
         if user is None:
             store.record_login_attempt(req.username, ok=False)
+            # REQ-AUDIT-01 lists logins in the chain; failed logins are
+            # attributed by username (no principal exists yet).
+            audit.append("login_failed", actor=req.username)
             raise HTTPException(401, "invalid credentials")
         store.record_login_attempt(req.username, ok=True)
+        audit.append("login", actor=store.principal_by_id(user["id"]),
+                     payload={"method": "password"})
         device = store.create_device(
             user["id"],
             request.headers.get("user-agent", "unknown")[:120])
