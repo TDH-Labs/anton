@@ -269,6 +269,12 @@ BEGIN
     SELECT RAISE(ABORT, 'approval executions are append-only');
 END;
 
+CREATE TRIGGER IF NOT EXISTS trg_execution_append_only
+BEFORE UPDATE ON approval_executions
+BEGIN
+    SELECT RAISE(ABORT, 'approval executions are append-only');
+END;
+
 -- REQ-AUDIT-01: the audit chain is append-only at the schema level.
 CREATE TRIGGER IF NOT EXISTS trg_audit_append_only
 BEFORE UPDATE ON audit_chain
@@ -290,6 +296,16 @@ END;
 # Type-agnostic: triggers AND indexes (ux_decision_once closes the
 # double-decision race; dropping it must fail the pipeline — review R2A-4).
 CRITICAL_OBJECTS = (
+    # security-critical TABLE definitions — DROP/CREATE without the same
+    # invariants (CHECK constraints, NOT NULLs) must fail the gate
+    "approval_decisions",
+    "approval_executions",
+    "authz_approvals",
+    "connection_grants",
+    "role_assignments",
+    "breakglass_events",
+    "audit_chain",
+    # triggers
     "trg_grant_no_self",
     "trg_grant_no_cycle",
     "trg_grant_no_reparty",
@@ -302,6 +318,7 @@ CRITICAL_OBJECTS = (
     "trg_decision_append_only",
     "trg_decision_no_delete",
     "trg_execution_no_delete",
+    "trg_execution_append_only",
     "trg_audit_append_only",
     "trg_audit_no_delete",
     "ux_decision_once",

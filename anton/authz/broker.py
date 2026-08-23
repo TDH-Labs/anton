@@ -480,12 +480,19 @@ class CredentialBroker:
         return bool(row and row["revoked"])
 
     def _session_dead(self, session_id: str) -> bool:
-        return bool(session_id and self.session_validator is not None
-                    and not self.session_validator(session_id))
+        # ED-2: with no session validator wired, any claimed session binding
+        # is unverifiable => treat as dead (fail closed), never trust the
+        # token body (R4-5).
+        if not session_id:
+            return False
+        if self.session_validator is None:
+            return True
+        return not self.session_validator(session_id)
 
     def _grant_allowed(self, principal_id: str, connection_id: str) -> bool:
+        # ED-2: an unwired grant checker is a DENY (R4-5).
         if self.grant_checker is None:
-            return True
+            return False
         return bool(self.grant_checker(principal_id, connection_id))
 
     def _check_capability(self, cap_payload: dict) -> None:

@@ -60,20 +60,44 @@ CREATE TABLE IF NOT EXISTS skill_lessons (
 
 -- REQ-APPR-01/02 on the scheduler's real money/outbound gate: a decision
 -- row may never be approved by the same human who initiated it. Initiated
--- rows carry initiator_human at creation (dashboard stamps it); the
+-- rows carry initiator_human at creation (dashboard/API stamps it); the
 -- deciding call stamps approver_human. Scripts and migrations cannot
 -- bypass this — it lives in the database.
+--
+-- (R4-3 hardening) Decided rows reach that state only through the guarded
+-- UPDATE. Refused transitions:
+--   * any UPDATE mutating the immutable initiator fields;
+--   * decided status with initiator present but no approver (laundering);
+--   * decided status with same human as initiator;
+--   * decided status with a claimed approver but NO initiator (a system
+--     row stamps initiator 'system'; an unattributed row cannot be decided
+--     by a human).
+-- Fully-legacy rows (both initiator and approver NULL — pre-authz) are
+-- allowed through, because there is no identity material to compare.
 CREATE TRIGGER IF NOT EXISTS trg_approvals_no_self_approve
-BEFORE UPDATE ON approvals
+BEFORE INSERT ON approvals
 FOR EACH ROW
 WHEN NEW.status IN ('approved', 'denied')
- AND OLD.initiator_human IS NOT NULL
- AND NEW.initiator_human IS NOT NULL
- AND OLD.initiator_human = NEW.initiator_human
- AND NEW.approver_human IS NOT NULL
- AND NEW.approver_human = OLD.initiator_human
 BEGIN
-    SELECT RAISE(ABORT, 'approver may not equal initiator (human match)');
+    SELECT RAISE(ABORT, 'approvals must be created pending');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_approvals_no_self_approve_upd
+BEFORE UPDATE ON approvals
+FOR EACH ROW
+WHEN (
+    NEW.initiator_human IS NOT OLD.initiator_human
+    OR NEW.initiator_principal IS NOT OLD.initiator_principal
+    OR (NEW.status IN ('approved', 'denied') AND (
+        (OLD.initiator_human IS NOT NULL AND NEW.approver_human IS NULL)
+        OR (OLD.initiator_human IS NOT NULL
+            AND NEW.approver_human IS NOT NULL
+            AND NEW.approver_human = OLD.initiator_human)
+        OR (OLD.initiator_human IS NULL AND NEW.approver_human IS NOT NULL)
+    ))
+)
+BEGIN
+    SELECT RAISE(ABORT, 'approval transition rejected (REQ-APPR-01/02)');
 END;
 """
 

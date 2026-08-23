@@ -51,17 +51,49 @@ def run_migration(store, audit, principal, name: str, sql: str) -> str:
     if not isinstance(principal, MigrationPrincipal):
         raise PrincipalTypeError(
             "migrations require a MigrationPrincipal")
+    # VALIDATE FIRST: apply the migration to a scratch :memory: clone of the
+    # live schema and run the full name+body gate there, BEFORE the real
+    # database is touched (review R4-1). A rejected migration must leave
+    # the live DB byte-identical.
+    _validate_migration_sql(store, sql)
+    # Apply to the real DB (validate-first already refused any migration
+    # that would weaken the invariant set, so this cannot launder).
     store.conn.executescript(sql)
     store.conn.commit()
-    audit.append("migration", actor=principal, payload={
-        "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
     missing = missing_critical_triggers(store.conn)
     weakened = weakened_critical_objects(store.conn)
-    if missing or weakened:
+    if missing or weakened:  # belt-and-braces after a validated apply
         raise MigrationIntegrityError(
-            f"migration {name!r} violates the authZ invariant set: "
+            f"migration {name!r} violated the invariant set post-apply: "
             f"missing={missing} weakened={weakened}")
+    audit.append("migration", actor=principal, payload={
+        "name": name, "sql_sha256": hashlib.sha256(sql.encode()).hexdigest()})
     # Sanctioned migrations re-baseline the recorded schema hash.
     sig = schema_signature(store.conn)
     store.kv_set("schema_hash", sig)
     return sig
+
+
+def _validate_migration_sql(store, sql: str) -> None:
+    """Apply the migration to a scratch in-memory clone of the live schema
+    and assert the invariant gate there. This is the authoritative refusal:
+    the live DB is never written when the gate would fail."""
+    import sqlite3
+    scratch = sqlite3.connect(":memory:")
+    try:
+        for (ddl,) in store.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"):
+            if ddl.startswith("CREATE TABLE sqlite_"):
+                continue
+            scratch.execute(ddl)
+        scratch.commit()
+        scratch.executescript(sql)
+        scratch.commit()
+        missing = missing_critical_triggers(scratch)
+        weakened = weakened_critical_objects(scratch)
+    finally:
+        scratch.close()
+    if missing or weakened:
+        raise MigrationIntegrityError(
+            f"migration would violate the authZ invariant set: "
+            f"missing={missing} weakened={weakened}")

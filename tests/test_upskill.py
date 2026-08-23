@@ -205,7 +205,8 @@ class TestRunUpskillSufficientResearch(UpskillTestBase):
         with patch.dict(upskill._PROMOTION_RISK_PROFILE, {"risk": "high"}):
             upskill.run_upskill(self.engine, "widget repair")
         conn = sqlite3.connect(os.path.join(self.data_dir, "isolation.db"))
-        conn.execute("UPDATE approvals SET status='approved' WHERE action=?",
+        conn.execute("UPDATE approvals SET status='approved', approver_human='owner', "
+                     "approver_principal='owner' WHERE action=?",
                      (f"upskill_promote:{slug}",))
         conn.commit()
         conn.close()

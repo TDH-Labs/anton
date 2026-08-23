@@ -246,3 +246,172 @@ class R3B4BreakglassRateLimitAtomic(unittest.TestCase):
             t.join()
         self.assertEqual(len(errors), 2)  # exactly one elevated, two rate-limited
         self.assertEqual(len(results), 1)
+
+# =========================================================================
+# Round 4 (verification of run-3 fixes — files in this module)
+# =========================================================================
+
+class R4MigrationRejectionLeavesDbPristine(unittest.TestCase):
+    """MAJOR R4-1: a rejected migration must not leave weakened DDL live."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_rejected_migration_leaves_trigger_intact(self):
+        from anton.authz.boot import MigrationIntegrityError, run_migration
+        from anton.authz.principals import MigrationPrincipal
+        hostile = ("DROP TRIGGER IF EXISTS trg_grant_no_self; "
+                   "CREATE TRIGGER trg_grant_no_self BEFORE INSERT ON "
+                   "connection_grants BEGIN SELECT RAISE(IGNORE); END;")
+        with self.assertRaises(MigrationIntegrityError):
+            run_migration(self.store, self.audit,
+                          principal=MigrationPrincipal(migration_name="r4-1"),
+                          name="r4-1", sql=hostile)
+        # the trigger body in the LIVE DB was never weakened; self-grant
+        # still aborts
+        import sqlite3 as _sq
+        owner = self.store.get_user_by_username("owner")
+        conn = _sq.connect(self.env.authz_db)
+        try:
+            with self.assertRaises(_sq.IntegrityError):
+                conn.execute(
+                    "INSERT INTO connection_grants(granter_id, grantee_id,"
+                    " connection_id, scope, oauth_scopes_json, policy_version,"
+                    " active, created) VALUES(?,?,?,?,?,?,1,'now')",
+                    (owner["id"], owner["id"], "c", "full", "[]", "v1"))
+        finally:
+            conn.close()
+
+
+class R4TableDdlLaunderingRejected(unittest.TestCase):
+    """MAJOR R4-2: DROP/CREATE of a critical table without its CHECK must fail."""
+    # pylint: disable=line-too-long
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        self.store = self.env.app.state.authz_store
+        self.audit = self.env.app.state.authz_audit
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_approval_decisions_without_check_rejected(self):
+        from anton.authz.boot import MigrationIntegrityError, run_migration
+        from anton.authz.principals import MigrationPrincipal
+        before = self.store.kv_get("schema_hash")
+        hostile = ("DROP TABLE IF EXISTS approval_decisions; "
+                   "CREATE TABLE approval_decisions (\n"
+                   "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+                   "    approval_id INTEGER NOT NULL,\n"
+                   "    approver_principal TEXT NOT NULL, approver_human TEXT NOT NULL,\n"
+                   "    decision TEXT NOT NULL,\n"
+                   "    ts TEXT NOT NULL\n"
+                   ");\n"
+                   "CREATE UNIQUE INDEX IF NOT EXISTS ux_decision_once ON"
+                   " approval_decisions(approval_id);")
+        with self.assertRaises(MigrationIntegrityError):
+            run_migration(self.store, self.audit,
+                          principal=MigrationPrincipal(migration_name="r4-2"),
+                          name="r4-2", sql=hostile)
+        self.assertEqual(before, self.store.kv_get("schema_hash"))
+
+
+class R4LegacyApprovalHardening(unittest.TestCase):
+    """MAJOR R4-3: legacy approvals trigger hardening."""
+
+    def setUp(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        # isolation.db is created by helpers\nself.store = self.env.app.state.authz_store
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.env.dir, ignore_errors=True)
+
+    def test_direct_decided_insert_rejected(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO approvals(nonce, action, status, ts,"
+                    " initiator_human, approver_human) VALUES('x','job','approved',"
+                    "'now','alice','alice')")
+        finally:
+            conn.close()
+
+    def test_initiator_laundering_rejected(self):
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, status, ts,"
+                " initiator_human, initiator_principal) VALUES('y','job','pending',"
+                "'now','alice','alice')")
+            conn.commit()
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE approvals SET status='approved', initiator_human='eve',"
+                    " approver_human='alice' WHERE nonce='y'")
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()
+
+    def test_legacy_null_rows_still_work(self):
+        # fully-legacy rows (all identity NULL) remain decidable — the
+        # pre-authz behavior is preserved, not regressed
+        import sqlite3
+        conn = sqlite3.connect(self.env.isolation_db)
+        try:
+            conn.execute(
+                "INSERT INTO approvals(nonce, action, status, ts)"
+                " VALUES('z','job3','pending','now')")
+            conn.execute(
+                "UPDATE approvals SET status='approved' WHERE nonce='z'")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = raw_sqlite(self.env.isolation_db,
+                          "SELECT status FROM approvals WHERE nonce='z'")
+        self.assertEqual(rows[0][0], "approved")
+
+
+class R4ExecutionUpdateRejected(unittest.TestCase):
+    """MINOR R4-5: approval_executions must also block UPDATE."""
+
+    def test_execution_update_rejected(self):
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        audit = self.env.app.state.authz_audit
+        owner_p = store.principal_of("owner")
+        alice = store.create_user("alicee", "Role-Pass-1!")
+        from anton.authz.approvals import (  # noqa: E501
+    approve, create_approval, execute_approved)
+        aid = create_approval(store, audit,
+                              initiator=store.principal_of("alicee"),
+                              payload={"k": 9}, policy_version="v1")
+        approve(store, audit, approver=owner_p, approval_id=aid)
+        execute_approved(store, audit, approval_id=aid, current_payload={"k": 9})
+        import sqlite3
+        conn = sqlite3.connect(self.env.authz_db)
+        try:
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute(
+                    "UPDATE approval_executions SET "
+                    "executed_at='2030-01-01T00:00:00Z' WHERE approval_id=?",
+                    (aid,))
+                conn.commit()
+            conn.rollback()
+        finally:
+            conn.close()

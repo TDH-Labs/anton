@@ -41,8 +41,32 @@ def request_breakglass(store, audit, principal, reason: str,
     cutoff = _epoch() - window_s
     cutoff_str = dt.datetime.fromtimestamp(
         cutoff, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Rate check runs INSIDE the write critical section so concurrent
-    # requests cannot both observe n < limit and both elevate (R3B-4).
+    # Deliver channels OUTSIDE the write lock — never hold the global authz
+    # write lock across unbounded network I/O (R4-4 regression fix): a hung
+    # channel must not wedge login/sessions/grants/audit.
+    ok = failed = 0
+    message = (f"BREAK-GLASS elevation by "
+               f"{principal.principal_id}: {reason}")
+    for channel in channels:
+        try:
+            if channel(message):
+                ok += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+
+    # REQ-APPR-03: "success if either delivers" — a fully silent elevation
+    # is refused and audited (R2A-6).
+    if ok == 0:
+        audit.append("breakglass_refused", actor=principal, payload={
+            "reason": "no_channel_delivered", "channels_failed": failed})
+        raise BreakGlassDeliveryFailed(
+            "break-glass refused: no notification channel delivered")
+
+    # Rate check + insert happen atomically under the write lock; the
+    # (slow) delivery already happened above so the critical section is
+    # short and concurrent requests cannot both observe n < limit (R3B-4).
     with store.lock:
         n = store.conn.execute(
             "SELECT COUNT(*) FROM breakglass_events WHERE ts > ?",
@@ -50,26 +74,6 @@ def request_breakglass(store, audit, principal, reason: str,
         if n >= max_count:
             raise BreakGlassRateLimited(
                 f"break-glass limited to {max_count} per {window_s}s")
-        ok = failed = 0
-        message = (f"BREAK-GLASS elevation by "
-                   f"{principal.principal_id}: {reason}")
-        for channel in channels:
-            try:
-                if channel(message):
-                    ok += 1
-                else:
-                    failed += 1
-            except Exception:
-                failed += 1
-
-        # REQ-APPR-03: "success if either delivers" — a fully silent
-        # elevation is refused and audited (R2A-6).
-        if ok == 0:
-            audit.append("breakglass_refused", actor=principal, payload={
-                "reason": "no_channel_delivered", "channels_failed": failed})
-            raise BreakGlassDeliveryFailed(
-                "break-glass refused: no notification channel delivered")
-
         expires = _epoch() + duration_min * 60
         store.conn.execute(
             "INSERT INTO breakglass_events(principal, reason, expires, ts,"

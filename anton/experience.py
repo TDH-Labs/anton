@@ -154,10 +154,12 @@ def dispatch_experience_iteration(engine, task: str, *, max_attempts: int = 3,
         with sqlite3.connect(db_path, timeout=10.0) as conn:
             nonce = f"upskill-{slug}-{uuid.uuid4().hex[:12]}"
             conn.execute(
-                "INSERT INTO approvals(nonce, action, amount, recipient, status, hmac, ts) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO approvals(nonce, action, amount, recipient, status,"
+                " hmac, ts, initiator_human, initiator_principal) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 (nonce, f"upskill_promote:{slug}", "", "", "pending", "",
-                 dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+                 dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "system", "system:upskill"))
             conn.commit()
         return UpskillResult(slug=slug, subject=task, status="pending_approval",
                              detail=f"route={ruling.route}")
