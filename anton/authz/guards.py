@@ -125,6 +125,9 @@ class AuthzMiddleware(BaseHTTPMiddleware):
                 200 <= response.status_code < 400:
             # Four-identity chain: sponsor user → workspace → agent instance
             # → tool credential (REQ-AUTH-01); all fields non-null.
+            # Phase-1 honesty note (review F11): dashboard-originated actions
+            # have exactly one workspace and no tool credential yet — these
+            # values are accurate-for-now, not fabricated identity.
             self.audit.append(
                 "mutation", actor=principal, workspace="default",
                 agent_instance=f"dashboard:{principal.username}",

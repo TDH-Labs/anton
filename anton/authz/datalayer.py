@@ -37,7 +37,12 @@ def run_scheduled_job(store, audit, principal: SystemPrincipal) -> None:
 def get_connection_credential(store, principal, connection_id: str) -> dict:
     """Canonical ACL check for connector credentials. `principal` is a
     required positional parameter by design: calling this without one must
-    raise TypeError at every bypass attempt (CI-T-DATA-01)."""
+    raise TypeError at every bypass attempt (CI-T-DATA-01).
+
+    DOCUMENTED DESIGN (review F15): Owner/Admin hold the privileged broker
+    tier and are NOT constrained by connection_grants — the grants table
+    governs delegation to Operator/Approver/Viewer principals. Admins are
+    still fully audited and cannot self-grant (schema-enforced)."""
     from . import rbac
     role = getattr(principal, "role", None)
     if rbac.can(role, "secrets.rotate") or rbac.can(role, "settings.write"):
