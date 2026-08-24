@@ -114,6 +114,7 @@ class NangoBridge:
                  transport: Callable = _http):
         self.secret_key = secret_key
         self.host = host.rstrip("/")
+        self._t = transport
         # self-hosted Nango serves UI+API from the same origin
         self.connect_host = (connect_host or host).rstrip("/")
 
@@ -135,7 +136,7 @@ class NangoBridge:
                        provider_config_key: str) -> dict:
         return self._t(
             "GET",
-            f"{self.host}/connection/{connectionId}"
+            f"{self.host}/connection/{connection_id}"
             f"?provider_config_key={urllib.parse.quote(provider_config_key)}",
             self._headers())
 
