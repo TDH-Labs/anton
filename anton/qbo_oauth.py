@@ -86,6 +86,13 @@ def load_vendor_credentials(data_dir: str) -> tuple[str, str]:
     """Deployment-local copy of the vendor (TDH Labs) Intuit app
     credentials, persisted at provision time. Precedence after env:
     authz/oauth.vendor.json -> SECRETS_ENV_CANDIDATES files."""
+    vendor_path = os.path.expanduser("~/.secrets/qbo_vendor.json")
+    if os.path.exists(vendor_path):
+        import json as _json
+        with open(vendor_path, encoding="utf-8") as f:
+            d = _json.load(f)
+        if d.get("client_id") and d.get("client_secret"):
+            return d["client_id"], d["client_secret"]
     path = os.path.join(data_dir, VENDOR_OAUTH_FILE)
     if os.path.exists(path):
         import json as _json
@@ -116,6 +123,13 @@ def persist_vendor_credentials(data_dir: str, client_id: str,
     """Persist the vendor Intuit app credentials deployment-local (0600)."""
     from .authz.secrets import write_private_file
     import json as _json
+    vendor_path = os.path.expanduser("~/.secrets/qbo_vendor.json")
+    if os.path.exists(vendor_path):
+        import json as _json
+        with open(vendor_path, encoding="utf-8") as f:
+            d = _json.load(f)
+        if d.get("client_id") and d.get("client_secret"):
+            return d["client_id"], d["client_secret"]
     path = os.path.join(data_dir, VENDOR_OAUTH_FILE)
     write_private_file(path, _json.dumps(
         {"client_id": client_id, "client_secret": client_secret}, indent=2))

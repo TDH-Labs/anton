@@ -60,8 +60,12 @@ def main() -> None:
     # vendor QBO credentials -> deployment-local copy under data/ (the dir
     # the dashboard reads at runtime; R21 path fix)
     sys.path.insert(0, REPO)
-    from anton.qbo_oauth import load_vendor_credentials, persist_vendor_credentials
-    cid, csec = load_vendor_credentials(os.path.join(REPO, ".dev-data"))
+    from anton.qbo_oauth import (load_qbo_credentials,
+                                 load_vendor_credentials,
+                                 persist_vendor_credentials)
+    cid, csec = (load_qbo_credentials()
+                 or load_vendor_credentials(
+                     os.path.join(REPO, ".dev-data")))
     if cid and csec:
         persist_vendor_credentials(os.path.join(install, "data"), cid, csec)
         print("[fleet] vendor QBO credentials persisted")
