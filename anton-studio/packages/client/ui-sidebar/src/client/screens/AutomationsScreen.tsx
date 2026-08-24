@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import bp from '../blueprint.module.css'
 import { NodeEditorScreen, type EditorLink, type EditorNode } from './NodeEditorScreen.tsx'
 import { useOpsApi } from '../useOpsApi.ts'
@@ -33,17 +33,49 @@ const STATE_COLORS: Record<Automation['state'], string> = {
   failed: 'var(--dsw-alias-state-error-primary)',
 }
 
-// "Draw it" is real today (opens the visual node editor below). The other
-// two need real backend capability that doesn't exist yet -- text-to-
-// automation drafting, document parsing -- so they're marked not-yet-
-// available (soon: true) rather than silently doing nothing when clicked,
-// or being aliased to "Draw it" (a blank canvas isn't what someone asking
-// to "describe it in plain English" actually wants).
-const MAKE_WAYS: { icon: string; title: string; desc: string; soon?: boolean }[] = [
-  { icon: 'M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z', title: 'Describe it', desc: 'Say it in plain English — Anton drafts the workflow', soon: true },
+// All three ways are real today: "Describe it" and "Upload a doc" POST
+// /api/automations/draft (the configured model drafts a JSON workflow that is
+// strictly validated server-side), "Draw it" opens the visual node editor
+// below. A returned draft is only ever a reviewable card -- saving it goes
+// through PUT /api/automations/:id as awaiting_approval, never running.
+type MakeWay = { icon: string; title: string; desc: string }
+const MAKE_WAYS: MakeWay[] = [
+  { icon: 'M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z', title: 'Describe it', desc: 'Say it in plain English — Anton drafts the workflow' },
   { icon: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z', title: 'Draw it', desc: 'Build nodes and connections on a visual canvas' },
-  { icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6', title: 'Upload a doc', desc: 'Drop in a procedure doc — Anton maps it to steps', soon: true },
+  { icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6', title: 'Upload a doc', desc: 'Drop in a procedure doc (.txt/.md) — Anton maps it to steps' },
 ]
+
+type DraftTrigger = { kind: 'cron' | 'event' | 'interval' | null; display: string | null; expr: string | null }
+type AutomationDraft = {
+  name: string
+  plain: string
+  trigger?: DraftTrigger
+  steps: { text: string; assignee: 'agent' | 'human' | null }[]
+}
+
+const slugify = (name: string) =>
+  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'drafted-automation'
+
+/** Turn a validated draft into the same node graph the "Draw it" editor
+ * saves: a leading trigger node, then one node per step ("Ask a human" for
+ * steps the model assigned to a person). Saved as awaiting_approval — a draft
+ * is never activated on its own; turning it on stays with the row's editor. */
+function draftToNodes(draft: AutomationDraft): { nodes: EditorNode[]; links: EditorLink[] } {
+  const triggerText = draft.trigger?.display || 'When you tell it to run'
+  const nodes: EditorNode[] = [
+    { id: 'n0', kind: 'trigger', x: 24, y: 24, text: triggerText },
+    ...draft.steps.map((s, i) => ({
+      id: `n${i + 1}`,
+      kind: (s.assignee === 'human' ? 'human' : 'step') as EditorNode['kind'],
+      x: 24 + ((i + 1) % 3) * 40,
+      y: 24 + ((i + 1) % 4) * 96,
+      text: s.text,
+      ...(s.assignee === 'human' ? { assignee: 'you' } : {}),
+    })),
+  ]
+  const links: EditorLink[] = nodes.slice(1).map((_, i) => [`n${i}`, `n${i + 1}`] as EditorLink)
+  return { nodes, links }
+}
 
 let nextNewId = 1
 
@@ -53,7 +85,65 @@ export function AutomationsScreen() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState<string>('')
 
+  const [describeOpen, setDescribeOpen] = useState(false)
+  const [description, setDescription] = useState('')
+  const [drafting, setDrafting] = useState(false)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const [draft, setDraft] = useState<AutomationDraft | null>(null)
+  const [savingDraft, setSavingDraft] = useState(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
+
   const automations = data ?? []
+
+  const requestDraft = (desc: string, sourceText?: string, sourceName?: string) => {
+    if (!desc.trim()) return
+    setDrafting(true)
+    setDraftError(null)
+    fetch('/api/automations/draft', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description: desc, source_text: sourceText ?? undefined, source_name: sourceName ?? undefined }),
+    })
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail || `${r.status}`)
+        return r.json() as Promise<AutomationDraft>
+      })
+      .then((d) => { setDraft(d); setDescribeOpen(false) })
+      .catch((e) => { setDraftError(e instanceof Error && e.message !== '[object Object]' ? `Anton couldn't finish the draft (${e.message}).` : "Anton couldn't reach the drafting model.") })
+      .finally(() => setDrafting(false))
+  }
+
+  // Read entirely client-side (no upload endpoint exists or is needed):
+  // .txt/.md text goes into the same draft request body as any description.
+  const onDocPicked = async (f: File | null | undefined) => {
+    if (!f) return
+    if (!/\.(txt|md)$/i.test(f.name)) { setDraftError('Only .txt and .md files are supported.'); return }
+    try {
+      const text = await f.text()
+      requestDraft(
+        `Map this uploaded procedure document into an automation. Keep every ordered action it describes; add human sign-off steps where the document requires approval.`,
+        text, f.name,
+      )
+    } catch {
+      setDraftError('Could not read that file.')
+    }
+  }
+
+  const confirmDraft = () => {
+    if (draft === null) return
+    const id = slugify(draft.name)
+    const { nodes, links } = draftToNodes(draft)
+    setSavingDraft(true)
+    // Same persistence path as the wizard/editor approve flow — state stays
+    // awaiting_approval; activation is a separate, explicit later act.
+    fetch(`/api/automations/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: draft.name, plain: draft.plain, nodes, links, state: 'awaiting_approval' }),
+    })
+      .then(() => { setDraft(null); refetch() })
+      .finally(() => setSavingDraft(false))
+  }
 
   if (editingId !== null) {
     const editing = automations.find(a => a.id === editingId)
@@ -85,18 +175,74 @@ export function AutomationsScreen() {
             {MAKE_WAYS.map((w, i) => (
               <div
                 key={i}
-                onClick={w.title === 'Draw it' ? () => { const id = `draft-${nextNewId++}`; setEditingName('New automation'); setEditingId(id) } : undefined}
-                style={{ flex: 1, background: 'var(--dsw-alias-bg-base)', padding: '16px 18px', cursor: w.soon === true ? 'default' : 'pointer', opacity: w.soon === true ? 0.55 : 1 }}
+                onClick={() => {
+                  if (w.title === 'Describe it') { setDescribeOpen(o => !o); setDraftError(null) }
+                  else if (w.title === 'Upload a doc') { fileRef.current?.click(); setDraftError(null) }
+                  else { const id = `draft-${nextNewId++}`; setEditingName('New automation'); setEditingId(id) }
+                }}
+                style={{ flex: 1, background: 'var(--dsw-alias-bg-base)', padding: '16px 18px', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--dsw-alias-state-business-primary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={w.icon} /></svg>
                   <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }}>{w.title}</span>
-                  {w.soon === true && <span className={bp.kicker} style={{ margin: 0, color: 'var(--dsw-alias-label-secondary)' }}>SOON</span>}
                 </div>
                 <div style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.4 }}>{w.desc}</div>
               </div>
             ))}
           </div>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".txt,.md,text/plain,text/markdown"
+            style={{ display: 'none' }}
+            onChange={(e) => { void onDocPicked(e.target.files?.[0]); e.currentTarget.value = '' }}
+          />
+
+          {/* Describe-it panel: plain English -> POST /api/automations/draft */}
+          {describeOpen && (
+            <div style={{ border: LN, padding: 16, marginBottom: 24 }}>
+              <div className={bp.kicker} style={{ margin: 0 }}>DESCRIBE IT</div>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. Every weekday at 7 AM, pull yesterday's job costs from the accounting file and email me anything over budget."
+                rows={3}
+                style={{ width: '100%', marginTop: 10, marginBottom: 10, border: LN, background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit', fontSize: 13, padding: 10, resize: 'vertical', boxSizing: 'border-box' }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  onClick={() => requestDraft(description)}
+                  disabled={drafting || !description.trim()}
+                  style={{ background: 'var(--dsw-alias-state-business-primary)', border: 'none', color: 'var(--dsw-alias-bg-base)', fontSize: 12.5, padding: '7px 16px', cursor: drafting || !description.trim() ? 'default' : 'pointer', opacity: drafting || !description.trim() ? 0.55 : 1, fontFamily: 'inherit' }}
+                >{drafting ? 'Drafting…' : 'Draft it'}</button>
+                <span style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>You review the draft before anything is saved.</span>
+              </div>
+            </div>
+          )}
+
+          {drafting && <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)', marginBottom: 24 }}>Anton is drafting…</div>}
+          {draftError && <div style={{ fontSize: 13, color: 'var(--dsw-alias-state-error-primary)', marginBottom: 24 }}>{draftError}</div>}
+
+          {/* Reviewable draft card: nothing is saved until you confirm, and
+              confirming files it as awaiting_approval — never running. */}
+          {draft !== null && !drafting && (
+            <div style={{ border: LN, padding: 16, marginBottom: 24 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                <span className={bp.kicker} style={{ margin: 0, color: 'var(--dsw-alias-state-warn-label)' }}>DRAFT — PENDING YOUR REVIEW</span>
+                <span style={{ flex: 1 }} />
+                <button onClick={() => setDraft(null)} style={{ background: 'none', border: LN, color: 'var(--dsw-alias-label-primary)', fontSize: 12, padding: '4px 10px', cursor: 'pointer', fontFamily: 'inherit' }}>Discard</button>
+                <button onClick={confirmDraft} disabled={savingDraft} style={{ background: 'var(--dsw-alias-state-business-primary)', border: 'none', color: 'var(--dsw-alias-bg-base)', fontSize: 12, padding: '4px 10px', cursor: savingDraft ? 'default' : 'pointer', opacity: savingDraft ? 0.55 : 1, fontFamily: 'inherit' }}>{savingDraft ? 'Saving…' : 'Save for review'}</button>
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--dsw-alias-label-primary)' }}>{draft.name}</div>
+              <div style={{ fontSize: 12.5, color: 'var(--dsw-alias-label-secondary)', marginTop: 2 }}>{draft.plain}</div>
+              <div className={bp.mono} style={{ fontSize: 12, color: 'var(--dsw-alias-label-secondary)', margin: '8px 0' }}>Runs: {draft.trigger?.display ?? '—'}</div>
+              <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: 'var(--dsw-alias-label-primary)', lineHeight: 1.6 }}>
+                {draft.steps.map((s, i) => (
+                  <li key={i}>{s.text}{s.assignee === 'human' && <span style={{ color: 'var(--dsw-alias-state-warn-label)' }}> · needs your OK</span>}</li>
+                ))}
+              </ol>
+            </div>
+          )}
 
           {loading && <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>Loading…</div>}
           {error && <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)' }}>Couldn't reach Anton.</div>}
