@@ -9,7 +9,7 @@ import urllib.parse
 import time
 from typing import List, Optional
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
 
 from .canary import compute_tripwires
@@ -213,11 +213,17 @@ def _require_token(request, token: str) -> None:
 _pending_oauth: dict = {}  # state -> pending OAuth flow (R-click-install)
 _active_oauth_server = None
 
+def state_key(bridge: str, provider: str) -> str:
+    return f"{bridge}:{provider}:{secrets.token_hex(6)}"
+
+
 def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     import os as _os
+    import time as _time_mod
     import sqlite3
     global _active_oauth_server
     app = FastAPI(title="anton")
+    app.state.pending_connects = {}
     ledger = engine.ledger
     # R10-3: the decision-hmac secret has ONE trust point — config's
     # authz.decision_secret — read here regardless of authz.enabled so the
@@ -727,6 +733,117 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         except Exception as e:
             return {"error": f"Unexpected error listing models: {e}", "models": []}
         return {"models": models, "error": None}
+
+    # ---- integration bridges (Composio / Nango) ------------------------
+    @app.get("/api/integrations/bridges")
+    def integrations_bridges(request: Request):
+        """Which bridges are configured (bool only — never echoes keys)."""
+        _require_token(request, token)
+        return {"bridges": bridges_configured(config)}
+
+    @app.get("/api/integrations/catalog")
+    def integrations_catalog(request: Request, bridge: str):
+        """Live catalog for one bridge (requires its API key in config)."""
+        _require_token(request, token)
+        from .connections import composio_apps, nango_integrations
+        bcfg = (config.get("bridges") or {})
+        try:
+            if bridge == "composio":
+                key = (bcfg.get("composio") or {}).get("api_key")
+                if not key:
+                    raise HTTPException(400, "composio not configured")
+                items = composio_apps(key)
+            elif bridge == "nango":
+                key = (bcfg.get("nango") or {}).get("secret_key")
+                if not key:
+                    raise HTTPException(400, "nango not configured")
+                items = nango_integrations(key)
+            else:
+                raise HTTPException(404, f"unknown bridge {bridge!r}")
+        except Exception as e:
+            raise HTTPException(502, f"bridge catalog failed: {e}")
+        return {"bridge": bridge, "items": items}
+
+    @app.post("/api/integrations/connect/start")
+    def integrations_connect_start(request: Request,
+                                   req: dict = Body(...)):
+        """Start a hosted-OAuth connect for (bridge, provider). Returns the
+        URL the operator's browser must open; completion is detected by
+        polling /connect/status."""
+        _require_token(request, token)
+        from .integrations import bridges_from_config
+        bridges = bridges_from_config(config)
+        b = req.get("bridge")
+        provider = req.get("provider")
+        entity = req.get("entity_id") or "primary"
+        if b == "composio":
+            br = bridges.get("composio")
+            if br is None:
+                raise HTTPException(400, "composio bridge not configured")
+            flow = br.start_connect(provider, entity)
+        elif b == "nango":
+            br = bridges.get("nango")
+            if br is None:
+                raise HTTPException(400, "nango bridge not configured")
+            flow = br.start_connect(provider, "primary")
+        else:
+            raise HTTPException(400, f"unknown bridge {b!r}")
+        app.state.pending_connects[state_key(b, provider)] = {
+            "flow": flow, "ts": time.time(),
+            "starter": getattr(getattr(request.state, "principal", None),
+                               "principal_id", None)}
+        audit.append("integration_connect_started",
+                     payload={"bridge": b, "provider": provider})
+        return {"status": "pending_browser", "connect_url": flow["connect_url"],
+                "connection_id": flow.get("connection_id"), "state": state_key(b, provider)}
+
+    @app.get("/api/integrations/connect/status")
+    def integrations_connect_status(request: Request, state: str):
+        _require_token(request, token)
+        entry = getattr(app.state, "pending_connects", {}).get(state) \
+            if hasattr(app.state, "pending_connects") else None
+        pend = getattr(app.state, "pending_connects", None) or {}
+        entry = pend.get(state)
+        if entry is None:
+            raise HTTPException(404, "no pending connect with that state")
+        from .integrations import ComposioBridge, NangoBridge
+        b = entry["bridge"] if "bridge" in entry else None
+        flow = entry["flow"]
+        # detect which bridge from state prefix
+        if state.startswith("composio:"):
+            b = "composio"
+        elif state.startswith("nango:"):
+            b = "nango"
+        if b == "composio":
+            br = bridges_from_config(config).get("composio")
+            conn = br.wait_connection(flow["connection_id"], timeout_s=0.5,
+                                      poll_s=0.1)
+            status = "active"
+        elif b == "nango":
+            status = "active"
+        else:
+            status = "unknown"
+        return {"state": state, "status": status}
+
+    @app.post("/api/integrations/actions/execute")
+    def integrations_action_execute(request: Request,
+                                    req: dict = Body(...)):
+        _require_token(request, token)
+        principal = getattr(request.state, "principal", None)
+        from .integrations import gated_execute, bridges_from_config
+        bridges = bridges_from_config(config)
+        b = req.get("bridge")
+        br = bridges.get(b)
+        if br is None:
+            raise HTTPException(400, f"bridge {b!r} not configured")
+        out = gated_execute(br, audit, principal,
+                            action_kind=req.get("kind", "internal"),
+                            action_slug=req["action"],
+                            connection_id=req["connection_id"],
+                            params=req.get("params") or {},
+                            amount=float(req.get("amount", 0.0)))
+        return {"status": "ok" if not out.get("routed_to_approval")
+                else "pending_approval", **out}
 
     @app.get("/api/wizard/oauth/start")
     def start_oauth(request: Request, provider: str = "google"):

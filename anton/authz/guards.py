@@ -59,6 +59,9 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/authz/egress/send", "approvals.submit"),
     # adoption of pre-authz approval rows is a decision-side operation
     ("POST", "/api/authz/approvals/adopt", "approvals.decide"),
+    ("POST", "/api/integrations/connect/start", "connections.connect"),
+    ("POST", "/api/integrations/connect/status", "connections.read"),
+    ("POST", "/api/integrations/actions/execute", "jobs.run"),
 ]
 
 DEFAULT_MUTATING_CAPABILITY = "settings.write"
