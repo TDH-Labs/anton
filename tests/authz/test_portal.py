@@ -322,7 +322,11 @@ class TestGuardianWiring(PortalTestBase):
         calls = []
 
         def fake_sweep(store, audit, install_dir):
-            calls.append(install_dir)
+            # Other tests' guardian threads are still alive and call this
+            # patched function too — only OUR env's sweep proves OUR thread
+            # runs; anything else is noise from daemons we don't own.
+            if store is self.store:
+                calls.append(install_dir)
             return []
 
         stop = None
