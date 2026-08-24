@@ -37,6 +37,16 @@ class LegacyAdoptionReq(BaseModel):
     nonce: str
 
 
+class PortalReq(BaseModel):
+    name: str
+    base_url: str
+    login_url: str = ""
+    selectors: dict = {}
+    cookie_domains: list[str] = []
+    guardian_interval_s: int = 3600
+    operations_file: str | None = None
+
+
 class LoginReq(BaseModel):
     username: str
     password: str
@@ -177,6 +187,69 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
         except EgressBlocked as e:
             raise HTTPException(403, str(e))
         return {"status": "pending_approval", "approval_id": aid}
+
+    # -- portal connections (legacy-website browser sessions) --------------
+    @router.get("/api/authz/portals")
+    def list_portals(request: Request, include_inactive: bool = False):
+        _principal(request)
+        from .portal import list_portals as _list
+        return {"portals": _list(store, active_only=not include_inactive)}
+
+    @router.post("/api/authz/portals")
+    def register_portal(req: PortalReq, request: Request):
+        principal = _principal(request)
+        from .portal import PortalError, register_portal
+        try:
+            row = register_portal(
+                store, audit, actor=principal,
+                # same slug normalization as dashboard.py's stored-login id
+                name=req.name.strip().lower().replace(" ", "-"),
+                base_url=req.base_url, login_url=req.login_url,
+                selectors=req.selectors,
+                cookie_domains=req.cookie_domains,
+                guardian_interval_s=req.guardian_interval_s,
+                operations_file=req.operations_file)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except (PortalError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return {"status": "registered", "portal": row}
+
+    @router.post("/api/authz/portals/{name}/deregister")
+    def deregister_portal(name: str, request: Request):
+        principal = _principal(request)
+        from .portal import deregister_portal as _dereg
+        try:
+            _dereg(store, audit, actor=principal, name=name)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+        return {"status": "deregistered", "name": name}
+
+    @router.post("/api/authz/portals/{name}/health-check")
+    def portal_health_check(name: str, request: Request):
+        """Run one session-health check NOW (outside the guardian's normal
+        interval). Requires connections.connect like the lifecycle routes."""
+        principal = _principal(request)
+        from .portal import (PortalError, check_session_health,
+                             get_portal, record_health_result)
+        if not rbac.can(principal.role, "connections.connect"):
+            audit.append("authorization_denied", actor=principal, payload={
+                "reason": "missing_capability",
+                "capability": "connections.connect",
+                "what": "portal.health_check"})
+            raise HTTPException(403, "portal health check requires "
+                                     "capability connections.connect")
+        row = get_portal(store, name)
+        if row is None or not row["active"]:
+            raise HTTPException(404, f"no such portal {name}")
+        # azdir is <data_dir>/authz; browser_vault/browser_login key off the
+        # install dir (the parent of data_dir) exactly like dashboard.py.
+        install_dir = os.path.dirname(os.path.dirname(azdir))
+        result = check_session_health(install_dir, row)
+        record_health_result(store, audit, name, result)
+        return {"portal": name, **result}
 
     # -- legacy approval adoption (R7-5: audited, API-routed) --------------
     @router.post("/api/authz/approvals/adopt")

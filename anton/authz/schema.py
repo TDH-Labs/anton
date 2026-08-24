@@ -116,6 +116,25 @@ CREATE TABLE IF NOT EXISTS egress_optins (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     channel_id TEXT NOT NULL, actor_id TEXT NOT NULL, ts TEXT NOT NULL
 );
+-- Portal Connections (anton/authz/portal.py): registered legacy-website
+-- browser sessions (no API available — human browser auth only). Not part
+-- of CRITICAL_OBJECTS: rows are API-gated + WORM-audited, but the table
+-- carries no schema-level invariant of its own. Additive migration for
+-- existing DBs is sanctioned in store.py (_ensure_portals_baseline).
+CREATE TABLE IF NOT EXISTS portals (
+    name TEXT PRIMARY KEY,
+    base_url TEXT NOT NULL,
+    login_url TEXT NOT NULL DEFAULT '',
+    selectors_json TEXT NOT NULL DEFAULT '{}',
+    cookie_domains_json TEXT NOT NULL DEFAULT '[]',
+    guardian_interval_s INTEGER NOT NULL DEFAULT 3600,
+    operations_file TEXT,
+    registered_by TEXT NOT NULL,
+    created TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    last_health_status TEXT,
+    last_health_ts TEXT
+);
 CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY, value TEXT
 );

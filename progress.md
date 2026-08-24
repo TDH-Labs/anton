@@ -2,6 +2,21 @@
 
 ## Implementation status
 
+- **Portal Connections — BUILT & TESTED.** `anton/authz/portal.py`: legacy-
+  website browser sessions (ProCare/Gusto/WatchMeGrow shape) as first-class
+  governed connections in authz.db (`portals` table — sanctioned additive
+  migration `_ensure_portals_baseline` re-baselines genuine pre-portals DBs,
+  runs before the R12-1 evidence_hmac ALTER so both upgrade paths compose;
+  drifted/tampered DBs stay untouched for boot_check refusal). Registration/
+  deregistration Approver-gated (connections.connect), WORM-audited; session
+  guardian fails closed (no credential / missing selector → needs_reauth,
+  driver errors → transient error, never fake health); alerts land in
+  authz_alerts + audit chain; deployment wires `run_guardian_sweep` into the
+  scheduler like egress senders. HTTP surface under /api/authz/portals with
+  explicit route-capability map entries (route auditor clean). Tests:
+  tests/authz/test_portal.py (governance, guardian, HTTP, migration upgrade
+  + tamper-refusal paths). Full suite green.
+
 - **Phase 1 authZ spine (#10) — BUILT & TESTED.** Commit 3f02481.
   - `anton/authz/`: principals, rbac, schema (+ invariant triggers), store,
     audit hash chain, guards/middleware, datalayer, credential broker

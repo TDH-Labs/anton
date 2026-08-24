@@ -62,6 +62,12 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/integrations/connect/start", "connections.connect"),
     ("POST", "/api/integrations/connect/status", "connections.read"),
     ("POST", "/api/integrations/actions/execute", "jobs.run"),
+    # Portal Connections lifecycle: registration/deregistration and manual
+    # health checks are Approver-tier (connections.connect), matching the
+    # stored-login connect flow they govern. Exact entry above covers the
+    # collection route; this prefix covers /{name}/deregister + health-check.
+    ("POST", "/api/authz/portals", "connections.connect"),
+    ("POST", "/api/authz/portals/", "connections.connect"),
 ]
 
 DEFAULT_MUTATING_CAPABILITY = "settings.write"

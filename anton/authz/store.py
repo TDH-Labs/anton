@@ -72,6 +72,14 @@ class AuthzStore:
         # the install). Remediation (documented, pre-1.0): re-run anton
         # setup to rebuild authz.db; approval history lives in isolation.db.
         self.preheal_refusal = None
+        # Portal Connections additive-migration bookkeeping: capture the
+        # on-disk signature and whether the portals table exists BEFORE any
+        # heal runs, while the preheal gate above has just verified that
+        # baseline == live for established installs.
+        had_portals = bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='portals'"
+        ).fetchone())
+        sig_pre_ensure_schema = schema_signature(self.conn)
         has_kv = bool(self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kv'"
         ).fetchone())
@@ -96,7 +104,45 @@ class AuthzStore:
                     "— refusing (drift/tamper shape)")
                 return
         ensure_schema(self.conn)
+        # Sanctioned ADDITIVE migration for the portals table (Portal
+        # Connections) must run BEFORE _upgrade_approval_decision_columns:
+        # it re-baselines a genuine pre-portals DB so the pre-R9 ALTER path
+        # below still sees baseline == live and can take its own upgrade.
+        self._ensure_portals_baseline(had_portals, sig_pre_ensure_schema)
         self._upgrade_approval_decision_columns()
+
+    def _ensure_portals_baseline(self, had_portals: bool,
+                                 sig_before_ensure: str) -> None:
+        """Sanctioned additive migration for the Portal Connections feature
+        (anton/authz/portal.py): a genuine pre-portals authz.db — one whose
+        recorded schema-hash baseline equals its own live signature BEFORE
+        ensure_schema created the portals table — is re-baselined exactly
+        once. Any other mismatch means tampering or drift; those DBs are
+        left untouched for boot_check's fail-closed refusals (same doctrine
+        as R12-1/R13-B1: never heal an unverified state)."""
+        if had_portals:
+            return
+        baseline = self.kv_get("schema_hash")
+        if baseline is None or baseline != sig_before_ensure:
+            return  # pristine first-boot, tampered, or drifted — not ours
+        with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                self.conn.execute(
+                    "INSERT INTO kv(key, value) VALUES('schema_hash', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (schema_signature(self.conn),))
+                self.conn.commit()
+            except sqlite3.OperationalError as e:
+                try:
+                    self.conn.execute("ROLLBACK")
+                except Exception:
+                    pass
+                row = self.conn.execute(
+                    "SELECT value FROM kv WHERE key='schema_hash'").fetchone()
+                if row is None or row[0] != sig_before_ensure:
+                    return  # a concurrent opener converged already
+                raise
 
     def _upgrade_approval_decision_columns(self) -> None:
         """Sanctioned ADDITIVE migration for pre-R9 authz.db files: add
