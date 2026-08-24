@@ -2,6 +2,7 @@ import os
 import stat
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from anton import browser_vault
 
@@ -52,7 +53,11 @@ class TestBrowserVault(unittest.TestCase):
             # simulate a moved/regenerated key -- decrypt must fail closed, not crash
             key_path = browser_vault._key_path(install_dir)
             os.remove(key_path)
-            self.assertIsNone(browser_vault.get_credential(install_dir, "svc"))
+            # Isolate from the legacy parent fallback: the point here is that
+            # a credential whose matching key is gone (regenerated/moved
+            # install) fails closed even though SOME key can be created.
+            with patch.object(browser_vault, "_legacy_base", return_value=None):
+                self.assertIsNone(browser_vault.get_credential(install_dir, "svc"))
 
     def test_has_and_delete_credential(self):
         with tempfile.TemporaryDirectory() as install_dir:
@@ -62,6 +67,35 @@ class TestBrowserVault(unittest.TestCase):
             browser_vault.delete_credential(install_dir, "svc")
             self.assertFalse(browser_vault.has_credential(install_dir, "svc"))
             browser_vault.delete_credential(install_dir, "svc")  # must not raise twice
+
+    def test_legacy_install_location_still_readable_after_storage_root_moves(self):
+        """Umbrel fix: credentials used to be stored under dirname(data_dir)
+        ("/" when ANTON_DATA_DIR=/data). New writes go inside the data dir,
+        but pre-migration credentials -- and the legacy key file, which must
+        be adopted rather than replaced -- stay readable through the new base."""
+        with tempfile.TemporaryDirectory() as outer:
+            data_dir = os.path.join(outer, "data")
+            os.makedirs(data_dir)
+            # Old-style install: vault lives next to the data dir.
+            browser_vault.store_credential(outer, "svc", "alice", "hunter2")
+            # The credential is readable through BOTH bases: at the legacy
+            # location directly, and through the new data-dir base via the
+            # legacy fallback.
+            self.assertTrue(browser_vault.has_credential(outer, "svc"))
+            self.assertTrue(browser_vault.has_credential(data_dir, "svc"))
+            # Reading through the new data-dir base finds the legacy credential
+            # and adopts the legacy key into the new location.
+            self.assertEqual(browser_vault.get_credential(data_dir, "svc"),
+                             ("alice", "hunter2"))
+            self.assertEqual(
+                open(browser_vault._key_path(data_dir), "rb").read(),
+                open(browser_vault._key_path(outer), "rb").read())
+            self.assertTrue(browser_vault.has_credential(data_dir, "svc"))
+
+    def test_volume_root_base_has_no_parent_fallback(self):
+        """ANTON_DATA_DIR=/data: base is a filesystem root (no parent), so
+        there is no legacy location to fall back to and reads miss cleanly."""
+        self.assertIsNone(browser_vault._legacy_base(os.sep))
 
     def test_service_ids_are_isolated(self):
         with tempfile.TemporaryDirectory() as install_dir:

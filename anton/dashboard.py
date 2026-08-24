@@ -10,7 +10,7 @@ import time
 from typing import List, Optional
 from pydantic import BaseModel
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, FileResponse, JSONResponse
 
 from .canary import compute_tripwires
 from .connections import (LAST_REGISTRY_ERROR, bridges_configured, bundled_catalog,
@@ -70,34 +70,69 @@ OAUTH_AUTHORIZE_URLS: dict = {
 }
 
 
-def _save_secret(install_dir: str, key_name: str, value: str) -> None:
+def _secrets_candidates(data_dir: str) -> list[str]:
+    """Where secrets.yaml may live, newest location first: inside the data
+    dir itself, then the legacy install-dir location for pre-existing
+    installs. The order matters on Umbrel, where ANTON_DATA_DIR=/data is a
+    volume ROOT -- os.path.dirname(data_dir) is "/", so writing secrets.yaml
+    there either 500s or lands somewhere fragile."""
+    candidates = [os.path.join(data_dir, "secrets.yaml")]
+    legacy = os.path.join(os.path.dirname(data_dir), "secrets.yaml")
+    if legacy != candidates[0]:
+        candidates.append(legacy)
+    return candidates
+
+
+def _read_secrets(data_dir: str) -> dict:
+    """Merged view of every known secrets.yaml location; entries from the
+    preferred (data-dir) location win over the legacy one."""
+    import yaml
+    merged: dict = {}
+    for path in reversed(_secrets_candidates(data_dir)):
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                merged.update(yaml.safe_load(f) or {})
+    return merged
+
+
+def _config_candidates(data_dir: str) -> list[str]:
+    """Same shape story as _secrets_candidates, for config.yaml."""
+    candidates = [os.path.join(data_dir, "config.yaml")]
+    legacy = os.path.join(os.path.dirname(data_dir), "config.yaml")
+    if legacy != candidates[0]:
+        candidates.append(legacy)
+    return candidates
+
+
+def _save_secret(data_dir: str, key_name: str, value: str) -> None:
     """Shared by the provider-key wizard step and the Add-ons "API key"
     connection type -- same file, same merge-then-write-0600 discipline,
     distinguished by key_name (an AI provider name like "openai", or
-    "mcp:<id>" for an arbitrary connected service's token)."""
+    "mcp:<id>" for an arbitrary connected service's token). Writes inside
+    the data dir (volume-root safe); existing keys from the legacy
+    install-dir location are carried over so nothing is lost on upgrade."""
     import yaml
-    secrets_path = os.path.join(install_dir, "secrets.yaml")
-    current_secrets = {}
-    if os.path.exists(secrets_path):
-        with open(secrets_path, "r", encoding="utf-8") as f:
-            current_secrets = yaml.safe_load(f) or {}
+    current_secrets = _read_secrets(data_dir)
     current_secrets[key_name] = value
     content = yaml.safe_dump(current_secrets)
+    secrets_path = _secrets_candidates(data_dir)[0]
+    os.makedirs(data_dir, exist_ok=True)
     fd = os.open(secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with open(fd, "w", encoding="utf-8") as f:
         f.write(content)
 
 
-def _set_cloud_model(install_dir: str, model: str) -> None:
+def _set_cloud_model(data_dir: str, model: str) -> None:
     """Persist the wizard's model pick into config.yaml routes.cloud_model
     (the executor's routing default), flipping prefer to cloud -- a key the
     user just entered is by definition a cloud key."""
     import yaml
-    config_path = os.path.join(install_dir, "config.yaml")
+    config_path = _config_candidates(data_dir)[0]
     current = {}
-    if os.path.exists(config_path):
-        with open(config_path, encoding="utf-8") as f:
-            current = yaml.safe_load(f) or {}
+    for candidate in reversed(_config_candidates(data_dir)):
+        if os.path.exists(candidate):
+            with open(candidate, encoding="utf-8") as f:
+                current = yaml.safe_load(f) or {}
     routes = current.get("routes") or {}
     routes["cloud_model"] = model
     routes["prefer"] = "cloud"
@@ -654,18 +689,28 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     @app.post("/api/wizard/providers")
     def save_provider_key(req: ProviderReq, request: Request):
         _require_token(request, token)
-        _save_secret(os.path.dirname(data_dir), req.provider, req.key)
-        if req.base_url.strip():
-            _save_secret(os.path.dirname(data_dir), f"{req.provider}:base_url", req.base_url.strip())
-        # Make the key visible to the already-running executor without waiting
-        # for a restart (cli.py's loader is idempotent per env var).
+        # Volume-root-safe persistence is the norm now (see
+        # _save_secret/_set_cloud_model), but any filesystem failure must
+        # surface as a structured 500 — a bare crash gives the Ops Center
+        # wizard no actionable detail and can leave secrets half-saved.
         try:
-            from .cli import _load_secrets_into_env
-            _load_secrets_into_env(data_dir)
-        except Exception:
-            pass
-        if req.model.strip():
-            _set_cloud_model(os.path.dirname(data_dir), f"{req.provider}/{req.model.strip()}")
+            _save_secret(data_dir, req.provider, req.key)
+            if req.base_url.strip():
+                _save_secret(data_dir, f"{req.provider}:base_url", req.base_url.strip())
+            # Make the key visible to the already-running executor without waiting
+            # for a restart (cli.py's loader is idempotent per env var).
+            try:
+                from .cli import _load_secrets_into_env
+                _load_secrets_into_env(data_dir)
+            except Exception:
+                pass
+            if req.model.strip():
+                _set_cloud_model(data_dir, f"{req.provider}/{req.model.strip()}")
+        except OSError as e:
+            return JSONResponse(
+                {"detail": f"failed to persist provider key: "
+                           f"{type(e).__name__}: {e}", "provider": req.provider},
+                status_code=500)
         return {"status": "saved", "provider": req.provider, "model": req.model}
 
     @app.get("/api/wizard/catalog")
@@ -682,25 +727,20 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         are never echoed back to any UI) and the model chosen in the wizard,
         so settings can show real state instead of empty boxes."""
         _require_token(request, token)
-        install_dir = os.path.dirname(data_dir)
         have: dict[str, bool] = {}
-        secrets_path = os.path.join(install_dir, "secrets.yaml")
-        if os.path.exists(secrets_path):
-            import yaml
-            with open(secrets_path, encoding="utf-8") as f:
-                raw = yaml.safe_load(f) or {}
-            for k, v in raw.items():
-                if isinstance(v, str) and v and not k.startswith("mcp:") and not k.endswith(":base_url"):
-                    have[k] = True
-                elif isinstance(v, str) and k.endswith(":base_url") and v:
-                    have[k] = True
+        for k, v in _read_secrets(data_dir).items():
+            if isinstance(v, str) and v and not k.startswith("mcp:") and not k.endswith(":base_url"):
+                have[k] = True
+            elif isinstance(v, str) and k.endswith(":base_url") and v:
+                have[k] = True
         chosen_model = ""
-        config_path = os.path.join(install_dir, "config.yaml")
-        if os.path.exists(config_path):
-            import yaml
-            with open(config_path, encoding="utf-8") as f:
-                routes = (yaml.safe_load(f) or {}).get("routes") or {}
-            chosen_model = str(routes.get("cloud_model") or "")
+        for config_path in _config_candidates(data_dir):
+            if os.path.exists(config_path):
+                import yaml
+                with open(config_path, encoding="utf-8") as f:
+                    routes = (yaml.safe_load(f) or {}).get("routes") or {}
+                chosen_model = str(routes.get("cloud_model") or "")
+                break
         return {"have_key": have, "cloud_model": chosen_model}
 
     @app.post("/api/wizard/models")
@@ -721,11 +761,9 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     def _wizard_models_impl(provider: str, key: str = "", base_url: str = ""):
         if not key:
             # Fall back to whatever key was already saved for this provider.
-            secrets_path = os.path.join(os.path.dirname(data_dir), "secrets.yaml")
-            if os.path.exists(secrets_path):
-                import yaml
-                with open(secrets_path, encoding="utf-8") as f:
-                    key = (yaml.safe_load(f) or {}).get(provider, "") or ""
+            saved = _read_secrets(data_dir).get(provider, "") or ""
+            if saved:
+                key = saved
         try:
             models = list_models(provider, key, base_url or None)
         except ValueError as e:
@@ -942,7 +980,7 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                          app.state.authz_audit, actor=principal,
                          provider=provider, tokens=tokens)
         else:
-            _save_secret(os.path.dirname(data_dir),
+            _save_secret(data_dir,
                          f"{provider}:refresh_token",
                          str(tokens.get("refresh_token", "")))
         return {"status": "connected", "provider": provider,
@@ -990,7 +1028,7 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 (mcp_id, req.name, req.what, json.dumps(req.permissions), "active", req.room, _now_iso()))
             conn.commit()
             if req.api_key.strip():
-                _save_secret(os.path.dirname(data_dir), f"mcp:{mcp_id}", req.api_key.strip())
+                _save_secret(data_dir, f"mcp:{mcp_id}", req.api_key.strip())
         finally:
             conn.close()
         return {"status": "registered", "id": mcp_id, "name": req.name, "room": req.room}
@@ -1053,7 +1091,9 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         governor-gated concern (kind="outbound"), not built here."""
         _require_token(request, token)
         from . import browser_login, browser_vault
-        install_dir = os.path.dirname(data_dir)
+        # Store inside the data dir (volume-root safe): dirname(data_dir) is
+        # "/" on Umbrel, where the vault write used to break.
+        install_dir = data_dir
         mcp_id = req.name.strip().lower().replace(" ", "-")
         browser_vault.store_credential(install_dir, mcp_id, req.username, req.password)
 

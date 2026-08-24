@@ -58,13 +58,17 @@ def _load_secrets_into_env(data_dir: str) -> None:
     dashboard.py's save_provider_key) land in secrets.yaml but were never
     read back anywhere -- PiExecutor's subprocess call (which inherits this
     process's environment) never actually saw a saved key. Load it in once
-    at startup, before any executor is constructed."""
-    secrets_path = os.path.join(os.path.dirname(data_dir), "secrets.yaml")
-    if not os.path.exists(secrets_path):
-        return
+    at startup, before any executor is constructed. Reads the preferred
+    (inside-data-dir) secrets.yaml first, then the legacy install-dir
+    location -- on Umbrel ANTON_DATA_DIR=/data is a volume root, so the
+    old dirname(data_dir) path was "/secrets.yaml"."""
     import yaml
-    with open(secrets_path, encoding="utf-8") as f:
-        secrets = yaml.safe_load(f) or {}
+    secrets: dict = {}
+    for path in (os.path.join(os.path.dirname(data_dir), "secrets.yaml"),
+                 os.path.join(data_dir, "secrets.yaml")):
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                secrets.update(yaml.safe_load(f) or {})
     for provider, key in secrets.items():
         env_var = _PROVIDER_ENV_VARS.get(provider)
         if env_var and key and env_var not in os.environ:

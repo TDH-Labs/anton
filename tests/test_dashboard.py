@@ -166,9 +166,9 @@ class TestDashboard(unittest.TestCase):
         })
         self.assertEqual(r.status_code, 200)
         import yaml
-        # _save_secret writes to dirname(data_dir)/secrets.yaml, matching how
-        # the wizard's own provider-key save already works.
-        secrets_path = os.path.join(os.path.dirname(self.dir.name), "secrets.yaml")
+        # _save_secret writes inside data_dir (volume-root safe), matching
+        # how the wizard's own provider-key save works.
+        secrets_path = os.path.join(self.dir.name, "secrets.yaml")
         self.assertTrue(os.path.exists(secrets_path))
         with open(secrets_path) as f:
             saved = yaml.safe_load(f)
@@ -177,12 +177,13 @@ class TestDashboard(unittest.TestCase):
     def test_mcp_register_without_api_key_does_not_touch_secrets(self):
         r = self.client.post("/api/wizard/mcp", json={"name": "no-key-service", "command": "n/a"})
         self.assertEqual(r.status_code, 200)
-        secrets_path = os.path.join(os.path.dirname(self.dir.name), "secrets.yaml")
-        if os.path.exists(secrets_path):
-            import yaml
-            with open(secrets_path) as f:
-                saved = yaml.safe_load(f) or {}
-            self.assertNotIn("mcp:no-key-service", saved)
+        import yaml
+        for candidate in (os.path.join(self.dir.name, "secrets.yaml"),
+                          os.path.join(os.path.dirname(self.dir.name), "secrets.yaml")):
+            if os.path.exists(candidate):
+                with open(candidate) as f:
+                    saved = yaml.safe_load(f) or {}
+                self.assertNotIn("mcp:no-key-service", saved)
 
     def test_browser_login_success_stores_credential_and_activates(self):
         with patch("anton.browser_login.perform_login",
@@ -199,10 +200,9 @@ class TestDashboard(unittest.TestCase):
         self.assertNotIn("password", body)
         self.assertNotIn("hunter2", str(body))
         # the real vault, not mocked -- the credential genuinely landed.
-        # install_dir is dirname(data_dir), matching _save_secret's own
-        # convention (data_dir is self.dir.name in this test setup).
+        # Stored inside the data dir (volume-root safe).
         self.assertEqual(
-            browser_vault.get_credential(os.path.dirname(self.dir.name), "quickbooks-portal"),
+            browser_vault.get_credential(self.dir.name, "quickbooks-portal"),
             ("alice", "hunter2"))
         # mock_login called with the real stored credential's service_id
         self.assertEqual(mock_login.call_args.args[1], "quickbooks-portal")
@@ -234,3 +234,106 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(body["status"], "listening")
         self.assertIn("real-client-id-123", body["auth_url"])
         self.assertIn("appcenter.intuit.com", body["auth_url"])
+
+
+class TestVolumeRootDataDir(unittest.TestCase):
+    """Umbrel runs with ANTON_DATA_DIR=/data -- a volume ROOT, so
+    os.path.dirname(data_dir) is "/" and every secrets/vault path built from
+    it either HTTP-500s or lands somewhere fragile. The container dir here
+    plays "/" and is made read-only, so any write that escapes the data dir
+    fails loudly instead of silently succeeding like it does on a dev box."""
+
+    def setUp(self):
+        self.outer = tempfile.TemporaryDirectory()
+        self.addCleanup(self._restore_perms)
+        # "/data"-style layout: the data dir IS the volume root's child and
+        # the volume root itself must never be written to.
+        self.data_dir = os.path.join(self.outer.name, "data")
+        jobs_path = os.path.join(self.data_dir, "jobs.yaml")
+        os.makedirs(self.data_dir)
+        with open(jobs_path, "w", encoding="utf-8") as f:
+            f.write(JOBS)
+        init_db(os.path.join(self.data_dir, "isolation.db"))
+        ledger = Ledger(os.path.join(self.data_dir, "runs.jsonl"))
+        self.engine = JobEngine(load_jobs(jobs_path), ledger, FakeExecutor(), load_config())
+        provision_vault(os.path.join(self.data_dir, "vault"))
+        app = create_app(self.engine, self.data_dir, load_config())
+        self.client = TestClient(app)
+
+    def lock_volume_root(self):
+        """Lock the "volume root" so writes outside the data dir raise
+        PermissionError rather than quietly passing. Call after seeding any
+        legacy files outside the data dir."""
+        os.chmod(self.outer.name, 0o555)
+
+    def _restore_perms(self):
+        os.chmod(self.outer.name, 0o755)
+        self.outer.cleanup()
+
+    def test_provider_key_save_writes_inside_data_dir_not_volume_root(self):
+        # Keep the executor-env side effect out of other tests' process env.
+        with patch("anton.cli._load_secrets_into_env"):
+            self.lock_volume_root()
+            r = self.client.post("/api/wizard/providers", json={
+                "provider": "openai", "key": "sk-volume-root-test",
+                "model": "", "base_url": ""})
+        self.assertEqual(r.status_code, 200, r.text)
+        import yaml
+        secrets_path = os.path.join(self.data_dir, "secrets.yaml")
+        self.assertTrue(os.path.exists(secrets_path))
+        with open(secrets_path) as f:
+            saved = yaml.safe_load(f) or {}
+        self.assertEqual(saved.get("openai"), "sk-volume-root-test")
+        # And /secrets.yaml (the old dirname(data_dir) target) was never created.
+        self.assertFalse(os.path.exists(os.path.join(self.outer.name, "secrets.yaml")))
+        # Settings reads back what was just saved.
+        keys = self.client.get("/api/wizard/keys").json()
+        self.assertTrue(keys["have_key"].get("openai"))
+
+    def test_provider_key_save_merges_legacy_secrets_yaml(self):
+        """Pre-upgrade installs keep their secrets in dirname(data_dir)/
+        secrets.yaml; saving a new key must carry those entries forward."""
+        import yaml
+        legacy = {"anthropic": "sk-old-anthropic-key"}
+        with open(os.path.join(self.outer.name, "secrets.yaml"), "w") as f:
+            yaml.safe_dump(legacy, f)
+        with patch("anton.cli._load_secrets_into_env"):
+            self.lock_volume_root()
+            r = self.client.post("/api/wizard/providers", json={
+                "provider": "openai", "key": "sk-new-openai-key",
+                "model": "", "base_url": ""})
+        self.assertEqual(r.status_code, 200, r.text)
+        with open(os.path.join(self.data_dir, "secrets.yaml")) as f:
+            saved = yaml.safe_load(f) or {}
+        self.assertEqual(saved.get("openai"), "sk-new-openai-key")
+        self.assertEqual(saved.get("anthropic"), "sk-old-anthropic-key")
+
+    def test_browser_login_credential_stored_inside_data_dir(self):
+        self.lock_volume_root()
+        with patch("anton.browser_login.perform_login",
+                   return_value=LoginResult("success", "logged in")):
+            r = self.client.post("/api/wizard/browser-login", json={
+                "name": "Vendor Portal", "login_url": "https://example.com/login",
+                "username": "alice", "password": "hunter2",
+                "success_selector": "#dashboard"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "success")
+        # Readable through the data-dir base...
+        self.assertEqual(
+            browser_vault.get_credential(self.data_dir, "vendor-portal"),
+            ("alice", "hunter2"))
+        # ...and physically inside the data dir, not at the volume root.
+        self.assertTrue(os.path.exists(
+            os.path.join(self.data_dir, "browser-vault", "vendor-portal.enc")))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.outer.name, "browser-vault.key")))
+
+    def test_legacy_secrets_yaml_still_visible_to_settings(self):
+        """Backward compat: an upgraded install with only the legacy file
+        keeps reporting its saved keys instead of showing empty state."""
+        import yaml
+        with open(os.path.join(self.outer.name, "secrets.yaml"), "w") as f:
+            yaml.safe_dump({"groq": "gsk_legacy_key"}, f)
+        self.lock_volume_root()
+        keys = self.client.get("/api/wizard/keys").json()
+        self.assertTrue(keys["have_key"].get("groq"))
