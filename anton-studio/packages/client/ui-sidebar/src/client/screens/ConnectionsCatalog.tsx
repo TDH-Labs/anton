@@ -46,8 +46,13 @@ export function ConnectionsCatalog({ onConnected }: { onConnected?: (c: { id: st
       .finally(() => setBusyId(null))
   }
 
+  // Search matches name, description, and category so e.g. "finance" or
+  // "developer" narrows the grid the same way a service name does.
   const q = filter.trim().toLowerCase()
-  const shown = conns.filter((c) => !q || c.name.toLowerCase().includes(q) || (c.what ?? '').toLowerCase().includes(q))
+  const shown = conns.filter((c) => !q
+    || c.name.toLowerCase().includes(q)
+    || (c.what ?? '').toLowerCase().includes(q)
+    || c.category.toLowerCase().includes(q))
 
   const cardStyle: CSSProperties = {
     display: 'flex', flexDirection: 'column', gap: 4, padding: '10px 12px',
