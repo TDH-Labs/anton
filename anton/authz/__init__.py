@@ -169,16 +169,73 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     app.state.authz_middleware_active = True
 
     broker.start()
+    broker.start()
 
+    stop_guardian = _start_portal_guardian(store, audit, data_dir, config)
     try:
-        app.add_event_handler("shutdown", _shutdown(broker, store))
+        if stop_guardian is not None:
+            app.add_event_handler("shutdown", _shutdown(broker, store,
+                                                        stop_guardian))
+        else:
+            app.add_event_handler("shutdown", _shutdown(broker, store))
     except Exception:
         pass
 
 
-def _shutdown(broker, store):
+def _start_portal_guardian(store, audit, data_dir: str, config: dict,
+                           *, first_tick_s: float = 5.0,
+                           tick_s: float = 60.0):
+    """Background session-guardian for Portal Connections (portal.py).
+
+    Runs in THIS process deliberately: the dashboard owns the authz store,
+    and guardian alerts are WORM-audit writes — a second writer from the
+    serve process would race the hash chain (audit.append's select-then-
+    insert is single-process safe only). The sweep itself enforces each
+    portal's guardian_interval_s, so an hourly-scale check need not be
+    precise; this tick loop just polls cheaply. Per-tick failures are
+    audited and swallowed: a dead browser or a locked DB must never take
+    the dashboard down — health simply stays stale, which is itself
+    reported."""
+    import threading
+    if ((config.get("authz") or {}).get("portal_guardian")) is False:
+        return None  # explicit deployment opt-out
+    stop = threading.Event()
+    install_dir = os.path.dirname(data_dir)
+
+    def _loop():
+        # first tick delayed so app startup and tests are never disturbed
+        if stop.wait(first_tick_s):
+            return
+        while not stop.is_set():
+            try:
+                from .portal import run_guardian_sweep
+                results = run_guardian_sweep(store, audit, install_dir)
+                for r in results:
+                    print(f"[portal-guardian] {r['portal']}: "
+                          f"{r['status']} {r.get('detail', '')}".rstrip(),
+                          flush=True)
+            except Exception as e:
+                try:
+                    audit.append("guardian_error", payload={
+                        "error": f"{type(e).__name__}: {e}"})
+                except Exception:
+                    pass  # even the audit chain may be unreachable
+            stop.wait(tick_s)
+
+    thread = threading.Thread(target=_loop, name="portal-guardian",
+                              daemon=True)
+    thread.start()
+
+    def _stop():
+        stop.set()
+    return _stop
+
+
+def _shutdown(broker, store, stop_guardian=None):
     def _hook():
         try:
+            if stop_guardian is not None:
+                stop_guardian()
             broker.stop()
             store.close()
         except Exception:

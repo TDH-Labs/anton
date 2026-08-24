@@ -11,11 +11,21 @@
   deregistration Approver-gated (connections.connect), WORM-audited; session
   guardian fails closed (no credential / missing selector → needs_reauth,
   driver errors → transient error, never fake health); alerts land in
-  authz_alerts + audit chain; deployment wires `run_guardian_sweep` into the
-  scheduler like egress senders. HTTP surface under /api/authz/portals with
-  explicit route-capability map entries (route auditor clean). Tests:
-  tests/authz/test_portal.py (governance, guardian, HTTP, migration upgrade
-  + tamper-refusal paths). Full suite green.
+  authz_alerts + audit chain.
+- **Guardian wired into the dashboard process.** `wire_authz` starts the
+  `_start_portal_guardian` daemon thread (60s tick; sweep enforces per-portal
+  intervals). Deliberately NOT in `anton serve`: guardian alerts are WORM
+  writes and audit.append's select-then-insert is single-process safe only —
+  a serve-side writer would race the hash chain. Per-tick failures audited as
+  `guardian_error`, never fatal; opt out via `authz.portal_guardian: false`.
+  Tests: opt-out, sweep dispatch, stop-cleanly, tick-error resilience
+  (tests/authz/test_portal.py::TestGuardianWiring).
+- **Real-browser E2E of the sidecar engine.** tests/test_portal_browser_e2e.py:
+  real PlaywrightDriver + cached Chromium against a locally served fake portal
+  (no third-party sites/credentials) — scripted stored-login lands on the
+  success signal, then the live session-health check confirms the persisted
+  profile through the real engine. Auto-skipped when Playwright is absent;
+  everything else stays on driver fakes. playwright==1.62.0 added to .venv.
 
 - **Phase 1 authZ spine (#10) — BUILT & TESTED.** Commit 3f02481.
   - `anton/authz/`: principals, rbac, schema (+ invariant triggers), store,

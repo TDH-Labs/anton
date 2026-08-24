@@ -308,6 +308,62 @@ class TestPortalHTTPSurface(PortalTestBase):
         self.assertEqual(findings, [])
 
 
+class TestGuardianWiring(PortalTestBase):
+    def test_opt_out_flag_disables_the_thread(self):
+        from anton.authz import _start_portal_guardian
+        cfg = {"authz": {"portal_guardian": False}}
+        self.assertIsNone(_start_portal_guardian(
+            self.store, self.audit, self.env.data_dir, cfg))
+
+    def test_guardian_thread_sweeps_and_stops_cleanly(self):
+        import time
+        from unittest.mock import patch
+        from anton.authz import _start_portal_guardian
+        calls = []
+
+        def fake_sweep(store, audit, install_dir):
+            calls.append(install_dir)
+            return []
+
+        stop = None
+        with patch("anton.authz.portal.run_guardian_sweep", fake_sweep):
+            stop = _start_portal_guardian(
+                self.store, self.audit, self.env.data_dir,
+                {"authz": {}}, first_tick_s=0.05, tick_s=0.05)
+            deadline = time.time() + 2
+            while not calls and time.time() < deadline:
+                time.sleep(0.02)
+        # sweep runs against the install dir (parent of data_dir) and the
+        # thread stops cleanly instead of leaking past shutdown
+        stop()
+        self.assertTrue(calls)
+        self.assertEqual(os.path.dirname(self.env.data_dir), calls[0])
+
+    def test_guardian_tick_error_is_audited_not_fatal(self):
+        import time
+        from unittest.mock import patch
+        from anton.authz import _start_portal_guardian
+
+        def boom(*a, **k):
+            raise RuntimeError("sweep exploded")
+
+        stop = None
+        with patch("anton.authz.portal.run_guardian_sweep", boom):
+            stop = _start_portal_guardian(
+                self.store, self.audit, self.env.data_dir,
+                {"authz": {}}, first_tick_s=0.05, tick_s=0.05)
+            deadline = time.time() + 2
+            while time.time() < deadline and not raw_sqlite(
+                    self.env.authz_db, "SELECT seq FROM audit_chain "
+                    "WHERE event_type='guardian_error'"):
+                time.sleep(0.02)
+        stop()
+        rows = raw_sqlite(self.env.authz_db,
+                          "SELECT payload_json FROM audit_chain "
+                          "WHERE event_type='guardian_error'")
+        self.assertTrue(any("RuntimeError" in (r[0] or "") for r in rows))
+
+
 class TestAdditiveMigration(unittest.TestCase):
     """The portals table must arrive on existing installs without bricking
     them: a genuine pre-portals DB is re-baselined exactly once; anything
