@@ -774,11 +774,18 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if error:
             _pending_oauth.pop(state, None)
             raise HTTPException(400, f"provider returned error: {error}")
-        from .qbo_oauth import exchange_code, load_qbo_credentials
+        from .qbo_oauth import (exchange_code, load_qbo_credentials,
+                                load_vendor_credentials)
         provider = flow["provider"]
-        client_id, client_secret = load_qbo_credentials()
         oauth_cfg = (config.get("oauth") or {}).get(provider) or {}
-        client_id = oauth_cfg.get("client_id") or client_id
+        client_id = oauth_cfg.get("client_id")
+        client_secret = oauth_cfg.get("client_secret")
+        if not (client_id and client_secret) and provider == "quickbooks":
+            # vendor defaults: deployment-local copy of the TDH Labs Intuit
+            # app credentials, provisioned at setup
+            client_id, client_secret = load_vendor_credentials(data_dir)
+        if not (client_id and client_secret):
+            client_id, client_secret = load_qbo_credentials()
         client_secret = client_secret or os.environ.get(
             f"{provider.upper()}_CLIENT_SECRET", "")
         if not (client_id and client_secret):

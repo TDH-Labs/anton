@@ -20,6 +20,10 @@ SECRETS_ENV_CANDIDATES = (
     os.path.expanduser("~/secrets/harwell/secrets.env"),
     "/home/umbrel/secrets/harwell/secrets.env",
 )
+# Vendor-bundled defaults: each deployment persists its own copy of the TDH
+# Labs Intuit app credentials at provision time (0600), so customer installs
+# are self-contained after setup.
+VENDOR_OAUTH_FILE = "authz/oauth.vendor.json"
 
 
 def _http_post_form(url: str, client_id: str, client_secret: str,
@@ -76,6 +80,45 @@ def load_qbo_credentials() -> tuple[str, str]:
         if cid and csec:
             return cid, csec
     return "", ""
+
+
+def load_vendor_credentials(data_dir: str) -> tuple[str, str]:
+    """Deployment-local copy of the vendor (TDH Labs) Intuit app
+    credentials, persisted at provision time. Precedence after env:
+    authz/oauth.vendor.json -> SECRETS_ENV_CANDIDATES files."""
+    path = os.path.join(data_dir, VENDOR_OAUTH_FILE)
+    if os.path.exists(path):
+        import json as _json
+        with open(path, encoding="utf-8") as f:
+            d = _json.load(f)
+        if d.get("client_id") and d.get("client_secret"):
+            return d["client_id"], d["client_secret"]
+    for cand in SECRETS_ENV_CANDIDATES:
+        if not os.path.exists(cand):
+            continue
+        found = {}
+        with open(cand, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, _, v = line.partition("=")
+                    found[k.strip()] = v.strip().strip('"').strip("'")
+        if found.get("QBO_CLIENT_ID") and found.get("QBO_CLIENT_SECRET"):
+            persist_vendor_credentials(data_dir,
+                                       found["QBO_CLIENT_ID"],
+                                       found["QBO_CLIENT_SECRET"])
+            return found["QBO_CLIENT_ID"], found["QBO_CLIENT_SECRET"]
+    return "", ""
+
+
+def persist_vendor_credentials(data_dir: str, client_id: str,
+                               client_secret: str) -> None:
+    """Persist the vendor Intuit app credentials deployment-local (0600)."""
+    from .authz.secrets import write_private_file
+    import json as _json
+    path = os.path.join(data_dir, VENDOR_OAUTH_FILE)
+    write_private_file(path, _json.dumps(
+        {"client_id": client_id, "client_secret": client_secret}, indent=2))
 
 
 def store_tokens(broker, store, audit, actor, provider: str,

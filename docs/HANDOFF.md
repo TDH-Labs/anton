@@ -3,7 +3,24 @@ Frozen spec: docs/AUTHZ-SPEC.md (v1.1, FROZEN — build against it, do not redes
 Reviews (binding requirements): docs/AUTHZ-ADVERSARIAL-REVIEW{,-2,-3}.md
 Convergence threshold: two consecutive independent PROCEED verdicts, zero BLOCKER/MAJOR.
 
-## State (updated 2026-08-23 — ALL TODOS COMPLETE, CONV-1 SATISFIED)
+## State (updated 2026-08-23 — COMMERCIAL PILOT READY)
+
+Self-deploy complete: setup provisions authz (enabled by default on fresh
+installs), auto-generates decision/webhook secrets, prints owner claim code
+to stdout. Fleet kit in fleet/ (provision_client.py + onboarding checklist).
+WORM anchor file live at every boot. Click-install OAuth: Connect button ->
+Intuit login -> dashboard callback -> Finish; vendor QBO credentials
+deployment-local via load_vendor_credentials. Connector strategy documented
+(docs/INTEGRATION-STRATEGY.md): native QBO flagship, Nango self-hosted for
+local breadth, Composio for fast cloud breadth.
+
+REMAINING FOR FULL COMMERCIAL LAUNCH:
+1. TDH Labs Intuit developer app production review (worksheet:
+   docs/QBO-APP-REGISTRATION.md) — external calendar dependency.
+2. First real client pilot run (manufacturer) using the fleet kit.
+3. Optional: Nango self-hosted spike when breadth is needed.
+
+## Previous state (2026-08-22)
 ALL FOUR build items are implemented, tested, and committed on main.
 CONV-1 satisfied: rounds 15A+15B consecutive independent PROCEED verdicts
 (zero BLOCKER/MAJOR) against HEAD 8b14463; full ledger in progress.md.
