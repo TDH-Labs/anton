@@ -60,7 +60,12 @@ export function OpsCockpit({ useStore, actions }: OpsCockpitProps) {
       <div style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 100,
+        // Above any host chrome we know of; the real fix for "logo floats
+        // over the options" is below: an OPAQUE dialog card. The old version
+        // put the wizard straight onto a 55%-translucent backdrop with no
+        // panel behind it, so sidebar brand + chat bled through around the
+        // cards — everything read greyed-out and unclickable.
+        zIndex: 500,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -68,7 +73,19 @@ export function OpsCockpit({ useStore, actions }: OpsCockpitProps) {
         background: 'rgba(29,31,32,.55)',
       }}
       >
-        <SetupScreen onExit={() => { actions.setScreen('now') }} />
+        <div style={{
+          width: 'min(880px, 100%)',
+          height: 'min(720px, 100%)',
+          display: 'flex',
+          flexDirection: 'column',
+          background: 'var(--dsw-alias-bg-base)',
+          border: '1px solid var(--dsw-alias-border-l2)',
+          borderRadius: 12,
+          boxShadow: '0 18px 50px rgba(0,0,0,.35)',
+          overflow: 'hidden',
+        }}>
+          <SetupScreen onExit={() => { actions.setScreen('now') }} />
+        </div>
       </div>
     )
   }
