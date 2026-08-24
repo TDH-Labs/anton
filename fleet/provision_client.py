@@ -38,32 +38,36 @@ def main() -> None:
     install = os.path.abspath(args.install_dir)
 
     print(f"[fleet] provisioning {args.client!r} -> {install}")
-    subprocess.run([sys.executable, "-m", "anton.setup",
-                    "--install-dir", install,
-                    "--executor", args.executor], check=True)
+    sys.path.insert(0, REPO)
+    from anton.setup import run_setup
+    run_setup(install, executor=args.executor)
 
-    # enable hardened mode with self-provisioned secrets
+    # enable hardened mode; authz enabled with NO inline secrets —
+    # decision/webhook secrets auto-provision as 0600 files under
+    # data/authz/ at first boot (R21-MAJOR: never in world-readable yaml)
     import yaml
     cfg_path = os.path.join(install, "config.yaml")
     cfg = yaml.safe_load(open(cfg_path)) or {}
     az = cfg.setdefault("authz", {})
     az["enabled"] = True
     az["mode"] = "multi_user"
-    if not (az.get("decision_secret") or "").strip():
-        import secrets as _s
-        az["decision_secret"] = _s.token_urlsafe(32)
-    if not (cfg.setdefault("general", {}).get("webhook_secret") or "").strip():
-        cfg["general"]["webhook_secret"] = _s.token_urlsafe(32)
+    az.pop("decision_secret", None)
+    cfg.setdefault("general", {}).pop("webhook_secret", None)
     with open(cfg_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f, sort_keys=False)
+    os.chmod(cfg_path, 0o600)  # defense-in-depth: no world-readable config
 
-    # vendor QBO credentials -> deployment-local copy (if reference source exists)
+    # vendor QBO credentials -> deployment-local copy under data/ (the dir
+    # the dashboard reads at runtime; R21 path fix)
     sys.path.insert(0, REPO)
     from anton.qbo_oauth import load_vendor_credentials, persist_vendor_credentials
     cid, csec = load_vendor_credentials(os.path.join(REPO, ".dev-data"))
     if cid and csec:
-        persist_vendor_credentials(install, cid, csec)
+        persist_vendor_credentials(os.path.join(install, "data"), cid, csec)
         print("[fleet] vendor QBO credentials persisted")
+
+    print("[fleet] decision + webhook secrets will auto-generate (0600) on"
+          " first dashboard boot")
 
     print(f"""
 [fleet] DONE \u2014 {args.client} provisioned.

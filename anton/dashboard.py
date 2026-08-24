@@ -807,6 +807,13 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         flow = _pending_oauth.pop(req.state, None)
         if flow is None:
             raise HTTPException(404, "no pending authorization for that state")
+        if flow["expires"] < time.time():
+            raise HTTPException(400, "authorization window expired — restart")
+        if flow.get("starter") and                 principal.principal_id != flow["starter"]:
+            audit.append("authorization_denied", actor=principal, payload={
+                "reason": "oauth_finalize_principal_mismatch",
+                "starter": flow["starter"]})
+            raise HTTPException(403, "only the flow initiator may finalize")
         if principal is None:
             raise HTTPException(401, "authentication required")
         from .qbo_oauth import store_tokens

@@ -757,3 +757,22 @@ Verified with live probes (granted nothing):
 - Tests: `tests/authz` 146 passed + review-fix files 77 passed.
 
 Findings: 2 observations, no blockers/majors. See A's JSON.
+
+## Review (Round 21 — A, final commercial-readiness verification of 59b5ecc)
+
+Scope: self-deploy provisioning, WORM anchor, click-install OAuth, fleet kit. Angle: auth bypass / fail-open / regressions. `tests/authz` 151 passed (+75 subtests). Anchor truncation/rewrite probes confirmed caught; callback state gate, finalize authn, webhook pre-route auth all verified genuine.
+
+### Correct
+- Auto-provisioned secrets: 0600 atomic writes (write_private_file), crypto-random, persisted under data/authz/; wire_authz no longer refuses on missing config secret.
+- WORM anchor: O_APPEND + fsync; verify_anchor catches tail truncation (missing seq) and head rewrite (hash mismatch) at boot; append-only SQL trigger independently blocks DELETEs.
+- Click-install OAuth: /start token-gated; unauthenticated callback gated by 192-bit state; finalize requires token + principal; tokens land only in broker store.
+- Genesis stamp / wiped-DB refusal intact; broker lock-scoping (RB-B) and migration txn deferral correct; scheduler son-of-anton bypass correctly disabled when `_decision_secret` set.
+
+### Findings
+- MAJOR cli.py:118-123: `_build` still hard-requires `authz.decision_secret` in config.yaml and never reads the provisioned `data/authz/decision.secret`. Zero-config hardened boot crashes at startup (fail-closed) for dashboard/serve/run; worse, if ever bypassed, `engine._decision_secret=""` leaves scheduler in legacy mode (son-of-anton toggle active, NULL-hmac approvals) even though wire_authz provisioned a secret. Fix: _build should call ensure_decision_secret()/read the file.
+- MAJOR fleet/provision_client.py:63: persists vendor QBO creds to `<install>/authz/oauth.vendor.json`, but runtime load reads `<install>/data/authz/oauth.vendor.json` → click-install QBO dead on every fleet client (fail-closed).
+- MINOR fleet/provision_client.py:55-58: secrets written into config.yaml without chmod 0600 (run_setup default perms persist) — readable by other local users, contradicting the batch's 0600 discipline.
+- MINOR dashboard.py:777-790: non-QB providers fall through to QBO/vendor creds against the fixed Intuit TOKEN_URL (google/slack/github click-install misconfigured → 500); expired pending states never popped; finalize ignores flow expiry.
+- OBSERVATION audit.py verify_anchor: only the last anchor entry is hash-checked; a deleted anchor file is explicitly tolerated ("no anchor file" ⇒ re-anchor whatever head exists). Within documented same-OS-user boundary; genesis stamp covers wiped-DB case.
+
+Verdict: 2 MAJOR — do not PROCEED for commercial-readiness sign-off until fixed.
