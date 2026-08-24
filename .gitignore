@@ -29,3 +29,4 @@ anton-studio/**/dist/
 harbor_sas.egg-info/
 *.egg-info/
 .playwright-mcp/
+examples/qbo_sandbox/tokens.json
