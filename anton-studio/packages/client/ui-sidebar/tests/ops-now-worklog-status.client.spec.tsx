@@ -4,7 +4,15 @@
  * prerequisite unmet — the old exit-1-per-cron-tick spam) a warn-colored dash.
  * Guards the "failures looked like successes with '(exit 1)' appended" bug. */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { useSyncExternalStore } from 'react'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { createNavScreenStore } from '../src/client/nav-store.ts'
+import type { PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+
+function bindStoreHook<T>(instance: { getSnapshot: () => T; subscribe: (fn: () => void) => () => void }) {
+  return ((sel: unknown) => useSyncExternalStore(instance.subscribe, () =>
+    (sel as (s: T) => unknown)(instance.getSnapshot()))) as never
+}
 import { OpsNowScreen } from '../src/client/OpsNowScreen.tsx'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -29,7 +37,12 @@ describe('worklog rows are styled by honest status', () => {
       { text: 'fail-job (exit 1)', meta: '10:05', status: 'fail' },
       { text: 'skip-job (skipped (no provider))', meta: '10:10', status: 'skipped' },
     ])
-    render(<OpsNowScreen />)
+    const store = createNavScreenStore().create()
+    const props: PropsStore<ReturnType<typeof createNavScreenStore>> = {
+      useStore: bindStoreHook(store),
+      actions: store.actions,
+    }
+    render(<OpsNowScreen {...props} />)
     await waitFor(() => expect(screen.getByText('fail-job (exit 1)')).toBeTruthy())
     const rowIcon = (label: string) =>
       screen.getByText(label).closest('div')?.querySelector('svg')?.getAttribute('stroke')
@@ -43,7 +56,12 @@ describe('worklog rows are styled by honest status', () => {
 
   it('treats legacy rows without status as successes (back-compat)', async () => {
     stubWorklog([{ text: 'legacy-job (ok)', meta: `${today}T09:00` }])
-    render(<OpsNowScreen />)
+    const store = createNavScreenStore().create()
+    const props: PropsStore<ReturnType<typeof createNavScreenStore>> = {
+      useStore: bindStoreHook(store),
+      actions: store.actions,
+    }
+    render(<OpsNowScreen {...props} />)
     await waitFor(() => expect(screen.getByText('legacy-job (ok)')).toBeTruthy())
     const stroke = screen.getByText('legacy-job (ok)').closest('div')
       ?.querySelector('svg')?.getAttribute('stroke')

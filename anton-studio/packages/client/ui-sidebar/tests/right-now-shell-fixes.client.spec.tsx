@@ -8,14 +8,15 @@ import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PropsStore, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import { OpsNowScreen } from '../src/client/OpsNowScreen.tsx'
 import { OpsCockpit } from '../src/client/OpsCockpit.tsx'
 import { SidebarRoot } from '../src/client/SidebarRoot.tsx'
 import { createNavScreenStore } from '../src/client/nav-store.ts'
 import { en } from '../src/client/locales.ts'
 
-const t: (key: never) => string = key => (en as Record<string, string>)[key as string] ?? key
+import type { TranslateNS as TNS } from '@deepseek-ai/dsh-client-ui-slots'
+const t = ((key: string) => (en as Record<string, string>)[key] ?? key) as unknown as TNS<'sidebar'>
 
 /** jsdom lacks matchMedia; OpsCockpit reads the live-strip breakpoint on mount. */
 Object.defineProperty(window, 'matchMedia', {
@@ -141,7 +142,7 @@ describe('A new session surfaces the chat from under an ops overlay', () => {
       getSnapshot: () => state,
       subscribe: (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn) } },
       setCurrent(next: string | undefined) {
-        state = { ...state, current: next }
+        state = { ...state, current: next as SessionId | undefined }
         act(() => { for (const fn of listeners) fn() })
       },
     }

@@ -32,7 +32,7 @@ const WORK_CATALOG = {
   ],
 }
 
-type Call = { url: string; init?: RequestInit }
+type Call = { url: string; init?: RequestInit | undefined }
 type Handler = (url: string) => Record<string, unknown> | undefined
 
 function stubFetch(handlers: Handler[]): Call[] {
