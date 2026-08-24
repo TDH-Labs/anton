@@ -57,3 +57,48 @@ def ensure_webhook_secret(data_dir: str, config: dict) -> str:
     value = _pysecrets.token_urlsafe(32)
     write_private_file(path, value)
     return value
+
+
+def ensure_apiproxy_credential(store, azdir: str, audit=None) -> str | None:
+    """Provision the Ops Center apiproxy's machine credential.
+
+    The apiproxy (anton-studio's Node half) forwards cookie-only browser
+    requests to the dashboard's :8799 surface; under authz those requests
+    need a bearer identity of their own. This mints an ``amt_`` token bound
+    to a dedicated kind="service" principal owned by the first human user,
+    scoped by guards.MACHINE_TOKEN_SCOPES["apiproxy"] to exactly the routes
+    the proxy registers — never user-level powers, and disjoint from the
+    executor's callback token. Persists 0600 under authz/apiproxy.token so
+    the Node process can read it without shell access to the DB.
+
+    Idempotent + self-healing: an existing file whose token still resolves
+    is left alone; a revoked/expired/stale token triggers a fresh mint
+    (downtime-free rotation — overlapping generations are supported by the
+    store). Returns None when there is no human owner yet (pristine first
+    boot before /api/auth/bootstrap); callers re-invoke after bootstrap.
+    """
+    from .guards import APIPROXY_SERVICE_NAME
+
+    token_path = os.path.join(azdir, "apiproxy.token")
+    existing = _read_private(token_path)
+    if existing and store.resolve_machine_token(existing) is not None:
+        return existing
+    owner = store.first_human_user()
+    if owner is None:
+        return None  # no human yet — deferred until Owner bootstrap
+    svc = store.get_user_by_username(APIPROXY_SERVICE_NAME)
+    if svc is None:
+        svc = store.create_service_identity(
+            APIPROXY_SERVICE_NAME, owner["id"])
+    token, _jti = store.mint_machine_token(svc["id"])
+    write_private_file(token_path, token)
+    if audit is not None:
+        try:
+            audit.append("machine_provisioned", actor=svc["username"],
+                         payload={"service": APIPROXY_SERVICE_NAME})
+        except Exception:
+            pass  # provisioning must never fail on audit-chain trouble
+    # Self-deploy visibility, same pattern as the owner-claim code print.
+    print(f"[authz] provisioned scoped machine credential for "
+          f"{APIPROXY_SERVICE_NAME} -> {token_path}", flush=True)
+    return token

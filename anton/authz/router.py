@@ -74,6 +74,11 @@ def build_router(store, audit, broker, azdir: str) -> APIRouter:
         os.unlink(claim_path)  # single use — never a predictable default
         codes = _ensure_recovery_codes(store)
         request.app.state.authz_recovery_codes = codes
+        # A human Owner now exists: provision (or re-check) the apiproxy's
+        # scoped machine credential so the Ops Center proxy has its own
+        # authz identity without waiting for the next restart.
+        from .provision import ensure_apiproxy_credential
+        ensure_apiproxy_credential(store, azdir, audit=audit)
         audit.append("owner_bootstrap", payload={"username": req.username})
         return {"status": "claimed", "username": req.username,
                 "recovery_codes": codes}

@@ -163,6 +163,13 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     app.add_middleware(_MW, store=store, audit=audit)
     app.include_router(build_router(store, audit, broker, azdir))
 
+    # Ops Center apiproxy machine credential — scoped to its registered
+    # routes (guards.MACHINE_TOKEN_SCOPES). No-op until a human Owner
+    # exists; build_router's bootstrap endpoint re-runs it post-claim so a
+    # restart is never needed.
+    from .provision import ensure_apiproxy_credential
+    ensure_apiproxy_credential(store, azdir, audit=audit)
+
     app.state.authz_store = store
     app.state.authz_audit = audit
     app.state.authz_broker = broker

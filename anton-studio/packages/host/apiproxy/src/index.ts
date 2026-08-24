@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type { ApiProxy, RpcRequest } from './api/index.ts'
 import { createApiProxy, DEFAULT_COLD_BLANK_PROBE_MAX_BYTES } from './api-proxy.ts'
+import { antonProxyAuthorizationHeader, antonProxyForwardHeaders } from './anton-auth.ts'
 import {
   DEFAULT_SESSION_LOG_COMPRESSION_LEVEL,
   type SessionLogCompressionLevel,
@@ -119,9 +120,12 @@ export class ApiProxyService extends Service implements ApiProxy {
         const targetUrl = `http://localhost:8799${url.pathname}${url.search}`
         const method = req.method ?? 'GET'
         const hasBody = !['GET', 'HEAD'].includes(method)
+        // The browser carries only the auth-gate cookie — no FastAPI bearer —
+        // so forward with the proxy's OWN scoped machine credential
+        // (anton-auth.ts). Fail-closed downstream when unprovisioned.
         const targetRes = await globalThis.fetch(targetUrl, {
           method,
-          headers: req.headers as HeadersInit,
+          headers: antonProxyForwardHeaders(req.headers),
           body: hasBody ? (req as unknown as BodyInit) : null,
           ...hasBody && { duplex: 'half' },
         })
@@ -189,7 +193,7 @@ export class ApiProxyService extends Service implements ApiProxy {
     this.settings.update = async (request: RpcRequest<{ ns: string; patch: object; expectedRevision?: number }>) => {
       globalThis.fetch('http://localhost:8799/api/wizard/providers', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...antonProxyAuthorizationHeader() },
         body: JSON.stringify(request.payload.patch),
       }).catch((err: unknown) => { ctx.logger.error('Failed to sync settings to Anton', err) })
 

@@ -1,4 +1,5 @@
 import { LlmAdapter, LlmProviderInfo, GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { antonProxyAuthorizationHeader } from './anton-auth.ts'
 
 export class AntonFastApiAdapter extends LlmAdapter {
     override providerInfo(provider: string): LlmProviderInfo {
@@ -16,7 +17,7 @@ export class AntonFastApiAdapter extends LlmAdapter {
 
         const res = await globalThis.fetch("http://localhost:8799/api/chat", {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', ...antonProxyAuthorizationHeader() },
             body: JSON.stringify({ prompt: promptText })
         });
         

@@ -211,6 +211,16 @@ class AuthzStore:
         return self.create_user(name, pysecrets.token_urlsafe(24),
                                 kind="service", human_id=owning_human_id)
 
+    def first_human_user(self) -> dict | None:
+        """The earliest-created human account — the Owner in the standard
+        single-operator deployment. Used to anchor service identities (e.g.
+        the apiproxy machine principal) to a human owner."""
+        with self.lock:
+            row = self.conn.execute(
+                "SELECT * FROM users WHERE kind='user' "
+                "ORDER BY created LIMIT 1").fetchone()
+            return dict(row) if row else None
+
     def get_user(self, user_id: str) -> dict | None:
         with self.lock:
             row = self.conn.execute("SELECT * FROM users WHERE id=?",

@@ -27,10 +27,52 @@ EXEMPT_PATHS = {
 }
 
 # REQ-CRED-03: the executor's callback identity may invoke ONLY these
-# endpoints — never user-scoped reads/writes.
+# endpoints — never user-scoped reads/writes. Machine credentials whose
+# service principal has NO entry in MACHINE_TOKEN_SCOPES below are held to
+# exactly this list (the pre-scoping contract; unchanged).
 MACHINE_TOKEN_ALLOWLIST = {
     ("POST", "/api/exec/result"),
 }
+
+# Scoped surfaces per service principal (matched by username): a principal
+# listed here may invoke ONLY its method/path patterns — everything else is
+# deny + audit, same as the static allowlist above. Patterns ending in '*'
+# prefix-match; others match exactly. The Ops Center apiproxy forwards the
+# browser's cookie-only requests to the dashboard (:8799), so it needs its
+# OWN machine identity covering exactly the routes it registers (apiproxy/src/
+# index.ts) — never user-level powers, and deliberately disjoint from the
+# executor's callback surface so revoking one cannot open the other.
+APIPROXY_SERVICE_NAME = "apiproxy"
+MACHINE_TOKEN_SCOPES: dict[str, set[tuple[str, str]]] = {
+    APIPROXY_SERVICE_NAME: {
+        # dashboard.py surfaces the proxy registers
+        ("GET", "/api/mode*"), ("POST", "/api/mode*"),
+        ("GET", "/api/vault/note"),
+        ("GET", "/api/logo"), ("GET", "/api/logo/son-of-anton"),
+        ("GET", "/api/initiatives"),
+        ("GET", "/api/jobs"),
+        ("GET", "/api/approvals*"), ("POST", "/api/approvals*"),
+        ("POST", "/api/chat"),
+        # wizard: provider keys/models/OAuth/MCP setup flows
+        ("GET", "/api/wizard/*"), ("POST", "/api/wizard/*"),
+        # ops_api.py surfaces
+        ("GET", "/api/systems*"), ("PUT", "/api/systems*"),
+        # exact + one-segment children, mirroring the webserver's
+        # prefix-route semantics (never /api/agentPreset et al.)
+        ("GET", "/api/agent"), ("GET", "/api/agent/*"),
+        ("GET", "/api/learning"),
+        ("GET", "/api/incidents"),
+        ("GET", "/api/automations*"), ("PUT", "/api/automations*"),
+        ("POST", "/api/automations/draft"),
+        ("POST", "/api/setup"),
+    },
+}
+
+
+def _scope_allows(pattern: str, path: str) -> bool:
+    if pattern.endswith("*"):
+        return path.startswith(pattern[:-1])
+    return path == pattern
 
 # Declarative route→capability map. Exact matches take precedence over
 # prefixes. "" = any authenticated identity. MUTATING methods with no
@@ -45,6 +87,10 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/setup", "settings.write"),
     ("PUT", "/api/systems/", "settings.write"),
     ("PUT", "/api/automations/", "settings.write"),
+    # Ops Center automation drafting (ops_api.py) — an explicit mapping so
+    # human sessions never ride the default-deny fallback on this proxied
+    # mutating route.
+    ("POST", "/api/automations/draft", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
     ("POST", "/api/chat", "jobs.run"),
     ("GET", "/api/vault/note", "vault.read"),
@@ -134,7 +180,14 @@ class AuthzMiddleware(BaseHTTPMiddleware):
             principal = self.store.resolve_machine_token(token)
             if principal is None:
                 return self._deny(401, "invalid machine token")
-            if (method, path) not in MACHINE_TOKEN_ALLOWLIST:
+            scopes = MACHINE_TOKEN_SCOPES.get(principal.username)
+            if scopes is None:
+                allowed = (method, path) in MACHINE_TOKEN_ALLOWLIST
+            else:
+                allowed = any(
+                    m == method and _scope_allows(p, path)
+                    for m, p in scopes)
+            if not allowed:
                 self.store.add_alert(
                     "machine_token_violation", f"{method} {path}")
                 self.audit.append("machine_violation", actor=principal,
