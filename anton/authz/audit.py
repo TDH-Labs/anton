@@ -17,7 +17,6 @@ import datetime as dt
 import hashlib
 import json
 import os
-import threading
 
 GENESIS = "0" * 64
 
@@ -45,7 +44,14 @@ def _sponsor(actor) -> str:
 class AuditLog:
     def __init__(self, store):
         self.store = store
-        self._lock = threading.Lock()
+        # NO dedicated lock here, deliberately. Every chain write already
+        # serializes through store.lock (single global authz write lock),
+        # and taking a SECOND lock created a lock-order inversion:
+        # request_breakglass legitimately calls audit.append while holding
+        # store.lock, so _lock -> store.lock here vs store.lock -> _lock
+        # there is a textbook ABBA deadlock (first reproduced on Linux CI,
+        # R3B4BreakglassRateLimitAtomic). One lock, one order, no deadlock.
+        self._lock = None  # kept as an attribute so nothing asserts on it
 
     def append(self, event_type: str, actor=None, payload: dict | None = None,
                workspace: str = "default", agent_instance: str = "",
@@ -55,28 +61,27 @@ class AuditLog:
             _sponsor(actor) if actor is not None else actor_str)
         payload_json = json.dumps(payload or {}, sort_keys=True)
         ts = _now()
-        with self._lock:
-            with self.store.lock:
-                row = self.store.conn.execute(
-                    "SELECT seq, hash FROM audit_chain ORDER BY seq DESC LIMIT 1"
-                ).fetchone()
-                seq = (row["seq"] + 1) if row else 1
-                prev_hash = row["hash"] if row else GENESIS
-                digest = self._entry_hash(
-                    prev_hash, seq, ts, event_type, actor_str, payload_json,
-                    sponsor_user=str(sponsor), workspace=str(workspace),
-                    agent_instance=str(agent_instance),
-                    tool_credential=str(tool_credential))
-                self.store.conn.execute(
-                    "INSERT INTO audit_chain(seq, ts, event_type, actor,"
-                    " sponsor_user, workspace, agent_instance, tool_credential,"
-                    " payload_json, prev_hash, hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (seq, ts, event_type, actor_str, str(sponsor),
-                     str(workspace), str(agent_instance), str(tool_credential),
-                     payload_json, prev_hash, digest))
-                self.store.kv_set("audit_head_seq", str(seq))
-                if not getattr(self.store, "in_migration_txn", False):
-                    self.store.conn.commit()
+        with self.store.lock:
+            row = self.store.conn.execute(
+                "SELECT seq, hash FROM audit_chain ORDER BY seq DESC LIMIT 1"
+            ).fetchone()
+            seq = (row["seq"] + 1) if row else 1
+            prev_hash = row["hash"] if row else GENESIS
+            digest = self._entry_hash(
+                prev_hash, seq, ts, event_type, actor_str, payload_json,
+                sponsor_user=str(sponsor), workspace=str(workspace),
+                agent_instance=str(agent_instance),
+                tool_credential=str(tool_credential))
+            self.store.conn.execute(
+                "INSERT INTO audit_chain(seq, ts, event_type, actor,"
+                " sponsor_user, workspace, agent_instance, tool_credential,"
+                " payload_json, prev_hash, hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (seq, ts, event_type, actor_str, str(sponsor),
+                 str(workspace), str(agent_instance), str(tool_credential),
+                 payload_json, prev_hash, digest))
+            self.store.kv_set("audit_head_seq", str(seq))
+            if not getattr(self.store, "in_migration_txn", False):
+                self.store.conn.commit()
         return seq
 
     @staticmethod

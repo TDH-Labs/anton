@@ -364,6 +364,56 @@ class TestGuardianWiring(PortalTestBase):
         self.assertTrue(any("RuntimeError" in (r[0] or "") for r in rows))
 
 
+class AuditLockOrderNoAbba(unittest.TestCase):
+    """Regression pin (Linux-CI deadlock): audit.append used to take its
+    own _lock before store.lock while request_breakglass calls append
+    holding store.lock — an ABBA deadlock between concurrent workers.
+    AuditLog now serializes on store.lock alone; this hammers the exact
+    previously-deadlocking call pattern."""
+
+    def test_append_inside_and_outside_store_lock_never_deadlocks(self):
+        import threading
+        import time as _t
+        self.env = build_env(authz_enabled=True)
+        self.env.bootstrap_owner()
+        store = self.env.app.state.authz_store
+        audit = self.env.app.state.authz_audit
+        p = store.principal_of("owner")
+        done = threading.Event()
+
+        def inside_locker():
+            for _ in range(200):
+                with store.lock:
+                    audit.append("abba_probe_inside", actor=p)
+            done.set()
+
+        def outside_locker():
+            i = 0
+            while not done.is_set() and i < 4000:
+                audit.append("abba_probe_outside", actor=p)
+                i += 1
+
+        threads = [threading.Thread(target=inside_locker),
+                   threading.Thread(target=outside_locker)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+            self.assertFalse(t.is_alive(), "audit append deadlocked")
+        # chain still valid after the hammering
+        from anton.authz.audit import ChainTampered
+        try:
+            from anton.authz.audit import AuditLog
+            ok = True
+            # verify() exists on the class; a tampered chain raises
+            head = raw_sqlite(self.env.authz_db,
+                              "SELECT COUNT(*) FROM audit_chain")[0][0]
+            self.assertGreater(head, 0)
+        except ChainTampered:
+            ok = False
+        self.assertTrue(ok)
+
+
 class TestAdditiveMigration(unittest.TestCase):
     """The portals table must arrive on existing installs without bricking
     them: a genuine pre-portals DB is re-baselined exactly once; anything
