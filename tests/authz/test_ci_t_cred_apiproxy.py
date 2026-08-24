@@ -43,7 +43,11 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
         for path in ("/api/systems", "/api/approvals", "/api/initiatives",
                      "/api/jobs", "/api/learning", "/api/incidents",
                      "/api/agent/worklog", "/api/wizard/catalog",
-                     "/api/wizard/keys", "/api/mode"):
+                     "/api/wizard/keys", "/api/mode",
+                     # Add-ons connectors: bundled+registry catalog and the
+                     # Composio/Nango bridge-status read (previously 403 for
+                     # the proxy credential, leaving Add-ons silently empty).
+                     "/api/connections/catalog", "/api/integrations/bridges"):
             r = self.env.client.get(path, headers=self.proxy_h)
             self.assertEqual(r.status_code, 200,
                              f"GET {path}: {r.status_code} {r.text}")
@@ -55,6 +59,26 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
         r = self.env.client.post("/api/setup", headers=self.proxy_h,
                                  json={"step": "work", "picks": ["email"]})
         self.assertEqual(r.status_code, 200)
+
+    def test_proxy_connect_mutations_within_scope_succeed(self):
+        # POST /api/connections/connect is fully exercisable: it persists a
+        # catalog entry into mcp_servers (same payload shape as
+        # tests/test_connections.py).
+        r = self.env.client.post("/api/connections/connect", headers=self.proxy_h,
+                                 json={"id": "github", "name": "GitHub",
+                                       "what": "Repos, PRs",
+                                       "url": "https://api.githubcopilot.com/mcp",
+                                       "auth": "oauth"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["status"], "connected")
+        # POST /api/integrations/connect/start needs a configured bridge to
+        # complete; an unconfigured bridge must fail at the ROUTE (400) —
+        # never 403 at the guard, which would mean the scope regressed.
+        r = self.env.client.post("/api/integrations/connect/start",
+                                 headers=self.proxy_h,
+                                 json={"bridge": "composio",
+                                       "provider": "quickbooks"})
+        self.assertEqual(r.status_code, 400, r.text)
 
     def test_out_of_scope_denied_with_alert(self):
         r = self.env.client.get("/api/ledger", headers=self.proxy_h)

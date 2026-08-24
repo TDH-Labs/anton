@@ -159,6 +159,13 @@ export class ApiProxyService extends Service implements ApiProxy {
       ctx2.webServer.register({ kind: 'exact', path: '/api/incidents', handler: proxyHandler })
       ctx2.webServer.register({ kind: 'prefix', path: '/api/automations', handler: proxyHandler })
       ctx2.webServer.register({ kind: 'exact', path: '/api/setup', handler: proxyHandler })
+      // Add-ons connectors (dashboard.py /api/connections/* + the Composio/
+      // Nango bridge surfaces /api/integrations/*). Without these forwards
+      // the browser's catalog fetch 404s and Add-ons shows no connector grid.
+      // The matching machine-token scopes live in anton/authz/guards.py —
+      // keep the two lists in lockstep (see test_ci_t_cred_apiproxy.py).
+      ctx2.webServer.register({ kind: 'prefix', path: '/api/connections', handler: proxyHandler })
+      ctx2.webServer.register({ kind: 'prefix', path: '/api/integrations', handler: proxyHandler })
     })
 
     const api = createApiProxy(ctx, {

@@ -176,7 +176,6 @@ def wire_authz(app, data_dir: str, config: dict) -> None:
     app.state.authz_middleware_active = True
 
     broker.start()
-    broker.start()
 
     stop_guardian = _start_portal_guardian(store, audit, data_dir, config)
     try:

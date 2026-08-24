@@ -65,6 +65,14 @@ MACHINE_TOKEN_SCOPES: dict[str, set[tuple[str, str]]] = {
         ("GET", "/api/automations*"), ("PUT", "/api/automations*"),
         ("POST", "/api/automations/draft"),
         ("POST", "/api/setup"),
+        # Add-ons connectors (dashboard.py + connections.py): the bundled
+        # catalog / MCP-registry sync read, connect clicks, and the
+        # Composio/Nango bridge surfaces. Without these the proxy's scoped
+        # credential 403s and Add-ons silently renders an empty grid.
+        ("GET", "/api/connections*"),
+        ("POST", "/api/connections/connect"),
+        ("GET", "/api/integrations*"),
+        ("POST", "/api/integrations/connect/start"),
     },
 }
 

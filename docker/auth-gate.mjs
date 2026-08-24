@@ -197,13 +197,34 @@ function readBody(req) {
   })
 }
 
+// dsh web's browser-trust fence (client-connection api-request-trust.ts) only
+// admits requests whose Host authority is loopback or an explicitly trusted
+// host:port; anything else gets a bare 403 "forbidden". Browsers reach this
+// gate at the EXTERNAL authority (Umbrel LAN IP/hostname:3080) and we forward
+// headers verbatim, so dsh web would 403 every request on its catch-all /api
+// route — the in-process RPC surfaces (llm.providers, agentPreset.list,
+// host.listDirectory, pluginInventory.list, sessions, events.mux…) all fail
+// while the apiproxy's longer-prefix reverse-proxy routes (/api/mode,
+// /api/systems, /api/wizard…) keep working. The gate cookie is the actual
+// authentication layer, so present gated traffic as loopback: rewrite Host to
+// the internal authority, and rewrite Origin (browsers attach it to POSTs) to
+// match it exactly — the fence compares Origin.host against the Host.
+function proxiedHeaders(req) {
+  const internalAuthority = `127.0.0.1:${TARGET_PORT}`
+  const headers = { ...req.headers, host: internalAuthority }
+  if (typeof headers.origin === 'string' && headers.origin !== '') {
+    headers.origin = `http://${internalAuthority}`
+  }
+  return headers
+}
+
 function proxyThrough(req, res) {
   const proxyReq = http.request({
     host: '127.0.0.1',
     port: TARGET_PORT,
     path: req.url,
     method: req.method,
-    headers: req.headers,
+    headers: proxiedHeaders(req),
   }, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers)
     proxyRes.pipe(res)
@@ -262,8 +283,12 @@ server.on('upgrade', (req, clientSocket, head) => {
     return
   }
   const upstream = net.connect(TARGET_PORT, '127.0.0.1', () => {
+    // Same trust-fence rewrite as the plain HTTP path: the upgrade handshake
+    // carries the external Host too, and /api/events.mux + /api/events.host
+    // are fenced identically server-side.
+    const headers = proxiedHeaders(req)
     const requestLine = `${req.method} ${req.url} HTTP/1.1\r\n`
-    const headerLines = Object.entries(req.headers)
+    const headerLines = Object.entries(headers)
       .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : value}`)
       .join('\r\n')
     upstream.write(`${requestLine}${headerLines}\r\n\r\n`)
