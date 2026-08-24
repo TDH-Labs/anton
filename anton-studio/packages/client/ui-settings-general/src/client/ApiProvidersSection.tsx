@@ -69,11 +69,12 @@ export function ApiProvidersSection() {
         if (models.length > 0) {
           const saved = cloudModel.startsWith(`${p.id}/`) ? cloudModel.slice(p.id.length + 1) : ''
           const preferred = p.defaultModel ?? ''
-          setPickedModel((sel) => {
-            const keep = sel[p.id] !== undefined && models.includes(sel[p.id]) ? sel[p.id] : ''
+          setPickedModel((sel: Record<string, string>) => {
+            const cur = sel[p.id] ?? ''
+            const keep = cur !== '' && models.includes(cur) ? cur : ''
             const fallback = (saved && models.includes(saved) ? saved : '')
               || (preferred && models.includes(preferred) ? preferred : '')
-              || models[0]
+              || (models[0] ?? '')
             return { ...sel, [p.id]: keep || fallback }
           })
         }

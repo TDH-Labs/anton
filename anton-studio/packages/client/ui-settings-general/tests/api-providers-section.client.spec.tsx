@@ -103,7 +103,7 @@ describe('ApiProvidersSection unified provider cards', () => {
   })
 
   it('marks the current default model in both the picker and the combined list', async () => {
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input)
       const ok = (body: unknown) => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))
       if (url === '/api/wizard/catalog') return Promise.resolve(ok(CATALOG))
