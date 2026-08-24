@@ -14,7 +14,9 @@ runs.jsonl
 .env
 .env.*
 *.env
-secrets*
+# real secrets only — NOT code files (secrets* once swallowed
+# anton/authz/secrets.py, leaving CI red and a boot-crashing image)
+secrets.yaml
 !secrets.example*
 *.cast
 *.mp4
