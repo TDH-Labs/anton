@@ -14,17 +14,14 @@ description: >-
   standing between "the agent wants to do this" and "this actually
   happens" — so it never spends money, sends something, or touches a new
   account without you saying go first. All of it lives in one browser
-  tab, the Ops Center. Executors (pi / Open Interpreter / host SSH) are
-  swappable, and pi (the default) ships in the image ready to do real work
-  once you enter a provider API key in the first-run setup wizard.
+  tab, the Ops Center.
 
-  Security note: the Ops Center UI itself has no built-in auth, so it never
-  binds beyond this container's own loopback interface — a password-gated
-  proxy (docker/auth-gate.mjs) is what's actually published on port 3080.
-  A login password is generated automatically on first boot and shown once
-  on the login page; it's never shown again after your first successful
-  login, so save it then (a password manager, or ANTON_WEB_TOKEN to pin a
-  known value instead).
+  Multi-user safety ships ON by default: role-based access, human
+  approval gates for money and outbound messages, an encrypted credential
+  broker, and a tamper-evident audit trail. First boot prints a one-time
+  Owner claim code to the app logs (visible in the Umbrel log viewer) —
+  enter it in the Ops Center to become the owner, then invite teammates
+  with scoped roles.
 developer: TDH Labs
 website: https://github.com/TDH-Labs/anton
 repo: https://github.com/TDH-Labs/anton
