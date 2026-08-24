@@ -1,5 +1,7 @@
+import { useEffect, useRef } from 'react'
 import type { ComponentType } from 'react'
-import type { PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsStore, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { createNavScreenStore, OpsScreen } from './nav-store.ts'
 import { OpsNowScreen } from './OpsNowScreen.tsx'
 import { SetupScreen } from './screens/SetupScreen.tsx'
@@ -15,6 +17,15 @@ import { useLiveStripUnpinned } from './responsive.ts'
 /** Ops keys this component renders; 'ask' falls through to the real chat (renders null). */
 const OPS_KEYS = new Set<OpsScreen>(['now', 'approvals', 'automations', 'schedule', 'memory', 'learning', 'alerts', 'addons', 'setup'])
 
+/** Store share opt-in: screens that declare these props receive them; the rest ignore them. */
+type ScreenProps = Partial<PropsStore<ReturnType<typeof createNavScreenStore>>>
+
+/**
+ * Screen registry. Declared `any`-free via a function-type intersection:
+ * each entry accepts its own props (possibly none) and must tolerate the
+ * optional store share being spread in — JSX spreads skip excess-property
+ * checks, but assignment still needs every entry callable with ScreenProps.
+ */
 // Static imports, not per-screen `import()`: this host's plugin loader
 // (`@deepseek-ai/dsh-client-modules`) resolves each package to one prebuilt
 // `client.js` via its own boot manifest — a rollup/tsdown-split runtime
@@ -23,8 +34,8 @@ const OPS_KEYS = new Set<OpsScreen>(['now', 'approvals', 'automations', 'schedul
 // import for this reason; per-screen code-splitting here would need each
 // screen to be its own registered plugin package (see README Phase 4),
 // which is a real, larger restructure, not a same-file fix.
-const SCREENS: Partial<Record<OpsScreen, ComponentType>> = {
-  now: OpsNowScreen,
+const SCREENS: Partial<Record<OpsScreen, ComponentType<ScreenProps>>> = {
+  now: OpsNowScreen as ComponentType<ScreenProps>,
   approvals: ApprovalsScreen,
   automations: AutomationsScreen,
   schedule: ScheduleScreen,
@@ -34,7 +45,10 @@ const SCREENS: Partial<Record<OpsScreen, ComponentType>> = {
   addons: AddonsScreen,
 }
 
-type OpsCockpitProps = PropsStore<ReturnType<typeof createNavScreenStore>>
+type OpsCockpitProps = PropsStore<ReturnType<typeof createNavScreenStore>> & {
+  /** Standard kit: the shared session-list snapshot store (selection included). */
+  useSessions: SnapshotSelectorHook<SessionListState>
+}
 
 /**
  * Ops shell content, registered into `shell.overlay`. The Setup wizard
@@ -49,9 +63,23 @@ type OpsCockpitProps = PropsStore<ReturnType<typeof createNavScreenStore>>
  * When the active screen is 'ask' this renders nothing — the chat underneath
  * shows through and no DOM survives the switch.
  */
-export function OpsCockpit({ useStore, actions }: OpsCockpitProps) {
+export function OpsCockpit({ useStore, actions, useSessions }: OpsCockpitProps) {
   const screen = useStore(s => s.screen)
   const liveStripUnpinned = useLiveStripUnpinned()
+
+  // New session (brand row, capsule button, workspace browser) must surface
+  // the chat: startSession really opens a blank session behind this overlay,
+  // so any change of the current selection routes back to 'ask'. The null
+  // seed marks "not yet observed" so the mount itself never fires — but a
+  // later undefined→id selection (no session open yet) still routes.
+  const currentSession = useSessions(s => s.current)
+  const previousSession = useRef<string | undefined | null>(null)
+  useEffect(() => {
+    if (previousSession.current !== null && previousSession.current !== currentSession) {
+      actions.setScreen('ask')
+    }
+    previousSession.current = currentSession
+  }, [currentSession, actions])
 
   if (!OPS_KEYS.has(screen)) return null
 
@@ -109,7 +137,7 @@ export function OpsCockpit({ useStore, actions }: OpsCockpitProps) {
       overflow: 'hidden',
     }}
     >
-      {Screen && <Screen />}
+      {Screen && <Screen useStore={useStore} actions={actions} />}
     </div>
   )
 }

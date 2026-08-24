@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import bp from '../blueprint.module.css'
 import { NodeEditorScreen, type EditorLink, type EditorNode } from './NodeEditorScreen.tsx'
+import { draftToNodes, slugify, type AutomationDraft } from './automationDraft.ts'
 import { useOpsApi } from '../useOpsApi.ts'
 
 const LN = '1px solid var(--dsw-alias-border-l2)'
@@ -45,38 +46,8 @@ const MAKE_WAYS: MakeWay[] = [
   { icon: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6', title: 'Upload a doc', desc: 'Drop in a procedure doc (.txt/.md) — Anton maps it to steps' },
 ]
 
-type DraftTrigger = { kind: 'cron' | 'event' | 'interval' | null; display: string | null; expr: string | null }
-type AutomationDraft = {
-  name: string
-  plain: string
-  trigger?: DraftTrigger
-  steps: { text: string; assignee: 'agent' | 'human' | null }[]
-}
-
-const slugify = (name: string) =>
-  name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'drafted-automation'
-
-/** Turn a validated draft into the same node graph the "Draw it" editor
- * saves: a leading trigger node, then one node per step ("Ask a human" for
- * steps the model assigned to a person). Saved as awaiting_approval — a draft
- * is never activated on its own; turning it on stays with the row's editor. */
-function draftToNodes(draft: AutomationDraft): { nodes: EditorNode[]; links: EditorLink[] } {
-  const triggerText = draft.trigger?.display || 'When you tell it to run'
-  const nodes: EditorNode[] = [
-    { id: 'n0', kind: 'trigger', x: 24, y: 24, text: triggerText },
-    ...draft.steps.map((s, i) => ({
-      id: `n${i + 1}`,
-      kind: (s.assignee === 'human' ? 'human' : 'step') as EditorNode['kind'],
-      x: 24 + ((i + 1) % 3) * 40,
-      y: 24 + ((i + 1) % 4) * 96,
-      text: s.text,
-      ...(s.assignee === 'human' ? { assignee: 'you' } : {}),
-    })),
-  ]
-  const links: EditorLink[] = nodes.slice(1).map((_, i) => [`n${i}`, `n${i + 1}`] as EditorLink)
-  return { nodes, links }
-}
-
+// DraftTrigger/AutomationDraft/slugify/draftToNodes moved to automationDraft.ts —
+// shared verbatim with SetupScreen's "Describe it" box (diagnose:setup-automations).
 let nextNewId = 1
 
 /** Automations (README §3): live automation list, plus the node editor (§4) opened from a row, a card, or the "Draw it" cell. */

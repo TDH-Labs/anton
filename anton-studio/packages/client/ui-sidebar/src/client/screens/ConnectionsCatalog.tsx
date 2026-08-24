@@ -18,12 +18,16 @@ export function ConnectionsCatalog({ onConnected }: { onConnected?: (c: { id: st
   const [connectedIds, setConnectedIds] = useState<Set<string>>(new Set())
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
 
   const load = () => {
+    // A failed catalog load must be visible, not a silently empty grid:
+    // under authz the apiproxy's scoped credential used to 403 here and the
+    // Add-ons page rendered with no connectors and no explanation.
     fetch('/api/connections/catalog')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.connections) setConns(d.connections); if (d?.bridges) setBridges(d.bridges) })
-      .catch(() => {})
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json() })
+      .then((d) => { if (d?.connections) setConns(d.connections); if (d?.bridges) setBridges(d.bridges); setLoadError('') })
+      .catch((e) => { setLoadError(`Couldn't load the connector catalog (${e?.message ?? e}). Manual setup below still works.`) })
     fetch('/api/wizard/mcp')
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (Array.isArray(d)) setConnectedIds(new Set(d.map((m: { id: string }) => m.id))) })
@@ -77,6 +81,11 @@ export function ConnectionsCatalog({ onConnected }: { onConnected?: (c: { id: st
         </div>
       )}
       {error && <div style={{ fontSize: 12, color: '#c0392b', marginBottom: 8 }}>{error}</div>}
+      {loadError && conns.length === 0 && (
+        <div style={{ fontSize: 12.5, color: 'var(--dsw-alias-state-warn-label)', border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8, padding: '10px 12px', marginBottom: 8 }}>
+          No connectors to show -- {loadError}
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 8 }}>
         {shown.map((c) => {
           const isConnected = connectedIds.has(c.id)

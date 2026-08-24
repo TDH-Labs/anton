@@ -3,9 +3,10 @@ import type { CSSProperties } from 'react'
 import { IconNewChatOutline16, IconPanelLeftOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarRootComponentProps } from './contract/slots.ts'
 import type { OpsScreen } from './nav-store.ts'
+import { useOpsApi } from './useOpsApi.ts'
 
 /** One leaf nav row: routes to an ops screen via the shared nav-screen store. */
-type NavItem = { key: OpsScreen; label: string; icon: string; badge?: string }
+type NavItem = { key: OpsScreen; label: string; icon: string; badge?: 'approvals' }
 /** One labelled nav group (README Phase 3: "five labelled groups"). */
 type NavGroup = { label: string; items: NavItem[] }
 
@@ -15,7 +16,7 @@ const NAV: NavGroup[] = [
   ] },
   { label: 'Watch', items: [
     { key: 'now', label: 'Right now', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-    { key: 'approvals', label: 'Waiting on you', icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z', badge: '2' },
+    { key: 'approvals', label: 'Waiting on you', icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z', badge: 'approvals' },
     { key: 'alerts', label: 'What went wrong', icon: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0' },
   ] },
   { label: 'Run', items: [
@@ -73,6 +74,10 @@ export function SidebarRoot({
   const activeScreen = useStore(s => s.screen)
   const wide = !collapsed
   const expandSidebar = () => { if (collapsed) toggleSidebar() }
+
+  // Live pending count for the Waiting-on-you badge — same endpoint the Right-now tile and the Approvals inbox read, so all three agree.
+  const approvalsState = useOpsApi<unknown[]>('/api/approvals')
+  const approvalsCount = (approvalsState.data ?? []).length
 
   return (
     <div style={{
@@ -160,7 +165,7 @@ export function SidebarRoot({
                 <div key={i} onClick={() => { actions.setScreen(it.key) }} style={rowStyle}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flex: 'none', opacity: 0.85 }}><path d={it.icon} /></svg>
                   {!collapsed && <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</span>}
-                  {!collapsed && it.badge !== undefined && <span style={{ flex: 'none', fontSize: 10, padding: '1px 6px', background: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-bg-base)', fontFamily: 'ui-monospace, monospace' }}>{it.badge}</span>}
+                  {!collapsed && it.badge === 'approvals' && approvalsCount > 0 && <span style={{ flex: 'none', fontSize: 10, padding: '1px 6px', background: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-bg-base)', fontFamily: 'ui-monospace, monospace' }}>{approvalsCount}</span>}
                 </div>
               )
             })}

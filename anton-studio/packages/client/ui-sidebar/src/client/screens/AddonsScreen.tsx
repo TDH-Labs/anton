@@ -154,8 +154,9 @@ function ConnectModal({ onClose, onConnected }: { onClose: () => void; onConnect
                 ))}
               </div>
               {oauthStatus === 'not_configured' && (
-                <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-warn-label)', marginBottom: 12 }}>
+                <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-warn-label)', marginBottom: 12, lineHeight: 1.5 }}>
                   Not set up yet -- this deployment hasn't registered a {OAUTH_PROVIDERS.find(p => p.id === oauthProvider)?.label} OAuth app.
+                  An operator can fix it by adding <code>oauth.{oauthProvider}.client_id</code>/<code>client_secret</code> to config.yaml (redirect URI: <code>&lt;this host&gt;/api/wizard/oauth/callback</code>), or by setting a <code>bridges.composio.api_key</code> / <code>bridges.nango.secret_key</code> to sign in through hosted OAuth instead.
                 </div>
               )}
               {oauthStatus === 'listening' && (
