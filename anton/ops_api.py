@@ -26,7 +26,7 @@ from .cron import Cron
 from .models import RunRecord
 from .ops_schema import ensure_ops_schema
 from .routes import select_route
-from .scheduler import JobEngine
+from .scheduler import SKIP_FLAG, JobEngine
 
 
 def _now_iso() -> str:
@@ -184,6 +184,135 @@ def parse_automation_draft(output: str) -> dict:
     }
 
 
+def _work_card(cid: str, label: str, sub: str, cadence: Optional[str] = None,
+               steps: tuple[tuple[str, bool], ...] = ()) -> dict:
+    """One suggestion card for the wizard's step-1 catalog. `prompt` doubles
+    as a seed description for POST /api/automations/draft; `steps` are canned
+    (text, needs_human_signoff) pairs used to build the reviewable diagram a
+    pick materializes as."""
+    return {
+        "id": cid, "label": label, "sub": sub,
+        "prompt": f"{label}: {sub}",
+        "cadence": cadence,
+        "steps": [{"text": t, "assignee": "human" if h else "agent"} for t, h in steps],
+    }
+
+
+# Step-1 suggestion catalog (README §11 "Pick the work") — deliberately well
+# beyond accounting/ops: operations, customer comms, marketing, scheduling,
+# IT/dev, document admin. Backend-served like /api/wizard/catalog so the
+# wizard can't drift from what the backend knows how to draft.
+WORK_CATALOG = [
+    {"id": "operations", "label": "Operations", "cards": [
+        _work_card("reorder-check", "Reorder check", "Watches stock levels against lead times",
+                   "Every weekday at 8 AM",
+                   (("Collect current stock counts and open purchase orders", False),
+                    ("Flag anything likely to run short before restock arrives", False),
+                    ("Send the reorder request to the supplier", True))),
+        _work_card("vendor-payment", "Vendor payment check", "Confirms nothing is past terms",
+                   "Every Monday at 9 AM",
+                   (("List bills past or nearing their due date", False),
+                    ("Summarize exposure and propose payments", True))),
+        _work_card("weekly-report", "Weekly summary email", "Rounds up the week for whoever needs to see it",
+                   "Every Friday at 4 PM",
+                   (("Gather the week's completed runs and open items", False),
+                    ("Draft the summary email", False),
+                    ("Send it to the distribution list", True))),
+    ]},
+    {"id": "money", "label": "Money & accounting", "cards": [
+        _work_card("bill-followup", "Follow up on unpaid bills", "Sends a reminder a few days before something is due",
+                   "Every weekday at 9 AM",
+                   (("List bills due in the next seven days", False),
+                    ("Draft a short reminder for each", False),
+                    ("Send the reminders", True))),
+        _work_card("invoice-reconciler", "Invoice reconciler", "Cross-checks purchase orders against what actually arrived",
+                   None,
+                   (("Match this week's invoices to purchase orders and deliveries", False),
+                    ("Report mismatches for review", True))),
+        _work_card("expense-sorting", "Expense and receipt sorting", "Files things under the right category as they come in",
+                   "Every weekday at 6 PM",
+                   (("Sort new receipts into categories", False),
+                    ("Post the categorized batch to the ledger", True))),
+    ]},
+    {"id": "customer-comms", "label": "Customer comms", "cards": [
+        _work_card("appointment-reminders", "Appointment reminders", "Nudges customers ahead of a booking",
+                   "Every weekday at 7 AM",
+                   (("List tomorrow's appointments", False),
+                    ("Draft a reminder message per customer", False),
+                    ("Send the reminders", True))),
+        _work_card("inbox-triage", "Inbox triage", "Flags the messages that actually need a reply",
+                   "Every weekday at 8 AM and 1 PM",
+                   (("Skim new mail and group by urgency", False),
+                    ("Draft suggested replies for the urgent ones", False),
+                    ("Send any replies", True))),
+    ]},
+    {"id": "marketing", "label": "Marketing", "cards": [
+        _work_card("social-week", "Week of social posts", "Drafts five posts for your review before anything is published",
+                   "Every Monday at 10 AM",
+                   (("Pull the week's highlights worth posting about", False),
+                    ("Draft five posts with suggested images", False),
+                    ("Publish after your OK", True))),
+        _work_card("newsletter-draft", "Monthly newsletter", "Assembles a draft from the month's highlights",
+                   "First Monday of the month at 9 AM",
+                   (("Collect the month's news, photos, and numbers", False),
+                    ("Draft the newsletter", False),
+                    ("Send to the subscriber list", True))),
+    ]},
+    {"id": "scheduling", "label": "Scheduling", "cards": [
+        _work_card("calendar-guard", "Calendar guard", "Flags double-bookings and days with no breathing room",
+                   "Every weekday at 6 AM",
+                   (("Read today's and tomorrow's calendars", False),
+                    ("Flag conflicts and propose moves", True))),
+        _work_card("meeting-prep", "Meeting prep sheet", "One page of context before each meeting",
+                   "Every weekday at 7 AM",
+                   (("List today's meetings and attendees", False),
+                    ("Draft a one-page brief per meeting", False))),
+    ]},
+    {"id": "it-dev", "label": "IT & dev", "cards": [
+        _work_card("backup-check", "Backup check", "Confirms last night's backups actually finished",
+                   "Every day at 8 AM",
+                   (("Check backup completion status", False),
+                    ("Raise the alarm on anything missing", True))),
+        _work_card("renewal-checker", "Renewal / expiry checker", "Flags anything due within 30 days",
+                   "Every Monday at 8 AM",
+                   (("Scan licenses, domains, and contracts for upcoming expiries", False),
+                    ("Draft renewal reminders", False),
+                    ("Send them", True))),
+    ]},
+    {"id": "document-admin", "label": "Document admin", "cards": [
+        _work_card("doc-filing", "Document filing", "Files new documents and notes where everything landed",
+                   "Every weekday at 5 PM",
+                   (("Sort the day's new documents into folders", False),
+                    ("Write a one-line index of what moved where", False))),
+        _work_card("action-items", "Meeting notes to actions", "Turns raw meeting notes into assigned tasks",
+                   None,
+                   (("Extract commitments and owners from the latest notes", False),
+                    ("Draft the task list for confirmation", True))),
+    ]},
+]
+
+_WORK_INDEX = {c["id"]: c for cat in WORK_CATALOG for c in cat["cards"]}
+
+
+def _nodes_and_links_for_card(card: dict) -> tuple[list, list]:
+    """Deterministic review diagram for a picked card: a leading trigger node,
+    then one node per canned step ('human' nodes where sign-off is required).
+    Same shape AutomationsScreen.draftToNodes produces, so the wizard pick and
+    a model draft look identical once they land in the editor."""
+    trig_text = card.get("cadence") or "When you approve this draft"
+    nodes = [{"id": "n0", "kind": "trigger", "x": 24, "y": 24, "text": trig_text}]
+    for i, s in enumerate(card["steps"], start=1):
+        node = {"id": f"n{i}",
+                "kind": "human" if s["assignee"] == "human" else "step",
+                "x": 24 + (i % 3) * 40, "y": 24 + (i % 4) * 96,
+                "text": s["text"]}
+        if s["assignee"] == "human":
+            node["assignee"] = "you"
+        nodes.append(node)
+    links = [[f"n{i}", f"n{i + 1}"] for i in range(len(nodes) - 1)]
+    return nodes, links
+
+
 def _require_token(request: Request, token: str) -> None:
     # Delegates to the dashboard's guard so the authZ spine (per-user
     # sessions, capability checks) governs ops routes too — a private copy
@@ -298,8 +427,19 @@ def register_ops_routes(app: FastAPI, engine: JobEngine, data_dir: str, config: 
             if row.get("task") == "fleet-canary":
                 continue
             meta = row["ts"][11:16] if len(row.get("ts", "")) >= 16 else row.get("ts", "")
-            status = "ok" if row.get("exit") == 0 else f"exit {row.get('exit')}"
-            done.append({"text": f"{row.get('task')} ({status})", "meta": meta})
+            flags = row.get("flags") or ""
+            exit_code = row.get("exit")
+            # Honest statuses: the Ops Center styles these differently — a
+            # skipped run (provider prerequisite unmet) must never render as a
+            # success checkmark, and neither may a failure.
+            if SKIP_FLAG in flags:
+                status, label = "skipped", "skipped (no provider)"
+            elif exit_code == 0:
+                status, label = "ok", "ok"
+            else:
+                status, label = "fail", f"exit {exit_code}"
+            done.append({"text": f"{row.get('task')} ({label})",
+                         "meta": meta, "status": status})
         due = engine.due_jobs()
         ongoing = [{"text": f"Waiting on the next window for {j.id}", "meta": "scheduled", "pct": None}
                    for j in due]
@@ -394,19 +534,55 @@ def register_ops_routes(app: FastAPI, engine: JobEngine, data_dir: str, config: 
             conn.close()
         return {"id": automation_id, "status": "saved"}
 
+    @app.get("/api/wizard/work-catalog")
+    def wizard_work_catalog(request: Request):
+        """Single source of truth for the wizard's step-1 suggestion cards —
+        categorized well beyond accounting (operations, customer comms,
+        marketing, scheduling, IT/dev, document admin). Same pattern as
+        GET /api/wizard/catalog: the client renders a trimmed fallback only
+        until/unless this fails."""
+        _require_token(request, token)
+        return {"categories": WORK_CATALOG}
+
     @app.post("/api/setup")
     def submit_wizard(req: WizardPicksReq, request: Request):
         """Record the first-run wizard's picks (README §11: "Pick the work ->
-        Connect it -> Set the leash -> Review the plan"). Distinct from the
-        CLI's `anton setup` install provisioning (setup.py) — this is a
-        product onboarding flow, not directory bootstrapping."""
+        Connect it -> Set the leash -> Review the plan") and materialize each
+        recognized pick as an automation DRAFT.
+
+        Honesty contract (diagnose:setup-automations): picks never become
+        finished or running main-page rows. Every materialized row lands as
+        state="awaiting_approval", needs_signoff=1, author="agent",
+        last_run=NULL — it shows up under Automations as awaiting approval,
+        and nothing runs until the operator approves it there. Unrecognized
+        pick ids are recorded but not materialized; already-materialized ids
+        are skipped so re-running the wizard never duplicates rows. Distinct
+        from the CLI's `anton setup` install provisioning (setup.py) — this
+        is a product onboarding flow, not directory bootstrapping."""
         _require_token(request, token)
         conn = open_isolation_db(data_dir)
+        drafted: list[str] = []
         try:
             conn.execute(
                 "INSERT INTO wizard_submissions(picks_json, ts) VALUES(?,?)",
                 (json.dumps({"step": req.step, "picks": req.picks}), _now_iso()))
+            for pid in req.picks:
+                card = _WORK_INDEX.get(pid)
+                if card is None:
+                    continue
+                if conn.execute("SELECT 1 FROM automations WHERE id=?", (pid,)).fetchone():
+                    continue
+                nodes, links = _nodes_and_links_for_card(card)
+                conn.execute(
+                    "INSERT INTO automations(id, name, plain, trigger_kind, trigger_display, "
+                    "trigger_expr, needs_signoff, author, last_run, state, risk, nodes_json, "
+                    "links_json, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (pid, card["label"], card["sub"], None, card.get("cadence"), None,
+                     1, "agent", None, "awaiting_approval", "low",
+                     json.dumps(nodes), json.dumps(links), _now_iso()))
+                drafted.append(pid)
             conn.commit()
         finally:
             conn.close()
-        return {"status": "recorded", "picks": len(req.picks)}
+        return {"status": "recorded", "picks": len(req.picks),
+                "drafted": len(drafted), "draftIds": drafted}

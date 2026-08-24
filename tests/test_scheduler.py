@@ -192,3 +192,106 @@ class TestSonOfAntonToggleOff(unittest.TestCase):
         # gated run must re-read the DB and block again
         rec = eng.run_job(eng.by_id("gated"))
         self.assertEqual(rec.exit, 5)
+
+
+class TestProviderPrerequisiteGate(unittest.TestCase):
+    """A job whose routed executor/provider structurally cannot succeed must
+    record one honest skip-with-reason (exit 6, skipped:no-provider) — not an
+    endless stream of exit-1 subprocess failures at cron cadence."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        init_db(os.path.join(self.dir.name, "isolation.db"))
+        self.jobs_path = os.path.join(self.dir.name, "jobs.yaml")
+        with open(self.jobs_path, "w", encoding="utf-8") as f:
+            f.write("- id: cron-job\n  trigger: { type: cron, expr: \"*/15 * * * *\" }\n"
+                    "  recipe: some-recipe\n")
+        self.ledger = Ledger(os.path.join(self.dir.name, "runs.jsonl"))
+        # A real-executor-shaped stub: available(), not the FakeExecutor the
+        # gate exempts.
+        from anton.executor.base import Executor
+
+        class StubPiExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("executor.run must never be reached when blocked")
+        self.executor = StubPiExecutor()
+        # Point local routes at a port nothing listens on.
+        self._old_ollama_host = os.environ.get("OLLAMA_HOST")
+        os.environ["OLLAMA_HOST"] = "127.0.0.1:59999"
+
+    def tearDown(self):
+        if self._old_ollama_host is None:
+            os.environ.pop("OLLAMA_HOST", None)
+        else:
+            os.environ["OLLAMA_HOST"] = self._old_ollama_host
+        self.dir.cleanup()
+
+    def _engine(self, executor=None):
+        return JobEngine(load_jobs(self.jobs_path), self.ledger,
+                         executor or self.executor, load_config(),
+                         data_dir=self.dir.name)
+
+    def test_unreachable_local_provider_records_skip_once(self):
+        engine = self._engine()
+        rec = engine.run_job(engine.by_id("cron-job"))
+        self.assertEqual(rec.exit, 6)
+        self.assertIn("skipped:no-provider", rec.flags)
+        self.assertIn("nothing listening on 127.0.0.1:59999", rec.output)
+        row = self.ledger.last_run("cron-job")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["exit"], 6)
+        self.assertEqual(row["output"], rec.output)
+        # condition persists -> suppressed, no new ledger rows
+        for _ in range(3):
+            engine.run_job(engine.by_id("cron-job"))
+        self.assertEqual(len([r for r in self.ledger.read()
+                              if r.get("task") == "cron-job"]), 1)
+
+    def test_missing_cloud_key_blocks_dispatch_with_reason(self):
+        job = load_jobs(self.jobs_path)[0]
+        job.model_route = "cloud"
+        engine = self._engine()
+        saved = {k: os.environ.get(k) for k in ("OPENROUTER_API_KEY",)}
+        for k in saved:
+            os.environ.pop(k, None)
+        try:
+            rec = engine.run_job(job)
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+                else:
+                    os.environ.pop(k, None)
+        self.assertEqual(rec.exit, 6)
+        self.assertIn("skipped:no-provider", rec.flags)
+        self.assertIn("OPENROUTER_API_KEY", rec.output)
+
+    def test_unavailable_executor_records_skip(self):
+        from anton.executor.base import Executor
+
+        class GoneExecutor(Executor):
+            def available(self):
+                return False
+            def run(self, task, **kw):  # pragma: no cover
+                raise AssertionError("unavailable executor must not run")
+        engine = self._engine(GoneExecutor())
+        rec = engine.run_job(engine.by_id("cron-job"))
+        self.assertEqual(rec.exit, 6)
+        self.assertIn("unavailable", rec.output)
+
+    def test_recovered_provider_runs_again_after_skip(self):
+        engine = self._engine()
+        self.assertEqual(engine.run_job(engine.by_id("cron-job")).exit, 6)
+        # provider comes back: last ledger row still says skipped, so the next
+        # run must actually execute (and overwrite the skip as latest state).
+        from anton.executor.fake import FakeExecutor
+        healthy_engine = JobEngine(load_jobs(self.jobs_path), self.ledger,
+                                   FakeExecutor(), load_config(),
+                                   data_dir=self.dir.name)
+        rec = healthy_engine.run_job(healthy_engine.by_id("cron-job"))
+        self.assertEqual(rec.exit, 0)
+        row = self.ledger.last_run("cron-job")
+        self.assertEqual(row["exit"], 0)
+        self.assertNotIn("skipped:no-provider", row["flags"])

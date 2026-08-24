@@ -141,6 +141,31 @@ class TestOpsApi(unittest.TestCase):
         self.assertIn("ongoing", log)
         self.assertIn("done", log)
 
+    def test_agent_worklog_threads_honest_status(self):
+        # Ledger rows must carry a status the UI can style truthfully: a
+        # skipped run (provider prerequisite unmet) is not a success.
+        from datetime import datetime, timezone
+
+        from anton.models import RunRecord
+        from anton.scheduler import SKIP_FLAG
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.engine.ledger.append(RunRecord.new(task="ok-job", exit_code=0,
+                                                flags="cron;route:local",
+                                                ts=f"{today}T10:00:00Z"))
+        self.engine.ledger.append(RunRecord.new(task="fail-job", exit_code=1,
+                                                flags="cron;route:local",
+                                                ts=f"{today}T10:05:00Z"))
+        self.engine.ledger.append(RunRecord.new(task="skip-job", exit_code=6,
+                                                flags=SKIP_FLAG,
+                                                output="skip-job skipped: nothing listening",
+                                                ts=f"{today}T10:10:00Z"))
+        done = {d["text"].split(" ")[0]: d
+                for d in self.client.get("/api/agent/worklog").json()["done"]}
+        self.assertEqual(done["ok-job"]["status"], "ok")
+        self.assertEqual(done["fail-job"]["status"], "fail")
+        self.assertEqual(done["skip-job"]["status"], "skipped")
+        self.assertIn("skipped (no provider)", done["skip-job"]["text"])
+
     def test_learning_reads_playbooks_table(self):
         conn = self._isolation()
         try:
@@ -200,6 +225,52 @@ class TestOpsApi(unittest.TestCase):
         r = self.client.post("/api/setup", json={"step": "work", "picks": ["a", "b", "c"]})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["picks"], 3)
+
+    def test_work_catalog_is_backend_served_and_beyond_accounting(self):
+        # diagnose:setup-automations symptom 1: step-1 suggestions come from
+        # the backend (single source of truth, like /api/wizard/catalog) and
+        # cover far more than accounting.
+        r = self.client.get("/api/wizard/work-catalog")
+        self.assertEqual(r.status_code, 200)
+        cats = r.json()["categories"]
+        self.assertGreaterEqual(len(cats), 4)
+        ids = {c["id"] for c in cats}
+        self.assertTrue({"marketing", "customer-comms", "it-dev", "scheduling"} <= ids)
+        for cat in cats:
+            self.assertTrue(cat["cards"])
+            for card in cat["cards"]:
+                for key in ("id", "label", "sub", "prompt", "cadence", "steps"):
+                    self.assertIn(key, card)
+                for step in card["steps"]:
+                    self.assertIn(step["assignee"], ("agent", "human"))
+
+    def test_setup_wizard_materializes_picks_as_awaiting_drafts_never_finished(self):
+        # diagnose:setup-automations symptom 2: picks must land as pending
+        # drafts (awaiting_approval, needsSignoff, lastRun null) — never as
+        # finished/running main-page rows.
+        cats = self.client.get("/api/wizard/work-catalog").json()["categories"]
+        pick_ids = [cats[0]["cards"][0]["id"], cats[1]["cards"][0]["id"]]
+        r = self.client.post("/api/setup", json={"step": "review", "picks": pick_ids})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["drafted"], 2)
+
+        got = self.client.get("/api/initiatives").json()
+        by_id = {row["id"]: row for row in got}
+        for pid in pick_ids:
+            self.assertIn(pid, by_id)
+            row = by_id[pid]
+            self.assertEqual(row["state"], "awaiting_approval")
+            self.assertNotEqual(row["state"], "running")
+            self.assertTrue(row["needsSignoff"])
+            self.assertIsNone(row["lastRun"])
+            self.assertEqual(row["author"], "agent")
+            self.assertTrue(row["nodes"])  # a reviewable diagram, not an empty row
+
+        # Re-running setup never duplicates rows; unknown pick ids are ignored.
+        again = self.client.post("/api/setup", json={"step": "review", "picks": pick_ids + ["not-a-real-card"]})
+        self.assertEqual(again.status_code, 200)
+        self.assertEqual(again.json()["drafted"], 0)
+        self.assertEqual(len(self.client.get("/api/initiatives").json()), len(got))
 
     def test_vault_note_augmented_fields_present(self):
         # provision_vault() writes index.md into the vault dir; scan it in so

@@ -96,15 +96,17 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
     @patch("anton.executor.opencode_executor.shutil.which", return_value=None)
     def test_override_job_never_touches_the_engine_default_executor(self, _mock_which):
         # opencode may genuinely be installed on the machine running this
-        # test suite -- force the ENOENT path deterministically rather than
-        # relying on its absence, so this never risks a real dispatch. The
-        # point being verified: this job's dispatch went through
-        # OpenCodeExecutor (exit_code=1, ENOENT), not FakeExecutor (self.executor,
-        # which always succeeds with exit_code=0 and a "[fake]"-prefixed output).
+        # test suite -- force the unavailable path deterministically rather
+        # than relying on its absence. The point being verified: this job's
+        # run went through OpenCodeExecutor (one honest skip naming its
+        # missing binary), not FakeExecutor (self.executor, which always
+        # succeeds with exit_code=0 and a "[fake]"-prefixed output).
         rec = self.engine.run_job(self.engine.by_id("check-quickbooks-balance"),
                                   now=dt.datetime.now(dt.timezone.utc))
         self.assertFalse(rec.output.startswith("[fake]"))
-        self.assertEqual(rec.exit, 1)
+        self.assertEqual(rec.exit, 6)  # skipped, not a fake success
+        self.assertIn("skipped:no-provider", rec.flags)
+        self.assertIn("opencode binary not found", rec.output)
 
 
 if __name__ == "__main__":

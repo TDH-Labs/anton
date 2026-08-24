@@ -1,14 +1,13 @@
 """Shared defaults: config skeleton + default jobs (used by cli, setup, installer)."""
 
-DEFAULT_JOBS_YAML = """- id: e2e-canary
-  trigger: { type: cron, expr: "*/15 * * * *" }
-  recipe: e2e-canary
-  expected_cadence_min: 15
-- id: daily-digest
-  trigger: { type: cron, expr: "0 * * * *" }
-  recipe: daily-digest
-  expected_cadence_min: 60
-- id: smoke-hook
+# Only webhook-triggered jobs are seeded on fresh installs. The old seeds
+# (e2e-canary, hourly "daily-digest") were broken by construction: their
+# recipes were passed verbatim as LLM prompts routed local-first, so on any
+# install without a reachable Ollama they recorded exit-1 failures at cron
+# cadence (~120/day) while doing nothing. Health monitoring already runs
+# in-process every poll tick via JobEngine.run_canary(); digest generation
+# belongs behind explicit provider configuration (`anton digest`).
+DEFAULT_JOBS_YAML = """- id: smoke-hook
   trigger: { type: webhook }
   recipe: smoke-hook
   expected_cadence_min: 0

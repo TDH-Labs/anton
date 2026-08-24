@@ -27,6 +27,19 @@ class TestSetup(unittest.TestCase):
             self.assertIn("approvals", tables)
             self.assertIn("metering", tables)
 
+    def test_default_jobs_seed_only_webhook_triggered_job(self):
+        # Fresh installs must not seed cron jobs whose only execution path is
+        # an LLM call that structurally cannot succeed out-of-the-box (the old
+        # e2e-canary / daily-digest seeds spammed exit-1 ledger rows at cron
+        # cadence on any install without a reachable provider).
+        with tempfile.TemporaryDirectory() as d:
+            info = run_setup(d)
+            import yaml
+            with open(os.path.join(info["data_dir"], "jobs.yaml"), encoding="utf-8") as f:
+                jobs = yaml.safe_load(f) or []
+            self.assertEqual([j["id"] for j in jobs], ["smoke-hook"])
+            self.assertEqual(jobs[0]["trigger"]["type"], "webhook")
+
     def test_run_setup_persists_executor_choice_to_disk(self):
         # run_setup() used to mutate the loaded config dict's executor field
         # and discard it without writing back — config.yaml always kept

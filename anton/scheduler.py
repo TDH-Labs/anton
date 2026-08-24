@@ -4,14 +4,17 @@ from __future__ import annotations
 import datetime as dt
 import os
 import re
+import socket
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from typing import List, Optional
 
 from .canary import attempt_repairs, compute_tripwires
 from .db import isolation_approvals_integrity
 from .executor import Executor
+from .executor.fake import FakeExecutor
 from .jobs import Job
 from .ledger import Ledger
 from .models import RunRecord
@@ -20,6 +23,40 @@ from .routes import select_route
 
 def _settings_db_path(data_dir: str) -> str:
     return os.path.join(data_dir, "isolation.db")
+
+
+# Same provider -> env-var mapping as cli._PROVIDER_ENV_VARS (duplicated here
+# to avoid a circular import: cli builds the JobEngine that lives here).
+_PROVIDER_ENV_VARS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "xai": "XAI_API_KEY",
+}
+
+SKIP_FLAG = "skipped:no-provider"
+
+
+def _local_endpoint() -> tuple[str, int]:
+    """The Ollama endpoint a `local` route implies: OLLAMA_HOST env or the
+    default 127.0.0.1:11434 (pi's own default for ollama models)."""
+    raw = os.environ.get("OLLAMA_HOST") or "127.0.0.1:11434"
+    if "://" not in raw:
+        raw = "http://" + raw
+    parsed = urllib.parse.urlparse(raw)
+    return parsed.hostname or "127.0.0.1", parsed.port or 11434
+
+
+def _tcp_reachable(host: str, port: int, timeout_s: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
 
 
 def get_son_of_anton_mode(data_dir: Optional[str]) -> bool:
@@ -296,6 +333,49 @@ class JobEngine:
             return f"daily cost budget breached: ${today_cost:.4f}"
         return None
 
+    def _provider_block(self, job: Job, route, executor) -> Optional[str]:
+        """Honest prerequisite gate: return a reason string when the routed
+        executor/provider structurally cannot succeed (executor binary
+        missing, local Ollama endpoint unreachable, cloud key absent), else
+        None. The FakeExecutor (deterministic test/demo stub) is exempt —
+        there is no real provider behind it by construction."""
+        if isinstance(executor, FakeExecutor):
+            return None
+        available = getattr(executor, "available", None)
+        if callable(available) and not available():
+            bin_name = (getattr(executor, "pi_bin", None)
+                        or getattr(executor, "opencode_bin", None)
+                        or type(executor).__name__)
+            return f"executor unavailable ({bin_name} binary not found on PATH)"
+        if route.provider == "local":
+            host, port = _local_endpoint()
+            if not _tcp_reachable(host, port):
+                return (f"local model {route.model}: nothing listening on "
+                        f"{host}:{port} (is Ollama running?)")
+            return None
+        prefix = route.model.split("/", 1)[0]
+        env_var = _PROVIDER_ENV_VARS.get(prefix)
+        if env_var and not os.environ.get(env_var):
+            return f"cloud model {route.model} requires {env_var}, which is not set"
+        return None
+
+    def _record_skipped(self, job: Job, route, reason: str,
+                        now: dt.datetime) -> RunRecord:
+        """Record a skip ONCE per persistent condition: exit 6 with a reason
+        in the output, flagged skipped:no-provider. While the condition holds
+        the record is returned but not re-appended — a job that can't run must
+        say why once, not spam the ledger at cron cadence."""
+        record = RunRecord.new(task=job.id, exit_code=6, flags=SKIP_FLAG,
+                               output=f"{job.id} skipped: {reason}",
+                               model=route.model, provider=route.provider,
+                               duration_ms=0,
+                               ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        last = self.ledger.last_run(job.id)
+        if last is None or SKIP_FLAG not in (last.get("flags") or ""):
+            self.ledger.append(record)
+            self._record_metering(record)
+        return record
+
     def run_job(self, job: Job, now: Optional[dt.datetime] = None) -> RunRecord:
         now = now or dt.datetime.now(dt.timezone.utc)
         route = select_route(
@@ -305,6 +385,14 @@ class JobEngine:
         )
 
         self._touch_heartbeat()
+
+        # Prerequisite gate: dispatch only when the routed executor/provider
+        # can actually run; otherwise one honest skip-with-reason instead of
+        # an endless stream of exit-1 subprocess failures.
+        executor = self._resolve_executor(job)
+        blocked_reason = self._provider_block(job, route, executor)
+        if blocked_reason:
+            return self._record_skipped(job, route, blocked_reason, now)
 
         # R1/R7: hard-gate jobs (money/outbound) require an approved nonce before any run (or Son of Anton bypass).
         gate_flag = None
@@ -323,7 +411,6 @@ class JobEngine:
 
         started = time.monotonic()
         timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
-        executor = self._resolve_executor(job)
         result = executor.run(job.recipe, model=route.model, provider=route.provider,
                               timeout_s=timeout_s)
 
