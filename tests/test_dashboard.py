@@ -52,6 +52,11 @@ class TestDashboard(unittest.TestCase):
         self.assertIn("Anton", r.text)
         self.assertIn("3080", r.text)
 
+    def test_n8n_config_defaults_to_unset(self):
+        r = self.client.get("/api/n8n/config")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["base_url"])
+
     def test_ledger_api(self):
         r = self.client.get("/api/ledger")
         self.assertEqual(r.status_code, 200)
@@ -234,6 +239,42 @@ class TestDashboard(unittest.TestCase):
         self.assertEqual(body["status"], "listening")
         self.assertIn("real-client-id-123", body["auth_url"])
         self.assertIn("appcenter.intuit.com", body["auth_url"])
+
+
+class TestN8NConfig(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        jobs_path = os.path.join(self.dir.name, "jobs.yaml")
+        with open(jobs_path, "w", encoding="utf-8") as f:
+            f.write(JOBS)
+        init_db(os.path.join(self.dir.name, "isolation.db"))
+        ledger = Ledger(os.path.join(self.dir.name, "runs.jsonl"))
+        self.engine = JobEngine(load_jobs(jobs_path), ledger, FakeExecutor(), load_config())
+        provision_vault(os.path.join(self.dir.name, "vault"))
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def test_config_yaml_base_url_is_returned(self):
+        config = load_config()
+        config["n8n"] = {"base_url": "https://n8n.example.com"}
+        client = TestClient(create_app(self.engine, self.dir.name, config))
+        r = client.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "https://n8n.example.com")
+
+    @patch.dict(os.environ, {"ANTON_N8N_BASE_URL": "https://from-env.example.com"})
+    def test_env_var_used_when_config_yaml_unset(self):
+        client = TestClient(create_app(self.engine, self.dir.name, load_config()))
+        r = client.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "https://from-env.example.com")
+
+    @patch.dict(os.environ, {"ANTON_N8N_BASE_URL": "https://from-env.example.com"})
+    def test_config_yaml_wins_over_env_var(self):
+        config = load_config()
+        config["n8n"] = {"base_url": "https://from-config.example.com"}
+        client = TestClient(create_app(self.engine, self.dir.name, config))
+        r = client.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "https://from-config.example.com")
 
 
 class TestVolumeRootDataDir(unittest.TestCase):

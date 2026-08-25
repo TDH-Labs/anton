@@ -39,6 +39,14 @@ DEFAULTS = {
         "daily_cost_usd_max": 5.0,
     },
     "jobs_file": "jobs.yaml",
+    "n8n": {
+        # The operator's own n8n instance -- editing an n8n-backed
+        # automation's actual workflow happens there, not in a competing
+        # in-app canvas (see dashboard.py's /api/n8n/config and
+        # AutomationsScreen.tsx's "Draw it" tile). Empty by default: n8n is
+        # optional infrastructure, not something every install needs.
+        "base_url": "",
+    },
 }
 
 

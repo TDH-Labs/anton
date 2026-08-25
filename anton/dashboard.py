@@ -312,6 +312,18 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             return FileResponse(svg_path, media_type="image/svg+xml")
         raise HTTPException(404, "son of anton logo not found")
 
+    @app.get("/api/n8n/config")
+    def get_n8n_config():
+        """The operator's own n8n instance, if connected -- config.yaml's
+        n8n.base_url wins over ANTON_N8N_BASE_URL, same precedence as every
+        other config-vs-env setting in this file. Read-only, unauthenticated
+        like /api/mode: a base URL isn't a secret, and the Automations
+        screen needs it before a user is necessarily signed in to anything
+        gated. Empty/unset means n8n isn't connected -- the frontend shows
+        that honestly rather than guessing at a default."""
+        base_url = (config.get("n8n") or {}).get("base_url") or os.environ.get("ANTON_N8N_BASE_URL") or ""
+        return {"base_url": base_url or None}
+
     @app.get("/api/mode")
     def get_mode():
         # DB value wins: another process (the scheduler) may have observed a
