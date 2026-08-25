@@ -712,6 +712,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 pass
             if req.model.strip():
                 _set_cloud_model(data_dir, f"{req.provider}/{req.model.strip()}")
+            # Hot-apply into the dsh web host's settings document so the
+            # composer's picker + default model reflect this save without a
+            # restart (settings.yaml/.credentials.yaml are hot-reloaded there).
+            try:
+                from .dsh_bridge import sync_dsh_settings
+                sync_dsh_settings(data_dir, config)
+            except Exception:
+                pass
         except OSError as e:
             return JSONResponse(
                 {"detail": f"failed to persist provider key: "
@@ -1108,7 +1116,7 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             conn.commit()
         finally:
             conn.close()
-        return {"status": "connected", "id": req.id}
+        return {"status": "saved", "id": req.id}
 
     @app.post("/api/wizard/browser-login")
     def add_browser_login(req: BrowserLoginReq, request: Request):

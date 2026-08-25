@@ -28,6 +28,11 @@ ANTON_SERVE_PORT="${ANTON_SERVE_PORT:-8798}"
 ANTON_WEB_INTERNAL_PORT="${ANTON_WEB_INTERNAL_PORT:-3079}"
 export ANTON_WEB_PORT="${ANTON_WEB_PORT:-3080}"
 export ANTON_DATA_DIR
+# The dsh web host's harness home: settings.yaml, .credentials.yaml, and
+# sessions all live here. Pin it into the data volume so a user's chat
+# model/provider configuration and session history survive app updates —
+# without this, updates silently reset chat to the stock deepseek default.
+export DSH_HOME="${DSH_HOME:-$ANTON_DATA_DIR/dsh-home}"
 
 mkdir -p "$ANTON_DATA_DIR"
 # provision on first boot (idempotent) — install_dir is the parent of data/, so

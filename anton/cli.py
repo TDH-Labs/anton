@@ -8,7 +8,7 @@ import os
 import sys
 import time
 
-from .config import load_config
+from .config import load_config, deep_merge
 from .db import init_db
 from .executor import FakeExecutor, OIExecutor, OpenCodeExecutor, PiExecutor
 from .executor.ssh_executor import SSHExecutor
@@ -100,6 +100,16 @@ def _build(config: dict, data_dir: str, executor_name: str):
     _load_secrets_into_env(data_dir)
     from .config import apply_bridge_credential_overrides
     apply_bridge_credential_overrides(config, data_dir)
+    # Mirror already-saved provider keys into the dsh web host's settings
+    # document so chat sessions see them (hot-reloaded there). Best-effort:
+    # a bridge failure must never block boot.
+    try:
+        from .dsh_bridge import sync_dsh_settings
+        notes = sync_dsh_settings(data_dir, config)
+        for n in notes:
+            print(f"[dsh-bridge] {n}", flush=True)
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"[dsh-bridge] sync failed (non-fatal): {type(e).__name__}: {e}", flush=True)
     os.makedirs(data_dir, exist_ok=True)
     init_db(os.path.join(data_dir, "isolation.db"))
     _assert_isolation_trigger_integrity(data_dir)
@@ -611,6 +621,24 @@ def main(argv=None) -> int:
 
     args = ap.parse_args(argv)
     config = load_config(args.config)
+    # Container deployments: the wizard persists user settings (routes
+    # cloud_model, etc.) into the DATA-DIR config.yaml, while --config points
+    # at the entrypoint-generated container-config.yaml (host pin only) that
+    # is rewritten each boot. Without merging the data-dir file here, every
+    # user pick silently evaporated on restart. Data-dir wins: it's the
+    # surface the user actually edits.
+    data_dir = getattr(args, "data_dir", None)
+    if data_dir:
+        import yaml as _yaml
+        for cand in (os.path.join(data_dir, "config.yaml"),
+                     os.path.join(os.path.dirname(data_dir), "config.yaml")):
+            if cand != args.config and os.path.exists(cand):
+                try:
+                    with open(cand, encoding="utf-8") as f:
+                        config = deep_merge(config, _yaml.safe_load(f) or {})
+                except OSError:
+                    pass
+                break
     return args.fn(args, config)
 
 
