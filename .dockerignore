@@ -41,3 +41,7 @@ install.sh
 .playwright-mcp/
 .swarm/
 .github/
+progress.md
+context.md
+fleet/
+scripts/
