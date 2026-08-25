@@ -176,7 +176,7 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
             else:
                 os.environ["OPENROUTER_API_KEY"] = old_key
         self.assertFalse(rec.output.startswith("[fake]"))
-        self.assertEqual(rec.exit, 0)
+        self.assertEqual(rec.exit, 0, msg=f"flags={rec.flags!r} output={rec.output!r}")
         self.assertEqual(rec.output, "reconciled")
         self.assertEqual(posted["url"], webhook_url)
 
