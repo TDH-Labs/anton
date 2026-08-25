@@ -6,7 +6,7 @@ from anton import experience, upskill
 from anton.config import load_config
 from anton.db import init_db
 from anton.executor import FakeExecutor
-from anton.executor.base import Executor, RunResult
+from anton.executor.base import RunResult
 from anton.jobs import load_jobs
 from anton.ledger import Ledger
 from anton.models import RunRecord
@@ -21,9 +21,11 @@ JOBS = """
 """
 
 
-class WritingExecutor(Executor):
+class WritingExecutor(FakeExecutor):
     """Same pattern as test_upskill.py's double: writes a valid distillation
-    regardless of prompt content."""
+    regardless of prompt content. Subclasses FakeExecutor so _dispatch's
+    provider-prerequisite gate exempts it (see test_upskill.py's identical
+    fix)."""
 
     def __init__(self, out_dir: str, slug: str):
         self.out_dir = out_dir

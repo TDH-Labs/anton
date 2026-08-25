@@ -208,5 +208,64 @@ class TestScanProviderPrerequisiteGate(OpportunityTestBase):
         self.assertEqual(len(rows), 1)
 
 
+class TestScanGateChecksActualDispatchTarget(OpportunityTestBase):
+    """The gate used to check select_route(prefer="cloud")'s hardcoded
+    default (openrouter/claude-3.5-sonnet) even when a caller-supplied
+    model=/provider= override -- or the deployment's own configured
+    routes.cloud_model -- meant something else entirely would actually be
+    dispatched. That let it both false-skip a fully-available override
+    (blocking on a key the deployment never needed) and false-pass an
+    unavailable one (letting a doomed dispatch through because the
+    *default*'s key happened to be set)."""
+
+    def setUp(self):
+        super().setUp()
+        self._old_openrouter = os.environ.pop("OPENROUTER_API_KEY", None)
+        self._old_anthropic = os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    def tearDown(self):
+        for k, v in (("OPENROUTER_API_KEY", self._old_openrouter),
+                    ("ANTHROPIC_API_KEY", self._old_anthropic)):
+            if v is not None:
+                os.environ[k] = v
+            else:
+                os.environ.pop(k, None)
+        super().tearDown()
+
+    def test_override_to_an_available_provider_is_not_blocked_by_the_default(self):
+        # only ANTHROPIC_API_KEY is set -- the module default (openrouter)
+        # has no key, but that's not what's being requested.
+        os.environ["ANTHROPIC_API_KEY"] = "sk-test"
+        vault_dir = os.path.join(self.data_dir, "vault")
+        opp_dir = os.path.join(vault_dir, "notes", "opportunities")
+        executor = WritingScanExecutor(opp_dir, [])
+        self.engine.executor = executor
+        opportunity.scan_for_opportunities(
+            self.engine, model="anthropic/claude-3-opus", provider="anthropic")
+        self.assertEqual(executor.calls, 1)
+        rows = self.ledger.read()
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn(opportunity.SKIP_FLAG, rows[0]["flags"])
+
+    def test_override_to_an_unavailable_provider_is_blocked_not_the_default(self):
+        # OPENROUTER_API_KEY (the default route's key) IS set, but the
+        # override requests anthropic, which is not.
+        os.environ["OPENROUTER_API_KEY"] = "sk-test"
+        from anton.executor.base import Executor
+
+        class StubRealExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("must not dispatch to the unavailable override")
+        self.engine.executor = StubRealExecutor()
+        found = opportunity.scan_for_opportunities(
+            self.engine, model="anthropic/claude-3-opus", provider="anthropic")
+        self.assertEqual(found, [])
+        rows = self.ledger.read()
+        self.assertIn(opportunity.SKIP_FLAG, rows[0]["flags"])
+        self.assertIn("ANTHROPIC_API_KEY", rows[0]["output"])
+
+
 if __name__ == "__main__":
     unittest.main()

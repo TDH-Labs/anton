@@ -191,7 +191,7 @@ class TestConnectionsEndpoints(_Ctx):
             "id": "github", "name": "GitHub", "what": "Repos, PRs",
             "url": "https://api.githubcopilot.com/mcp", "auth": "oauth"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["status"], "connected")
+        self.assertEqual(r.json()["status"], "saved")  # honest: registered ≠ authenticated
         listed = client.get("/api/wizard/mcp").json()
         github = [m for m in listed if m["id"] == "github"]
         self.assertEqual(len(github), 1)

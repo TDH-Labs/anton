@@ -93,10 +93,14 @@ class TestVerifyResearch(unittest.TestCase):
             self.assertEqual(len(report.sources), 0)
 
 
-class WritingExecutor(Executor):
+class WritingExecutor(FakeExecutor):
     """Deterministic double: writes conforming research notes + a valid
     distilled skill on every call, regardless of prompt content -- exercises
-    the sufficient-research path without depending on prompt parsing."""
+    the sufficient-research path without depending on prompt parsing.
+    Subclasses FakeExecutor (not the bare Executor base) so _dispatch's
+    provider-prerequisite gate exempts it, same as scheduler.py's job-gate
+    already exempts FakeExecutor -- there is no real provider behind it by
+    construction."""
 
     def __init__(self, research_dir: str, out_dir: str, slug: str):
         self.research_dir = research_dir
@@ -151,6 +155,65 @@ class UpskillTestBase(unittest.TestCase):
         rows = conn.execute("SELECT slug, source, status FROM initiatives").fetchall()
         conn.close()
         return rows
+
+
+class TestDispatchProviderPrerequisiteGate(UpskillTestBase):
+    """_dispatch() (upskill.py) is the single funnel all three of
+    run_upskill's/consolidate_skill's real-executor calls go through --
+    every one of them sits behind meta_learning.process_pending_candidates,
+    which the scheduler poll loop calls every tick. Before this gate, a
+    fresh install with no provider configured hit the real executor
+    max_research_attempts times per run_upskill call, every poll tick for
+    as long as the candidate stayed eligible: the same fabricated-failure
+    spam scheduler.py's run_job and opportunity.py's scan_for_opportunities
+    were fixed for, in a third place those fixes missed."""
+
+    def setUp(self):
+        super().setUp()
+
+        class StubRealExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("executor.run must never be reached when blocked")
+        self.engine.executor = StubRealExecutor()
+        self._old_key = os.environ.pop("OPENROUTER_API_KEY", None)
+
+    def tearDown(self):
+        if self._old_key is not None:
+            os.environ["OPENROUTER_API_KEY"] = self._old_key
+        super().tearDown()
+
+    def test_missing_cloud_key_skips_instead_of_dispatching(self):
+        result = upskill.run_upskill(self.engine, "widget repair", max_research_attempts=3)
+        self.assertEqual(result.status, "insufficient_research")
+        rows = self.ledger.read()
+        skips = [r for r in rows if r["task"] == "upskill:widget-repair:research"]
+        # bounded by dedup, not by max_research_attempts: the loop calls
+        # _dispatch 3 times, but only the first records a row.
+        self.assertEqual(len(skips), 1)
+        self.assertIn("skipped:no-provider", skips[0]["flags"])
+        self.assertEqual(skips[0]["exit"], 6)
+
+    def test_skipped_attempt_is_not_recorded_in_upskill_runs(self):
+        upskill.run_upskill(self.engine, "widget repair", max_research_attempts=2)
+        conn = sqlite3.connect(os.path.join(self.data_dir, "isolation.db"))
+        attempts = conn.execute(
+            "SELECT COUNT(*) FROM upskill_runs WHERE stage='research'").fetchone()[0]
+        conn.close()
+        self.assertEqual(attempts, 0)
+
+    def test_skip_does_not_spawn_a_stuck_remediation_initiative(self):
+        # delta.py's scan_ledger_failures must not treat this skip as a
+        # failure (see test_delta.py's dedicated coverage) -- cross-checked
+        # here end-to-end through the real upskill.py code path.
+        from anton.delta import scan_ledger_failures
+        upskill.run_upskill(self.engine, "widget repair", max_research_attempts=1)
+        conn = sqlite3.connect(os.path.join(self.data_dir, "isolation.db"))
+        try:
+            self.assertEqual(scan_ledger_failures(self.ledger, conn), [])
+        finally:
+            conn.close()
 
 
 class TestRunUpskillInsufficientResearch(UpskillTestBase):

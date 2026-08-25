@@ -70,7 +70,7 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
                                        "url": "https://api.githubcopilot.com/mcp",
                                        "auth": "oauth"})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["status"], "connected")
+        self.assertEqual(r.json()["status"], "saved")
         # POST /api/integrations/connect/start needs a configured bridge to
         # complete; an unconfigured bridge must fail at the ROUTE (400) —
         # never 403 at the guard, which would mean the scope regressed.
