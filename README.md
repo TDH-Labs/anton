@@ -40,11 +40,18 @@ You'll need [Docker Desktop](https://www.docker.com/products/docker-desktop/) in
 and paste:
 
 ```bash
-docker run -d --name anton -p 3080:3080 -v anton_data:/data ghcr.io/tdh-labs/anton:latest
+docker run -d --platform linux/amd64 --name anton -p 3080:3080 -v anton_data:/data ghcr.io/tdh-labs/anton:latest
 ```
 
 That downloads and starts Anton. It runs quietly in the background from here — you don't
 need to keep the terminal open.
+
+The published image is amd64-only today. `--platform linux/amd64` is a no-op on an
+amd64 machine; on Apple Silicon (M1/M2/M3/M4) Docker Desktop runs it through its
+built-in emulation instead — noticeably slower to start, but it works. Without that
+flag, `docker run` fails outright on Apple Silicon with "no matching manifest." A
+native arm64 image is on the roadmap; until then, this is the one command that works
+everywhere Docker Desktop runs.
 
 This command is for your own computer or a trusted network — it has no HTTPS, so your
 password would travel in plain text if port 3080 were opened to the public internet.
@@ -102,9 +109,9 @@ Updating and your data work exactly the same way as below, just with
 ## Updating
 
 ```bash
-docker pull ghcr.io/tdh-labs/anton:latest
+docker pull --platform linux/amd64 ghcr.io/tdh-labs/anton:latest
 docker stop anton && docker rm anton
-docker run -d --name anton -p 3080:3080 -v anton_data:/data ghcr.io/tdh-labs/anton:latest
+docker run -d --platform linux/amd64 --name anton -p 3080:3080 -v anton_data:/data ghcr.io/tdh-labs/anton:latest
 ```
 
 Your data lives in the `anton_data` volume, not the container — this swaps in the new

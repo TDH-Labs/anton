@@ -7,7 +7,7 @@ from anton import opportunity
 from anton.config import load_config
 from anton.db import init_db
 from anton.executor import FakeExecutor
-from anton.executor.base import Executor, RunResult
+from anton.executor.base import RunResult
 from anton.jobs import load_jobs
 from anton.ledger import Ledger
 from anton.scheduler import JobEngine
@@ -39,9 +39,13 @@ def _write_opportunity_note(opp_dir, subject, source, worth, n=1):
     return path
 
 
-class WritingScanExecutor(Executor):
+class WritingScanExecutor(FakeExecutor):
     """Deterministic double: writes conforming opportunity notes on every
-    call, regardless of prompt content."""
+    call, regardless of prompt content. Subclasses FakeExecutor (not the
+    bare Executor base) so scan_for_opportunities' provider-prerequisite
+    gate exempts it the same way it exempts FakeExecutor itself -- there is
+    no real provider behind it by construction, same as the scheduler's own
+    job-dispatch gate already treats FakeExecutor."""
 
     def __init__(self, opp_dir: str, findings):
         self.opp_dir = opp_dir
@@ -158,6 +162,50 @@ class TestScanForOpportunities(OpportunityTestBase):
         rows = self.ledger.read()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["task"], "opportunity:scan")
+
+
+class TestScanProviderPrerequisiteGate(OpportunityTestBase):
+    """A fresh install with no AI provider configured used to hit real
+    dispatch here unconditionally and record 'opportunity:scan (exit 1)'
+    within seconds of first boot -- one poll tick after the container
+    starts, since _opportunity_scan_due() is true the moment
+    last-opportunity-scan has never been written. This is the same
+    fabricated-failure-as-work pattern run_job()'s _provider_block was
+    built to eliminate (see TestProviderPrerequisiteGate in
+    test_scheduler.py); scan_for_opportunities must apply the identical
+    gate instead of running a second, ungated path to the same executor."""
+
+    def setUp(self):
+        super().setUp()
+        from anton.executor.base import Executor
+
+        class StubRealExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("executor.run must never be reached when blocked")
+        self.engine.executor = StubRealExecutor()
+        self._old_key = os.environ.pop("OPENROUTER_API_KEY", None)
+
+    def tearDown(self):
+        if self._old_key is not None:
+            os.environ["OPENROUTER_API_KEY"] = self._old_key
+        super().tearDown()
+
+    def test_missing_cloud_key_skips_instead_of_dispatching(self):
+        found = opportunity.scan_for_opportunities(self.engine)
+        self.assertEqual(found, [])
+        rows = self.ledger.read()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task"], "opportunity:scan")
+        self.assertIn(opportunity.SKIP_FLAG, rows[0]["flags"])
+        self.assertEqual(rows[0]["exit"], 6)
+
+    def test_skip_is_recorded_once_not_every_call(self):
+        opportunity.scan_for_opportunities(self.engine)
+        opportunity.scan_for_opportunities(self.engine)
+        rows = self.ledger.read()
+        self.assertEqual(len(rows), 1)
 
 
 if __name__ == "__main__":

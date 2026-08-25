@@ -26,7 +26,9 @@ from typing import Optional
 
 import yaml
 
+from .models import RunRecord
 from .routes import select_route
+from .scheduler import SKIP_FLAG
 from .upskill import _dispatch, slugify
 from .vault import emit_candidate
 
@@ -139,6 +141,24 @@ def verify_opportunities(vault_dir: str) -> list[Opportunity]:
     return found
 
 
+def _record_skipped_scan(engine, route, reason: str) -> None:
+    """Same honest-skip discipline as JobEngine._record_skipped
+    (scheduler.py): a scan that structurally cannot run records ONE
+    exit-6 RunRecord flagged skipped:no-provider, not a repeating exit-1
+    'finished work' entry every time the hours-scale cadence comes due --
+    and it stays silent while the condition is unchanged, so a freshly
+    connected provider doesn't have to fight a wall of stale skip rows."""
+    now = dt.datetime.now(dt.timezone.utc)
+    record = RunRecord.new(task="opportunity:scan", exit_code=6, flags=SKIP_FLAG,
+                           output=f"opportunity:scan skipped: {reason}",
+                           model=route.model, provider=route.provider,
+                           duration_ms=0, ts=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    last = engine.ledger.last_run("opportunity:scan")
+    if last is None or SKIP_FLAG not in (last.get("flags") or ""):
+        engine.ledger.append(record)
+        engine._record_metering(record)
+
+
 def scan_for_opportunities(engine, *, min_worth: str = "high", model: Optional[str] = None,
                            provider: Optional[str] = None, timeout_s: Optional[float] = None) -> list[Opportunity]:
     """Dispatch the scan, verify what was actually written, and emit an
@@ -152,6 +172,17 @@ def scan_for_opportunities(engine, *, min_worth: str = "high", model: Optional[s
     vault_dir = os.path.join(engine.data_dir, "vault")
     opp_dir = os.path.join(vault_dir, "notes", "opportunities")
     os.makedirs(opp_dir, exist_ok=True)
+
+    # Same honest prerequisite gate run_job() applies (scheduler.py): a
+    # fresh install with no provider configured used to hit real dispatch
+    # here unconditionally and spam an exit-1 "opportunity:scan (exit 1)"
+    # into the worklog within seconds of first boot -- the exact
+    # fabricated-success/failure-as-noise pattern the job-lifecycle honesty
+    # fix (run_job's _provider_block) was meant to eliminate everywhere.
+    blocked_reason = engine._provider_block(None, route_, engine.executor)
+    if blocked_reason:
+        _record_skipped_scan(engine, route_, blocked_reason)
+        return []
 
     sources = list_connected_sources(engine.data_dir)
     prompt = build_scan_prompt(sources, opp_dir)

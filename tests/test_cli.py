@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import yaml
 
-from anton.cli import _load_secrets_into_env, cmd_serve
+from anton.cli import _build, _load_secrets_into_env, cmd_serve
 from anton.config import load_config
 
 
@@ -78,3 +78,57 @@ class TestServeLoopReloadsSecrets(unittest.TestCase):
         # before the (mocked, immediately-interrupting) sleep -- proves the
         # loop itself re-checks secrets.yaml each tick.
         self.assertGreaterEqual(mock_load_secrets.call_count, 2)
+
+
+class TestBuildAuthzDecisionSecret(unittest.TestCase):
+    """cli._build() feeds JobEngine._decision_secret for both `anton serve`
+    and `anton dashboard`. It used to read ONLY config['authz'] and refuse
+    to boot if that key was empty -- but wire_authz's self-deploy path
+    (anton/authz/__init__.py) auto-provisions the secret to
+    data/authz/decision.secret and never writes it back into config.yaml,
+    so any authz-enabled install relying on that provisioning (e.g.
+    fleet/provision_client.py, which deletes the config-level secret on
+    purpose) crashed on the first `anton serve`/`dashboard` call even
+    though the HTTP surface booted fine. _build must provision the same way
+    wire_authz does, from the same file, so both processes agree."""
+
+    def test_authz_enabled_without_config_secret_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = load_config()
+            config["authz"] = {"enabled": True}
+            _jobs, _ledger, engine = _build(config, data_dir, "fake")
+            self.assertTrue(engine._decision_secret)
+
+    def test_provisioned_secret_persists_to_data_dir(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = load_config()
+            config["authz"] = {"enabled": True}
+            _build(config, data_dir, "fake")
+            secret_path = os.path.join(data_dir, "authz", "decision.secret")
+            self.assertTrue(os.path.exists(secret_path))
+
+    def test_second_build_reuses_the_same_persisted_secret(self):
+        # dashboard and serve are separate processes calling _build()
+        # independently -- they must land on the identical secret or
+        # neither can verify the other's approval hmacs.
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = load_config()
+            config["authz"] = {"enabled": True}
+            _jobs1, _ledger1, engine1 = _build(config, data_dir, "fake")
+            _jobs2, _ledger2, engine2 = _build(config, data_dir, "fake")
+            self.assertEqual(engine1._decision_secret, engine2._decision_secret)
+
+    def test_config_level_secret_still_wins_when_present(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = load_config()
+            config["authz"] = {"enabled": True, "decision_secret": "explicit-secret"}
+            _jobs, _ledger, engine = _build(config, data_dir, "fake")
+            self.assertEqual(engine._decision_secret, "explicit-secret")
+
+    def test_authz_disabled_leaves_secret_empty_by_default(self):
+        # unauthenticated legacy mode must not silently gain a secret it
+        # never asked for.
+        with tempfile.TemporaryDirectory() as data_dir:
+            config = load_config()
+            _jobs, _ledger, engine = _build(config, data_dir, "fake")
+            self.assertEqual(engine._decision_secret, "")

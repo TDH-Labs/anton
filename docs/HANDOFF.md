@@ -3,16 +3,34 @@ Frozen spec: docs/AUTHZ-SPEC.md (v1.1, FROZEN — build against it, do not redes
 Reviews (binding requirements): docs/AUTHZ-ADVERSARIAL-REVIEW{,-2,-3}.md
 Convergence threshold: two consecutive independent PROCEED verdicts, zero BLOCKER/MAJOR.
 
-## State (updated 2026-08-23 — COMMERCIAL PILOT READY)
+## State (updated 2026-08-24 — COMMERCIAL PILOT READY)
 
-Self-deploy complete: setup provisions authz (enabled by default on fresh
-installs), auto-generates decision/webhook secrets, prints owner claim code
-to stdout. Fleet kit in fleet/ (provision_client.py + onboarding checklist).
-WORM anchor file live at every boot. Click-install OAuth: Connect button ->
-Intuit login -> dashboard callback -> Finish; vendor QBO credentials
-deployment-local via load_vendor_credentials. Connector strategy documented
-(docs/INTEGRATION-STRATEGY.md): native QBO flagship, Nango self-hosted for
-local breadth, Composio for fast cloud breadth.
+Correction to the previous version of this note: authz is OFF by default on
+a plain `anton setup` / the self-serve Docker/Umbrel/VPS installs README.md
+walks a consumer through — it was never wired to enable itself there, and
+`anton setup` never touches the `authz` key. Self-deploy provisioning
+(auto-generated decision/webhook secrets, printed owner claim code) is real
+and does fire wherever authz IS enabled, which today is exactly one place:
+fleet/provision_client.py (the client-pilot kit), which sets
+`authz.enabled: true` explicitly. Fleet kit in fleet/ (provision_client.py +
+onboarding checklist). WORM anchor file live at every boot. Click-install
+OAuth: Connect button -> Intuit login -> dashboard callback -> Finish;
+vendor QBO credentials deployment-local via load_vendor_credentials.
+Connector strategy documented (docs/INTEGRATION-STRATEGY.md): native QBO
+flagship, Nango self-hosted for local breadth, Composio for fast cloud
+breadth.
+
+Fixed 2026-08-24: `cli.py::_build()` (backs `anton serve` and
+`anton dashboard`, i.e. the actual CLI entrypoints, not just the FastAPI
+app factory) read `config.yaml`'s `authz.decision_secret` directly and
+raised at startup if it was empty — but fleet/provision_client.py deletes
+that key on purpose, relying on the auto-provisioned
+`data/authz/decision.secret` file that only `wire_authz()` used to know how
+to read. Every fleet-provisioned client install crashed on the first
+`anton dashboard` call its own onboarding printout told the operator to
+run. `_build()` now provisions through the same `ensure_decision_secret()`
+path `wire_authz()` uses, so both processes agree on the same secret. See
+tests/test_cli.py::TestBuildAuthzDecisionSecret.
 
 REMAINING FOR FULL COMMERCIAL LAUNCH:
 1. TDH Labs Intuit developer app production review (worksheet:
