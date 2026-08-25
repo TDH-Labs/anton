@@ -43,5 +43,12 @@ jobs:
           tags: |
             ghcr.io/tdh-labs/anton:latest
             ghcr.io/tdh-labs/anton:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          no-cache: true
+          # No cache-from/cache-to: type=gha caused a real incident -- a
+          # .dockerignore change (excluding files that had been leaking into
+          # the image) didn't invalidate the cached `COPY . /app` layer, so
+          # CI kept publishing the old content under a "successful" build of
+          # the fixed source. Correctness over build speed for a low-
+          # frequency-build image; revisit caching only with a mechanism
+          # proven to invalidate on build-context changes, not just Dockerfile
+          # instruction text.
