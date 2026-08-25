@@ -150,10 +150,22 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
         # _http_get mocked reachable: the governor's own provider-block gate
         # calls executor.available() before dispatch (same gate every
         # executor goes through) -- proving it fires for N8NExecutor too,
-        # not something this override bypasses.
-        mock_post.return_value = (200, '{"output": "reconciled", "exit_code": 0}')
-        rec = self.engine.run_job(self.engine.by_id("reconcile-via-n8n"),
-                                  now=dt.datetime.now(dt.timezone.utc))
+        # not something this override bypasses. _provider_block also checks
+        # the route's cloud-key env var independently of executor
+        # availability (see scheduler.py) -- both checks must clear, so
+        # both are satisfied here, saved/restored like every other test in
+        # this codebase that touches this specific env var.
+        old_key = os.environ.get("OPENROUTER_API_KEY")
+        os.environ["OPENROUTER_API_KEY"] = "sk-test"
+        try:
+            mock_post.return_value = (200, '{"output": "reconciled", "exit_code": 0}')
+            rec = self.engine.run_job(self.engine.by_id("reconcile-via-n8n"),
+                                      now=dt.datetime.now(dt.timezone.utc))
+        finally:
+            if old_key is None:
+                os.environ.pop("OPENROUTER_API_KEY", None)
+            else:
+                os.environ["OPENROUTER_API_KEY"] = old_key
         self.assertFalse(rec.output.startswith("[fake]"))
         self.assertEqual(rec.exit, 0)
         self.assertEqual(rec.output, "reconciled")
