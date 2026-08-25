@@ -98,6 +98,8 @@ def _assert_isolation_trigger_integrity(data_dir: str) -> None:
 
 def _build(config: dict, data_dir: str, executor_name: str):
     _load_secrets_into_env(data_dir)
+    from .config import apply_bridge_credential_overrides
+    apply_bridge_credential_overrides(config, data_dir)
     os.makedirs(data_dir, exist_ok=True)
     init_db(os.path.join(data_dir, "isolation.db"))
     _assert_isolation_trigger_integrity(data_dir)
@@ -114,17 +116,23 @@ def _build(config: dict, data_dir: str, executor_name: str):
     ledger = Ledger(os.path.join(data_dir, "runs.jsonl"))
     engine = JobEngine(jobs, ledger, executor, config, data_dir=data_dir)
     # R8-1/R9: the scheduler only consumes approved rows whose decision hmac
-    # matches the shared decision secret. An authz-enabled deployment without
-    # one is a configuration error (wire_authz refuses it too).
+    # matches the shared decision secret. Same self-deploy provisioning as
+    # wire_authz (anton/authz/__init__.py): config.yaml -> persisted
+    # data/authz/decision.secret -> freshly generated. Previously this read
+    # config.yaml only, so any authz-enabled install relying on the
+    # auto-provisioned file (e.g. fleet/provision_client.py, which deletes
+    # the config-level secret on purpose) crashed `anton serve`/`dashboard`
+    # at startup even though wire_authz's own HTTP surface booted fine.
     az = config.get("authz") or {}
-    # R11-1: normalize identically at EVERY trust point (dashboard seeds
-    # stripped too) so whitespace can never split writer vs verifier.
-    engine._decision_secret = (az.get("decision_secret") or "").strip()
+    if az.get("enabled"):
+        from .authz.provision import ensure_decision_secret
+        # R11-1: normalize identically at EVERY trust point (dashboard seeds
+        # stripped too) so whitespace can never split writer vs verifier.
+        engine._decision_secret = ensure_decision_secret(data_dir, config).strip()
+    else:
+        engine._decision_secret = (az.get("decision_secret") or "").strip()
     # R9-MINOR freshness window: approved sign-offs expire (default 7 days).
     engine._approval_max_age_s = az.get("approval_max_age_s", 7 * 24 * 3600)
-    if az.get("enabled") and not engine._decision_secret:
-        raise RuntimeError(
-            "authz.enabled requires authz.decision_secret in config.yaml")
     return jobs, ledger, engine
 
 

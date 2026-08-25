@@ -80,6 +80,21 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
                                        "provider": "quickbooks"})
         self.assertEqual(r.status_code, 400, r.text)
 
+    def test_proxy_bridge_credential_paste_within_scope(self):
+        # POST /api/integrations/bridges/configure is fully exercisable
+        # through the apiproxy credential (the Add-ons paste field rides
+        # it): persists 0600 + hot-applies. The key must never be echoed.
+        r = self.env.client.post("/api/integrations/bridges/configure",
+                                 headers=self.proxy_h,
+                                 json={"bridge": "composio",
+                                       "key": "ak_test_pin_key"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(r.json()["configured"]["composio"])
+        self.assertNotIn("ak_test_pin_key", r.text)
+        import os as _os
+        spath = _os.path.join(self.env.data_dir, "secrets.yaml")
+        self.assertTrue(_os.path.exists(spath))
+
     def test_out_of_scope_denied_with_alert(self):
         r = self.env.client.get("/api/ledger", headers=self.proxy_h)
         self.assertEqual(r.status_code, 403)

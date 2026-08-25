@@ -73,6 +73,9 @@ MACHINE_TOKEN_SCOPES: dict[str, set[tuple[str, str]]] = {
         ("POST", "/api/connections/connect"),
         ("GET", "/api/integrations*"),
         ("POST", "/api/integrations/connect/start"),
+        # pasting a hosted-OAuth bridge credential from the Add-ons screen
+        # (settings.write trust tier, same as the wizard provider-key POSTs)
+        ("POST", "/api/integrations/bridges/configure"),
     },
 }
 
@@ -114,6 +117,7 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     # adoption of pre-authz approval rows is a decision-side operation
     ("POST", "/api/authz/approvals/adopt", "approvals.decide"),
     ("POST", "/api/integrations/connect/start", "connections.connect"),
+    ("POST", "/api/integrations/bridges/configure", "settings.write"),
     ("POST", "/api/integrations/connect/status", "connections.read"),
     ("POST", "/api/integrations/actions/execute", "jobs.run"),
     # Portal Connections lifecycle: registration/deregistration and manual

@@ -147,6 +147,11 @@ class OAuthFinalizeReq(BaseModel):
     state: str
 
 
+class BridgeConfigureReq(BaseModel):
+    bridge: str
+    key: str
+
+
 class OAuthCompleteReq(BaseModel):
     provider: str = "quickbooks"
 
@@ -778,6 +783,29 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         """Which bridges are configured (bool only — never echoes keys)."""
         _require_token(request, token)
         return {"bridges": bridges_configured(config)}
+
+    @app.post("/api/integrations/bridges/configure")
+    def integrations_bridges_configure(req: BridgeConfigureReq,
+                                       request: Request):
+        """Paste a hosted-OAuth bridge credential (Composio API key or Nango
+        secret key). Persists 0600 inside the data volume (survives updates;
+        never committed) AND hot-applies into the live config dict so no
+        restart is needed. The catalog/connect routes read config['bridges']
+        each call, so the next Add-ons refresh sees the working bridge."""
+        _require_token(request, token)
+        from .config import BRIDGE_ENV_VARS
+        spec = BRIDGE_ENV_VARS.get(req.bridge)
+        if spec is None:
+            raise HTTPException(404, f"unknown bridge {req.bridge!r}")
+        key = (req.key or "").strip()
+        if not key:
+            raise HTTPException(422, "empty key")
+        _save_secret(data_dir, spec["secret_name"], key)
+        entry = dict((config.get("bridges") or {}).get(req.bridge) or {})
+        entry[spec["key"]] = key
+        config.setdefault("bridges", {})[req.bridge] = entry
+        return {"bridge": req.bridge,
+                "configured": bridges_configured(config)}
 
     @app.get("/api/integrations/catalog")
     def integrations_catalog(request: Request, bridge: str):

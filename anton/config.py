@@ -52,6 +52,60 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+# Deployment-level bridge credentials for the hosted-OAuth connections
+# catalog (Composio / Nango). Precedence, most specific wins:
+#   1. config.yaml bridges: section  -- operator set it deliberately
+#   2. pasted secrets (data-dir secrets.yaml composio_api_key /
+#      nango_secret_key, written by POST /api/integrations/bridges/configure)
+#   3. environment (ANTON_COMPOSIO_API_KEY / ANTON_NANGO_SECRET_KEY) --
+#      headless VPS deploys
+# Keys NEVER go into git or any committed file; secrets.yaml is 0600 inside
+# the data volume, env vars live only in the process.
+BRIDGE_ENV_VARS = {
+    "composio": {"key": "api_key", "env": "ANTON_COMPOSIO_API_KEY",
+                 "secret_name": "composio_api_key",
+                 "url_env": "ANTON_COMPOSIO_BASE_URL", "url_field": "base_url"},
+    "nango": {"key": "secret_key", "env": "ANTON_NANGO_SECRET_KEY",
+              "secret_name": "nango_secret_key",
+              "url_env": "ANTON_NANGO_HOST", "url_field": "host"},
+}
+
+
+def apply_bridge_credential_overrides(config: dict, data_dir: str | None) -> dict:
+    """Fill config['bridges'] from pasted secrets + env without ever logging
+    or echoing a key. Called once per process after load_config; mutates and
+    returns `config`. Missing sources are simply skipped (a bridge stays
+    unconfigured rather than half-configured with an empty string)."""
+    import yaml
+    bridges = config.setdefault("bridges", {})
+    pasted: dict = {}
+    if data_dir:
+        for path in (os.path.join(data_dir, "secrets.yaml"),
+                     os.path.join(os.path.dirname(data_dir), "secrets.yaml")):
+            try:
+                if os.path.exists(path):
+                    with open(path, encoding="utf-8") as f:
+                        raw = yaml.safe_load(f) or {}
+                    pasted.update(raw)  # later (preferred location) wins
+            except OSError:
+                continue
+    for bridge, spec in BRIDGE_ENV_VARS.items():
+        entry = dict(bridges.get(bridge) or {})
+        if not entry.get(spec["key"]):
+            value = pasted.get(spec["secret_name"])
+            if not value:
+                value = os.environ.get(spec["env"])
+            if value:
+                entry[spec["key"]] = value
+        if not entry.get(spec["url_field"]):
+            url = os.environ.get(spec["url_env"])
+            if url:
+                entry[spec["url_field"]] = url
+        if entry:
+            bridges[bridge] = entry
+    return config
+
+
 def load_config(path: Optional[str] = None) -> dict:
     cfg = deep_merge(DEFAULTS, {})
     if path and os.path.exists(path):

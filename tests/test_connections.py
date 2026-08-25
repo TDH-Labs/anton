@@ -17,10 +17,11 @@ class _Ctx(unittest.TestCase):
     def setUp(self):
         self.data_dir = "/tmp/anton-test-connections"
         os.makedirs(self.data_dir, exist_ok=True)
-        # clean cached registry between tests
-        cache = os.path.join(self.data_dir, "mcp-registry-cache.json")
-        if os.path.exists(cache):
-            os.remove(cache)
+        # clean cached registry and any persisted secrets between tests
+        for stale in ("mcp-registry-cache.json", "secrets.yaml"):
+            p = os.path.join(self.data_dir, stale)
+            if os.path.exists(p):
+                os.remove(p)
 
     def _app(self, config=None):
         from anton.dashboard import create_app
@@ -116,6 +117,73 @@ class TestConnectionsEndpoints(_Ctx):
         body = r.json()
         self.assertTrue(body["bridges"]["composio"])
         self.assertTrue(any(c["id"] == "composio:quickbooks" for c in body["connections"]))
+
+    def test_integrations_bridges_reports_configured_state(self):
+        # /api/integrations/bridges is a pinned apiproxy-credential surface
+        # (tests/authz/test_ci_t_cred_apiproxy.py): bools only, never keys.
+        cfg = {"bridges": {"composio": {"api_key": "k"}}}
+        client = self._app(cfg)
+        r = client.get("/api/integrations/bridges")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()["bridges"]
+        self.assertEqual(body, {"composio": True, "nango": False})
+        self.assertNotIn("k", r.text)
+
+    def test_integrations_connect_start_unconfigured_bridge_is_400(self):
+        client = self._app()
+        for bridge in ("composio", "nango", "nope"):
+            r = client.post("/api/integrations/connect/start",
+                            json={"bridge": bridge, "provider": "quickbooks"})
+            self.assertEqual(r.status_code, 400, bridge)
+
+    def test_integrations_catalog_requires_bridge_key(self):
+        client = self._app()
+        r = client.get("/api/integrations/catalog?bridge=composio")
+        self.assertEqual(r.status_code, 502)  # key missing -> bridge catalog failed
+
+    def test_bridges_configure_persists_0600_and_hot_applies(self):
+        client = self._app()
+        r = client.post("/api/integrations/bridges/configure",
+                        json={"bridge": "composio", "key": "ak_test_key"})
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["configured"]["composio"])
+        # persisted 0600 inside the data dir, never echoed in any response
+        import stat as _stat
+        spath = os.path.join(self.data_dir, "secrets.yaml")
+        self.assertTrue(os.path.exists(spath))
+        mode = _stat.S_IMODE(os.stat(spath).st_mode)
+        self.assertEqual(mode, 0o600)
+        with open(spath) as f:
+            self.assertIn("composio_api_key", f.read())
+        self.assertNotIn("ak_test_key", r.text)
+
+    def test_bridges_configure_unknown_bridge_and_empty_key(self):
+        client = self._app()
+        self.assertEqual(client.post("/api/integrations/bridges/configure",
+                                     json={"bridge": "nope", "key": "x"}).status_code, 404)
+        self.assertEqual(client.post("/api/integrations/bridges/configure",
+                                     json={"bridge": "nango", "key": "   "}).status_code, 422)
+
+    def test_apply_bridge_credential_overrides_precedence(self):
+        # pasted secret beats env; config.yaml value (already merged by
+        # load_config) beats both; absent sources leave the bridge unset.
+        from anton.config import apply_bridge_credential_overrides
+        secrets = os.path.join(self.data_dir, "secrets.yaml")
+        with open(secrets, "w") as f:
+            f.write("composio_api_key: pasted_key\n")
+        cfg = {"bridges": {"nango": {"secret_key": "explicit"}}}
+        env = {"ANTON_COMPOSIO_API_KEY": "env_key"}
+        with mock.patch.dict(os.environ, env, clear=False):
+            out = apply_bridge_credential_overrides(cfg, self.data_dir)
+        self.assertEqual(out["bridges"]["composio"]["api_key"], "pasted_key")
+        self.assertEqual(out["bridges"]["nango"]["secret_key"], "explicit")
+
+    def test_apply_bridge_credential_overrides_env_fallback(self):
+        from anton.config import apply_bridge_credential_overrides
+        with mock.patch.dict(os.environ, {"ANTON_NANGO_SECRET_KEY": "env_nk"}, clear=False):
+            out = apply_bridge_credential_overrides({}, "/tmp/anton-no-such-dir-xyz")
+        self.assertEqual(out["bridges"]["nango"]["secret_key"], "env_nk")
+        self.assertNotIn("composio", out["bridges"])
 
     def test_connect_persists_and_shows_in_mcp_list(self):
         client = self._app()
