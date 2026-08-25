@@ -231,6 +231,79 @@ function ConnectModal({ onClose, onConnected }: { onClose: () => void; onConnect
 }
 
 /** Add-ons (README §8): connected tools and permissions, backed by mcp_servers. */
+/** Hosted-OAuth bridges: one credential unlocks their whole SaaS catalog
+ * with Composio/Nango operating the OAuth apps (we never register per-app).
+ * Paste once -- stored 0600 inside Anton's data volume, never committed,
+ * hot-applied without restart. Bool-only status endpoint means we can show
+ * configured state without ever rendering the key back. */
+function BridgesCard() {
+  const { data, refetch } = useOpsApi<{ bridges: Record<string, boolean> }>('/api/integrations/bridges')
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [savingBridge, setSavingBridge] = useState('')
+  const [error, setError] = useState('')
+
+  const save = (bridge: string) => {
+    const key = (drafts[bridge] ?? '').trim()
+    if (!key) { setError('Paste the key first.'); return }
+    setSavingBridge(bridge); setError('')
+    fetch('/api/integrations/bridges/configure', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bridge, key }),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      setDrafts((d) => ({ ...d, [bridge]: '' }))
+      refetch()
+    }).catch((e) => { setError(`Save failed (${e.message}).`) })
+      .finally(() => { setSavingBridge('') })
+  }
+
+  const bridges = [
+    { id: 'composio', label: 'Composio', hint: 'API key from app.composio.dev — unlocks ~250+ SaaS connect cards', url: 'https://app.composio.dev/settings/api-keys' },
+    { id: 'nango', label: 'Nango', hint: 'Secret key from your Nango cloud or self-hosted dashboard', url: 'https://app.nango.dev' },
+  ]
+
+  return (
+    <div style={{ gridColumn: '1 / -1' }}>
+      <div style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)', margin: '18px 0 10px' }}>HOSTED OAUTH BRIDGES</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+        {bridges.map((b) => (
+          <Blueprint key={b.id} style={{ background: 'var(--dsw-alias-bg-layer-2)', padding: '16px 18px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+              <div className={bp.screenTitle} style={{ flex: 1, fontSize: 16 }}>{b.label}</div>
+              {data?.bridges?.[b.id] && (
+                <span className={bp.kicker} style={{ display: 'flex', alignItems: 'center', gap: 5, margin: 0, color: 'var(--dsw-alias-state-success-primary)' }}>
+                  <span style={{ width: 6, height: 6, background: 'var(--dsw-alias-state-success-primary)' }} />
+                  CONFIGURED
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--dsw-alias-label-secondary)', lineHeight: 1.4, marginBottom: 12 }}>{b.hint}</div>
+            {!data?.bridges?.[b.id] && (
+              <div style={{ fontSize: 12.5, marginBottom: 10 }}>
+                <a href={b.url} target="_blank" rel="noreferrer" style={{ color: 'var(--dsw-alias-accent-primary, #7aa2f7)', textDecoration: 'underline' }}>Get a key ↗</a>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={drafts[b.id] ?? ''}
+                onChange={(e) => { setDrafts((d) => ({ ...d, [b.id]: e.target.value })) }}
+                placeholder={data?.bridges?.[b.id] ? 'Replace key…' : 'Paste API key…'}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button
+                onClick={() => { save(b.id) }}
+                disabled={savingBridge === b.id}
+                style={{ padding: '10px 14px', fontSize: 13, fontFamily: 'inherit', cursor: 'pointer', border: LN, background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}
+              >{savingBridge === b.id ? 'Saving…' : 'Save'}</button>
+            </div>
+          </Blueprint>
+        ))}
+      </div>
+      {error && <div style={{ fontSize: 13, color: 'var(--dsw-alias-state-error-primary)', marginTop: 8 }}>{error}</div>}
+    </div>
+  )
+}
+
 export function AddonsScreen() {
   const { data, loading, error } = useOpsApi<Addon[]>('/api/wizard/mcp')
   const [added, setAdded] = useState<Addon[]>([])
@@ -249,6 +322,9 @@ export function AddonsScreen() {
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         <div style={{ padding: '18px 26px 0' }}>
           <ConnectionsCatalog onConnected={(c) => setAdded((prev) => [...prev.filter((x) => x.id !== c.id), { id: c.id, name: c.name, what: '', permissions: [], status: 'active' as const }])} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16, alignContent: 'start' }}>
+            <BridgesCard />
+          </div>
         </div>
         <div style={{ padding: '4px 26px 30px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16, alignContent: 'start' }}>
           <div style={{ gridColumn: '1 / -1', fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)' }}>MANUAL SETUP</div>
