@@ -157,10 +157,12 @@ class JobEngine:
         """The engine's default executor for every job, unless the job
         overrides it (job.executor, e.g. {name: opencode, mcp_profile: X} to
         dispatch through OpenCodeExecutor with @playwright/mcp attached to a
-        stored-login session's persistent profile). Built once per
-        (name, mcp_profile) pair and cached -- constructing a fresh
-        OpenCodeExecutor (which writes a scoped XDG config dir) on every run
-        would be wasted work for a job that fires repeatedly."""
+        stored-login session's persistent profile, or {name: n8n,
+        webhook_url: X} to dispatch to a specific n8n workflow instead of a
+        local coding agent). Built once per (name, ...) key and cached --
+        constructing a fresh executor (OpenCodeExecutor writes a scoped XDG
+        config dir; N8NExecutor is cheap but still no reason to rebuild it)
+        on every run would be wasted work for a job that fires repeatedly."""
         if not job.executor:
             return self.executor
         name = job.executor.get("name")
@@ -176,6 +178,17 @@ class JobEngine:
                     if install_dir:
                         profile_dir = browser_login.session_dir(install_dir, mcp_profile)
                 self._job_executor_cache[cache_key] = OpenCodeExecutor(playwright_profile_dir=profile_dir)
+            return self._job_executor_cache[cache_key]
+        if name == "n8n":
+            webhook_url = job.executor.get("webhook_url")
+            if not webhook_url:
+                raise ValueError(f"job {job.id!r} requests the n8n executor with no webhook_url")
+            cache_key = (name, webhook_url)
+            if cache_key not in self._job_executor_cache:
+                from .executor.n8n_executor import N8NExecutor
+                self._job_executor_cache[cache_key] = N8NExecutor(
+                    webhook_url, api_key=job.executor.get("api_key"),
+                    health_url=job.executor.get("health_url"))
             return self._job_executor_cache[cache_key]
         # Unknown executor name: fail loud, not a silent fallback to the
         # engine default -- a job that asked for a specific executor and

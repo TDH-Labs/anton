@@ -9,6 +9,7 @@ from anton.config import load_config
 from anton.db import init_db
 from anton.executor import FakeExecutor
 from anton.executor.opencode_executor import OpenCodeExecutor
+from anton.executor.n8n_executor import N8NExecutor
 from anton.jobs import load_jobs
 from anton.ledger import Ledger
 from anton.scheduler import JobEngine
@@ -25,6 +26,18 @@ JOBS = """
   trigger: { type: webhook }
   recipe: "check something else"
   executor: { name: opencode, mcp_profile: another-service }
+- id: reconcile-via-n8n
+  trigger: { type: webhook }
+  recipe: "reconcile stripe vs qbo"
+  executor: { name: n8n, webhook_url: "https://n8n.example/webhook/reconcile" }
+- id: notify-via-n8n
+  trigger: { type: webhook }
+  recipe: "notify slack"
+  executor: { name: n8n, webhook_url: "https://n8n.example/webhook/notify" }
+- id: n8n-job-missing-webhook-url
+  trigger: { type: webhook }
+  recipe: "whatever"
+  executor: { name: n8n }
 - id: unknown-executor-job
   trigger: { type: webhook }
   recipe: "whatever"
@@ -85,6 +98,29 @@ class TestResolveExecutor(JobExecutorOverrideTestBase):
         with self.assertRaises(ValueError):
             self.engine._resolve_executor(job)
 
+    def test_n8n_override_builds_an_n8n_executor_at_the_right_webhook(self):
+        job = self.engine.by_id("reconcile-via-n8n")
+        executor = self.engine._resolve_executor(job)
+        self.assertIsInstance(executor, N8NExecutor)
+        self.assertEqual(executor.webhook_url, "https://n8n.example/webhook/reconcile")
+
+    def test_same_n8n_webhook_reuses_the_cached_executor_instance(self):
+        job = self.engine.by_id("reconcile-via-n8n")
+        first = self.engine._resolve_executor(job)
+        second = self.engine._resolve_executor(job)
+        self.assertIs(first, second)
+
+    def test_different_n8n_webhooks_get_different_executor_instances(self):
+        reconcile = self.engine._resolve_executor(self.engine.by_id("reconcile-via-n8n"))
+        notify = self.engine._resolve_executor(self.engine.by_id("notify-via-n8n"))
+        self.assertIsNot(reconcile, notify)
+        self.assertNotEqual(reconcile.webhook_url, notify.webhook_url)
+
+    def test_n8n_override_without_webhook_url_fails_loud(self):
+        job = self.engine.by_id("n8n-job-missing-webhook-url")
+        with self.assertRaises(ValueError):
+            self.engine._resolve_executor(job)
+
 
 class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
     def test_default_job_still_dispatches_through_the_engine_default(self):
@@ -107,6 +143,22 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
         self.assertEqual(rec.exit, 6)  # skipped, not a fake success
         self.assertIn("skipped:no-provider", rec.flags)
         self.assertIn("opencode binary not found", rec.output)
+
+    @patch("anton.executor.n8n_executor._http_get", return_value=200)
+    @patch("anton.executor.n8n_executor._http_post_json")
+    def test_n8n_override_job_dispatches_to_its_webhook_not_the_engine_default(self, mock_post, _mock_get):
+        # _http_get mocked reachable: the governor's own provider-block gate
+        # calls executor.available() before dispatch (same gate every
+        # executor goes through) -- proving it fires for N8NExecutor too,
+        # not something this override bypasses.
+        mock_post.return_value = (200, '{"output": "reconciled", "exit_code": 0}')
+        rec = self.engine.run_job(self.engine.by_id("reconcile-via-n8n"),
+                                  now=dt.datetime.now(dt.timezone.utc))
+        self.assertFalse(rec.output.startswith("[fake]"))
+        self.assertEqual(rec.exit, 0)
+        self.assertEqual(rec.output, "reconciled")
+        mock_post.assert_called_once()
+        self.assertEqual(mock_post.call_args[0][0], "https://n8n.example/webhook/reconcile")
 
 
 if __name__ == "__main__":
