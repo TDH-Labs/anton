@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
@@ -8,26 +7,23 @@ import type {
   SidebarSettingsOwnerProps,
 } from '../src/client/contract/slots.ts'
 import { SidebarRoot } from '../src/client/SidebarRoot.tsx'
-import { createNavScreenStore } from '../src/client/nav-store.ts'
 import { en } from '../src/client/locales.ts'
 
 const t: SidebarRootComponentProps['t'] = key => (en as Record<string, string>)[key] ?? key
 const neverHook = (() => { throw new Error('shell must not read global hooks') }) as never
 
-/** Wraps a bare EngineStoreInstance into the selector-hook shape `PropsStore.useStore` requires. */
-function bindStoreHook<T>(instance: { getSnapshot: () => T; subscribe: (fn: () => void) => () => void }) {
-  return function useBound<S>(selector: (state: T) => S): S {
-    return useSyncExternalStore(instance.subscribe, () => selector(instance.getSnapshot()))
-  }
-}
-
 afterEach(() => { cleanup() })
 
-/** Mounts the shell with a real store instance so nav clicks are observable. */
+// SidebarRoot owns no store (see SidebarRootInjected's own doc: "No store is
+// registered") — `sidebar.nav` is filled entirely by whoever registers into
+// that slot (ui-anton-ops, product-side), same as every other declared hole.
+// Ops-nav rendering/routing and the setup-wizard foot control both used to
+// be exercised here because SidebarRoot rendered that content directly; both
+// moved with the content itself and belong in ui-anton-ops's own tests now,
+// not here.
 function mountShell({ collapsed = false }: { collapsed?: boolean } = {}) {
   const startSession = vi.fn()
   const toggleSidebar = vi.fn()
-  const store = createNavScreenStore().create()
   let regionOwner: SidebarSectionOwnerProps | undefined
   let settingsOwner: SidebarSettingsOwnerProps | undefined
   let footerActionOwner: SidebarFooterActionOwnerProps | undefined
@@ -39,8 +35,6 @@ function mountShell({ collapsed = false }: { collapsed?: boolean } = {}) {
       collapsed={collapsed} width={242}
       useSessions={neverHook} useWorkspaces={neverHook}
       startSession={startSession} toggleSidebar={toggleSidebar} t={t}
-      useStore={bindStoreHook(store)}
-      actions={store.actions}
       renderSlot={((
         key: string,
         owner: SidebarFooterActionOwnerProps | SidebarSectionOwnerProps | SidebarSettingsOwnerProps,
@@ -56,6 +50,12 @@ function mountShell({ collapsed = false }: { collapsed?: boolean } = {}) {
           footerActionOwner = owner as SidebarFooterActionOwnerProps
           return <div data-testid="footer-action-seat" data-wide={(owner as SidebarFooterActionOwnerProps).wide} />
         }
+        if (key === 'sidebar.nav') {
+          return <div data-testid="nav-seat" data-wide={(owner as SidebarSectionOwnerProps).wide} />
+        }
+        // sidebar.workspaces is the only remaining declared slot, and the
+        // only one SidebarRoot hands an expandSidebar callback (see
+        // SidebarRoot.tsx) — that's what "region" has always meant here.
         regionOwner = owner as SidebarSectionOwnerProps
         return <div data-testid="region" data-wide={(owner as SidebarSectionOwnerProps).wide} />
       }) as SidebarRootComponentProps['renderSlot']}
@@ -64,7 +64,6 @@ function mountShell({ collapsed = false }: { collapsed?: boolean } = {}) {
   return {
     startSession,
     toggleSidebar,
-    store,
     view,
     regionOwner: () => {
       if (regionOwner === undefined) throw new Error('region owner not rendered')
@@ -121,21 +120,5 @@ describe('SidebarRoot shell', () => {
     const railShell = mountShell({ collapsed: true })
     railShell.regionOwner().expandSidebar()
     expect(railShell.toggleSidebar).toHaveBeenCalledOnce()
-  })
-
-  it('renders every ops-nav group and routes a click to the shared screen store', () => {
-    const b = mountShell()
-    for (const label of ['Ask Anton', 'Right now', 'Waiting on you', 'What went wrong', 'Automations', 'Schedule', 'Memory', 'What Anton learned', 'Add-ons']) {
-      expect(screen.getByText(label)).toBeTruthy()
-    }
-    expect(b.store.getSnapshot().screen).toBe('ask')
-    fireEvent.click(screen.getByText('Right now'))
-    expect(b.store.getSnapshot().screen).toBe('now')
-  })
-
-  it('opens the setup wizard from the foot control', () => {
-    const b = mountShell()
-    fireEvent.click(screen.getByText('Set up'))
-    expect(b.store.getSnapshot().screen).toBe('setup')
   })
 })
