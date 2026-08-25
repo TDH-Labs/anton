@@ -364,6 +364,16 @@ class JobEngine:
                         or getattr(executor, "opencode_bin", None)
                         or type(executor).__name__)
             return f"executor unavailable ({bin_name} binary not found on PATH)"
+        # An n8n webhook job's actual work happens inside the operator's own
+        # workflow (deterministic steps, its own AI Agent node where needed):
+        # Anton POSTs a payload, it does not make a model call. The default
+        # route therefore says nothing about whether this dispatch can
+        # succeed — the model gates below must not fire on it, or every fresh
+        # install without a reachable Ollama would skip all n8n jobs forever
+        # (CI caught exactly that: exit-6 skip with no Ollama on 127.0.0.1).
+        from .executor.n8n_executor import N8NExecutor
+        if isinstance(executor, N8NExecutor):
+            return None
         if route.provider == "local":
             host, port = _local_endpoint()
             if not _tcp_reachable(host, port):

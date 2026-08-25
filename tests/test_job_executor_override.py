@@ -29,10 +29,12 @@ JOBS = """
 - id: reconcile-via-n8n
   trigger: { type: webhook }
   recipe: "reconcile stripe vs qbo"
+  model_route: cloud
   executor: { name: n8n, webhook_url: "https://n8n.example/webhook/reconcile" }
 - id: notify-via-n8n
   trigger: { type: webhook }
   recipe: "notify slack"
+  model_route: cloud
   executor: { name: n8n, webhook_url: "https://n8n.example/webhook/notify" }
 - id: n8n-job-missing-webhook-url
   trigger: { type: webhook }
