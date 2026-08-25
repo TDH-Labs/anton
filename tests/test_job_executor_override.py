@@ -144,23 +144,32 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
         self.assertIn("skipped:no-provider", rec.flags)
         self.assertIn("opencode binary not found", rec.output)
 
-    @patch("anton.executor.n8n_executor._http_get", return_value=200)
-    @patch("anton.executor.n8n_executor._http_post_json")
-    def test_n8n_override_job_dispatches_to_its_webhook_not_the_engine_default(self, mock_post, _mock_get):
-        # _http_get mocked reachable: the governor's own provider-block gate
-        # calls executor.available() before dispatch (same gate every
-        # executor goes through) -- proving it fires for N8NExecutor too,
-        # not something this override bypasses. _provider_block also checks
-        # the route's cloud-key env var independently of executor
-        # availability (see scheduler.py) -- both checks must clear, so
-        # both are satisfied here, saved/restored like every other test in
-        # this codebase that touches this specific env var.
+    def test_n8n_override_job_dispatches_to_its_webhook_not_the_engine_default(self):
+        # Pre-populate the resolved-executor cache directly with injected
+        # transports (same mechanism test_n8n_executor.py already proves
+        # reliably) rather than @patch-ing the module-level real-HTTP
+        # functions across _resolve_executor's own construction -- avoids
+        # depending on exactly when/where that construction captures the
+        # patched name. The governor's own provider-block gate still runs
+        # for real: it calls this same instance's real available() (True,
+        # since get_transport reports reachable), same gate every executor
+        # goes through -- proving it fires for N8NExecutor too, not
+        # something this override bypasses.
+        job = self.engine.by_id("reconcile-via-n8n")
+        webhook_url = job.executor["webhook_url"]
+        posted = {}
+
+        def fake_post(url, payload, headers, timeout_s):
+            posted.update(url=url, payload=payload)
+            return 200, '{"output": "reconciled", "exit_code": 0}'
+
+        self.engine._job_executor_cache[("n8n", webhook_url)] = N8NExecutor(
+            webhook_url, post_transport=fake_post, get_transport=lambda url, timeout_s: 200)
+
         old_key = os.environ.get("OPENROUTER_API_KEY")
         os.environ["OPENROUTER_API_KEY"] = "sk-test"
         try:
-            mock_post.return_value = (200, '{"output": "reconciled", "exit_code": 0}')
-            rec = self.engine.run_job(self.engine.by_id("reconcile-via-n8n"),
-                                      now=dt.datetime.now(dt.timezone.utc))
+            rec = self.engine.run_job(job, now=dt.datetime.now(dt.timezone.utc))
         finally:
             if old_key is None:
                 os.environ.pop("OPENROUTER_API_KEY", None)
@@ -169,8 +178,7 @@ class TestRunJobUsesResolvedExecutor(JobExecutorOverrideTestBase):
         self.assertFalse(rec.output.startswith("[fake]"))
         self.assertEqual(rec.exit, 0)
         self.assertEqual(rec.output, "reconciled")
-        mock_post.assert_called_once()
-        self.assertEqual(mock_post.call_args[0][0], "https://n8n.example/webhook/reconcile")
+        self.assertEqual(posted["url"], webhook_url)
 
 
 if __name__ == "__main__":
