@@ -27,7 +27,7 @@ from typing import Optional
 import yaml
 
 from .models import RunRecord
-from .routes import select_route
+from .routes import Route, select_route
 from .scheduler import SKIP_FLAG
 from .upskill import _dispatch, slugify
 from .vault import emit_candidate
@@ -166,12 +166,12 @@ def scan_for_opportunities(engine, *, min_worth: str = "high", model: Optional[s
     min_worth -- meta_learning.route() picks these up as fresh subjects, the
     same way it picks up an explicit `anton upskill --subject`."""
     order = {"low": 0, "medium": 1, "high": 2}
-    route_ = select_route(prefer="cloud")
-    model = model or route_.model
-    provider = provider or route_.provider
+    default_route = select_route(
+        cloud_model=engine.config["routes"]["cloud_model"], prefer="cloud")
+    model = model or default_route.model
+    provider = provider or default_route.provider
     vault_dir = os.path.join(engine.data_dir, "vault")
     opp_dir = os.path.join(vault_dir, "notes", "opportunities")
-    os.makedirs(opp_dir, exist_ok=True)
 
     # Same honest prerequisite gate run_job() applies (scheduler.py): a
     # fresh install with no provider configured used to hit real dispatch
@@ -179,11 +179,20 @@ def scan_for_opportunities(engine, *, min_worth: str = "high", model: Optional[s
     # into the worklog within seconds of first boot -- the exact
     # fabricated-success/failure-as-noise pattern the job-lifecycle honesty
     # fix (run_job's _provider_block) was meant to eliminate everywhere.
-    blocked_reason = engine._provider_block(None, route_, engine.executor)
+    # Gate on a Route built from the model/provider actually about to be
+    # dispatched (which a caller-supplied model=/provider=  may have
+    # overridden above) -- gating on `default_route` instead would check a
+    # different provider than the one _dispatch below actually calls,
+    # either false-skipping a fully-available override or, worse, letting
+    # an unavailable override through because the *default*'s key happened
+    # to be set.
+    dispatch_route = Route(provider=provider, model=model)
+    blocked_reason = engine._provider_block(dispatch_route, engine.executor)
     if blocked_reason:
-        _record_skipped_scan(engine, route_, blocked_reason)
+        _record_skipped_scan(engine, dispatch_route, blocked_reason)
         return []
 
+    os.makedirs(opp_dir, exist_ok=True)
     sources = list_connected_sources(engine.data_dir)
     prompt = build_scan_prompt(sources, opp_dir)
     _dispatch(engine, task_label="opportunity:scan", prompt=prompt, model=model,

@@ -18,7 +18,8 @@ from typing import Optional
 from .learning import record_lesson
 from .routes import select_route
 from .sandbox import run_sandbox_gate
-from .upskill import UpskillResult, _dispatch, _promote_staged_skill, validate_distilled_skill
+from .upskill import (UpskillResult, _dispatch, _is_skipped, _promote_staged_skill,
+                      validate_distilled_skill)
 from .governor import AUTO_EXECUTE, classify
 
 _PROMOTION_RISK_PROFILE = {"ev": 0.9, "feasibility": 0.9, "risk": "low", "kind": "internal"}
@@ -124,8 +125,16 @@ def dispatch_experience_iteration(engine, task: str, *, max_attempts: int = 3,
 
     prompt = build_diagnosis_prompt(task, slug, samples, research_dir, out_dir,
                                     max_attempts=max_attempts)
-    _dispatch(engine, task_label=f"upskill:{slug}:experience", prompt=prompt,
-             model=model, provider=provider, timeout_s=timeout_s, slug=slug, stage="experience")
+    record = _dispatch(engine, task_label=f"upskill:{slug}:experience", prompt=prompt,
+                       model=model, provider=provider, timeout_s=timeout_s, slug=slug,
+                       stage="experience")
+    if _is_skipped(record):
+        # No provider -- out_dir was never touched. Same reasoning as
+        # upskill.run_upskill's distill stage: validate_distilled_skill
+        # would report it "invalid" and permanently bank a false 'dont'
+        # lesson blaming the diagnosis for something never attempted.
+        return UpskillResult(slug=slug, subject=task, status="skipped_no_provider",
+                             detail=record.output)
 
     ok, problems = validate_distilled_skill(out_dir, slug)
     if not ok:

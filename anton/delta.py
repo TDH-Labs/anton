@@ -4,7 +4,23 @@ from __future__ import annotations
 import datetime as dt
 
 from .ledger import Ledger
+from .scheduler import SKIP_FLAG
 from .vault import emit_candidate
+
+
+def _is_real_failure(row: dict) -> bool:
+    """exit==0 is success; everything else is a "failure" to the ledger's
+    exit-code convention EXCEPT a SKIP_FLAG row (exit 6, e.g. "no provider
+    configured" from run_job's/scan_for_opportunities' prerequisite gates —
+    scheduler.py/opportunity.py). A skip is an honest non-event, not a
+    failure: treating it as one used to spawn a `remediate-<task>` /
+    `upskill-<task>` initiative that never resolves (nothing ever marks
+    `remediate-*` dispatched, and `upskill-*` would "learn" from a
+    condition that was never actually attempted) and sits in `anton
+    digest` output forever, even after the missing provider is added —
+    the exact fabricated-failure-as-work pattern the prerequisite gates
+    exist to eliminate, leaking back in through this reader instead."""
+    return row["exit"] != 0 and SKIP_FLAG not in (row.get("flags") or "")
 
 
 def scan_ledger_failures(ledger: Ledger, db_conn, since_hours: int = 24,
@@ -16,7 +32,7 @@ def scan_ledger_failures(ledger: Ledger, db_conn, since_hours: int = 24,
         "SELECT slug FROM initiatives WHERE status='pending'")}
     slugs = []
     for row in ledger.read():
-        if row["ts"] < since or row["exit"] == 0:
+        if row["ts"] < since or not _is_real_failure(row):
             continue
         slug = f"remediate-{row['task']}"
         if slug in pending or slug in slugs:
@@ -42,7 +58,7 @@ def scan_upskill_candidates(ledger: Ledger, db_conn, since_hours: int = 24,
         "SELECT slug FROM initiatives WHERE status='pending'")}
     counts: dict[str, int] = {}
     for row in ledger.read():
-        if row["ts"] < since or row["exit"] == 0:
+        if row["ts"] < since or not _is_real_failure(row):
             continue
         counts[row["task"]] = counts.get(row["task"], 0) + 1
     slugs = []

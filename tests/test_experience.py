@@ -110,6 +110,32 @@ class TestDispatchExperienceIteration(ExperienceTestBase):
         self.assertEqual(result.status, "promoted")
         self.assertTrue(os.path.exists(os.path.join(self.data_dir, "skills", slug, "SKILL.md")))
 
+    def test_skipped_dispatch_does_not_bank_a_false_dont_lesson(self):
+        # No provider -> out_dir is never touched by _dispatch. Before the
+        # fix, dispatch_experience_iteration called validate_distilled_skill
+        # unconditionally right after _dispatch, so the skip read as "the
+        # diagnosis produced invalid output" and banked a permanent false
+        # 'dont' lesson blaming the diagnosis for a stage never attempted.
+        from anton.executor.base import Executor
+        from anton.learning import unconsumed_lessons
+
+        class StubRealExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("executor.run must never be reached when blocked")
+        self.engine.executor = StubRealExecutor()
+        old_key = os.environ.pop("OPENROUTER_API_KEY", None)
+        try:
+            self.ledger.append(RunRecord.new(task="widget-sync", exit_code=1, output="boom"))
+            result = experience.dispatch_experience_iteration(self.engine, "widget-sync")
+            self.assertEqual(result.status, "skipped_no_provider")
+            db_path = os.path.join(self.data_dir, "isolation.db")
+            self.assertEqual(unconsumed_lessons(db_path, result.slug), [])
+        finally:
+            if old_key is not None:
+                os.environ["OPENROUTER_API_KEY"] = old_key
+
 
 if __name__ == "__main__":
     unittest.main()

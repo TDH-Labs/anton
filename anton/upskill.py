@@ -33,8 +33,9 @@ from .governor import AUTO_EXECUTE, classify
 from .jobs import Job
 from .learning import index_skills, mark_lessons_consumed, record_lesson, unconsumed_lessons
 from .models import RunRecord
-from .routes import select_route
+from .routes import Route, select_route
 from .sandbox import promote, run_sandbox_gate
+from .scheduler import SKIP_FLAG
 from .vault import emit_candidate
 
 SOURCE_TYPES = ("TRADES", "INTERVIEW", "BOOK", "WEB")
@@ -260,6 +261,30 @@ def validate_distilled_skill(out_dir: str, slug: str) -> tuple[bool, list[str]]:
 def _dispatch(engine, *, task_label: str, prompt: str, model: str, provider: str,
              timeout_s: Optional[float], slug: str, stage: str, attempt: int = 1) -> RunRecord:
     started = dt.datetime.now(dt.timezone.utc)
+    # Same honest prerequisite gate as JobEngine.run_job / opportunity.py's
+    # scan_for_opportunities (scheduler.py's _provider_block): every one of
+    # this function's three callers (research/distill/consolidate) sits
+    # behind meta_learning.process_pending_candidates, which the scheduler
+    # poll loop calls every tick -- on a fresh install with no provider
+    # configured, an eligible candidate used to hit the real executor
+    # repeatedly (up to max_research_attempts per run_upskill call, every
+    # poll tick for as long as it stayed eligible) with no key present,
+    # spamming the same fabricated-failure noise the other two dispatch
+    # paths were fixed for. Gated once here rather than at each of the
+    # three call sites, or at every future one, since none of them build
+    # their own Route/executor -- this is the one place all of them funnel
+    # through.
+    blocked_reason = engine._provider_block(Route(provider=provider, model=model), engine.executor)
+    if blocked_reason:
+        record = RunRecord.new(task=task_label, exit_code=6, flags=SKIP_FLAG,
+                               output=f"{task_label} skipped: {blocked_reason}",
+                               model=model, provider=provider, duration_ms=0,
+                               ts=started.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        last = engine.ledger.last_run(task_label)
+        if last is None or SKIP_FLAG not in (last.get("flags") or ""):
+            engine.ledger.append(record)
+            engine._record_metering(record)
+        return record
     result = engine.executor.run(prompt, model=model, provider=provider, timeout_s=timeout_s)
     synthetic_job = Job(id=f"upskill-{slug}", trigger={}, recipe=task_label)
     breach = engine.enforce_budget(synthetic_job, {
@@ -290,6 +315,19 @@ def _dispatch(engine, *, task_label: str, prompt: str, model: str, provider: str
     return record
 
 
+def _is_skipped(record: RunRecord) -> bool:
+    """True when _dispatch's gate blocked this call (record.flags carries
+    SKIP_FLAG, nothing was actually attempted) rather than the real
+    executor running and failing. Every caller of _dispatch that inspects
+    on-disk output afterward (validate_distilled_skill, mark_lessons_consumed)
+    must check this first -- otherwise a skip reads as "the model tried and
+    produced garbage" and gets banked as a permanent false 'dont' lesson
+    (see run_upskill's distill stage / experience.py's
+    dispatch_experience_iteration) or silently discards real, still-pending
+    lessons as if they'd been merged (see consolidate_skill)."""
+    return SKIP_FLAG in (record.flags or "")
+
+
 # --------------------------------------------------------------------------
 # Orchestration
 # --------------------------------------------------------------------------
@@ -298,7 +336,8 @@ def _dispatch(engine, *, task_label: str, prompt: str, model: str, provider: str
 class UpskillResult:
     slug: str
     subject: str
-    status: str  # "promoted" | "pending_approval" | "insufficient_research" | "sandbox_failed"
+    status: str  # "promoted" | "pending_approval" | "insufficient_research"
+                # | "sandbox_failed" | "skipped_no_provider"
     research: Optional[ResearchReport] = None
     detail: str = ""
 
@@ -323,9 +362,14 @@ def run_upskill(engine, subject: str, *, min_sources: int = 5, min_types: int = 
             break
         prompt = build_research_prompt(subject, research_dir, min_sources=min_sources,
                                        min_types=min_types, missing_types=missing_types)
-        _dispatch(engine, task_label=f"upskill:{slug}:research", prompt=prompt,
-                 model=model, provider=provider, timeout_s=timeout_s, slug=slug,
-                 stage="research", attempt=attempt)
+        record = _dispatch(engine, task_label=f"upskill:{slug}:research", prompt=prompt,
+                           model=model, provider=provider, timeout_s=timeout_s, slug=slug,
+                           stage="research", attempt=attempt)
+        if _is_skipped(record):
+            # Structurally blocked (no provider) -- retrying won't change
+            # that within this call, so stop instead of burning the
+            # remaining attempts on calls _dispatch itself will re-skip.
+            break
         report = verify_research(vault_dir, slug, min_sources=min_sources, min_types=min_types)
         missing_types = report.missing_types
 
@@ -343,8 +387,17 @@ def run_upskill(engine, subject: str, *, min_sources: int = 5, min_types: int = 
     out_dir = os.path.join(engine.data_dir, "staging", slug)
     os.makedirs(os.path.join(out_dir, "scripts"), exist_ok=True)
     dist_prompt = build_distillation_prompt(subject, slug, research_dir, out_dir)
-    _dispatch(engine, task_label=f"upskill:{slug}:distill", prompt=dist_prompt,
-             model=model, provider=provider, timeout_s=timeout_s, slug=slug, stage="distill")
+    distill_record = _dispatch(engine, task_label=f"upskill:{slug}:distill", prompt=dist_prompt,
+                               model=model, provider=provider, timeout_s=timeout_s, slug=slug,
+                               stage="distill")
+    if _is_skipped(distill_record):
+        # Research succeeded (we're past the sufficiency gate above) but
+        # the provider became unavailable before this stage -- out_dir is
+        # empty, not garbage. validate_distilled_skill would report it
+        # "invalid" and permanently bank a false 'dont' lesson blaming
+        # distillation quality for something that was never attempted.
+        return UpskillResult(slug=slug, subject=subject, status="skipped_no_provider",
+                             research=report, detail=distill_record.output)
 
     ok, problems = validate_distilled_skill(out_dir, slug)
     if not ok:
@@ -477,8 +530,15 @@ def consolidate_skill(engine, slug: str, *, threshold: int = 3, model: Optional[
     model = model or route.model
     provider = provider or route.provider
     prompt = build_consolidation_prompt(slug, skill_path, lessons)
-    _dispatch(engine, task_label=f"upskill:{slug}:consolidate", prompt=prompt,
-             model=model, provider=provider, timeout_s=timeout_s, slug=slug, stage="consolidate")
+    record = _dispatch(engine, task_label=f"upskill:{slug}:consolidate", prompt=prompt,
+                       model=model, provider=provider, timeout_s=timeout_s, slug=slug,
+                       stage="consolidate")
+    if _is_skipped(record):
+        # No provider -- SKILL.md was never touched. Leave these lessons
+        # unconsumed so the next threshold-triggering call (once a
+        # provider is configured) retries them, instead of marking real,
+        # still-pending lessons "consumed" for a merge that never happened.
+        return False
     mark_lessons_consumed(db_path, [l["id"] for l in lessons])
     index_skills(engine.data_dir)
     return True

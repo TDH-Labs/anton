@@ -333,12 +333,16 @@ class JobEngine:
             return f"daily cost budget breached: ${today_cost:.4f}"
         return None
 
-    def _provider_block(self, job: Job, route, executor) -> Optional[str]:
+    def _provider_block(self, route, executor) -> Optional[str]:
         """Honest prerequisite gate: return a reason string when the routed
         executor/provider structurally cannot succeed (executor binary
         missing, local Ollama endpoint unreachable, cloud key absent), else
         None. The FakeExecutor (deterministic test/demo stub) is exempt —
-        there is no real provider behind it by construction."""
+        there is no real provider behind it by construction. Pure function
+        of (route, executor) — no `self`/job dependency, so any caller with
+        a route and an executor can gate a dispatch through it (run_job
+        below; opportunity.py's scan_for_opportunities, a different
+        module's dispatch loop, the same way)."""
         if isinstance(executor, FakeExecutor):
             return None
         available = getattr(executor, "available", None)
@@ -390,7 +394,7 @@ class JobEngine:
         # can actually run; otherwise one honest skip-with-reason instead of
         # an endless stream of exit-1 subprocess failures.
         executor = self._resolve_executor(job)
-        blocked_reason = self._provider_block(job, route, executor)
+        blocked_reason = self._provider_block(route, executor)
         if blocked_reason:
             return self._record_skipped(job, route, blocked_reason, now)
 

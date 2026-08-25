@@ -189,11 +189,24 @@ class TestDispatchProviderPrerequisiteGate(UpskillTestBase):
         self.assertEqual(result.status, "insufficient_research")
         rows = self.ledger.read()
         skips = [r for r in rows if r["task"] == "upskill:widget-repair:research"]
-        # bounded by dedup, not by max_research_attempts: the loop calls
-        # _dispatch 3 times, but only the first records a row.
         self.assertEqual(len(skips), 1)
         self.assertIn("skipped:no-provider", skips[0]["flags"])
         self.assertEqual(skips[0]["exit"], 6)
+
+    def test_research_loop_breaks_after_first_skip_not_max_attempts(self):
+        # blocked-by-no-provider can't un-block itself mid-loop -- retrying
+        # up to max_research_attempts wastes calls the dedup would just
+        # discard anyway; the loop should stop after the first.
+        calls = []
+        real_dispatch = upskill._dispatch
+
+        def counting_dispatch(*args, **kwargs):
+            calls.append(1)
+            return real_dispatch(*args, **kwargs)
+
+        with patch.object(upskill, "_dispatch", counting_dispatch):
+            upskill.run_upskill(self.engine, "widget repair", max_research_attempts=5)
+        self.assertEqual(len(calls), 1)
 
     def test_skipped_attempt_is_not_recorded_in_upskill_runs(self):
         upskill.run_upskill(self.engine, "widget repair", max_research_attempts=2)
@@ -214,6 +227,66 @@ class TestDispatchProviderPrerequisiteGate(UpskillTestBase):
             self.assertEqual(scan_ledger_failures(self.ledger, conn), [])
         finally:
             conn.close()
+
+
+class TestDistillSkipDoesNotBankAFalseLesson(UpskillTestBase):
+    """Research can succeed (provider available) and the distill stage's
+    own _dispatch call can still be skipped (provider pulled in between --
+    key rotation, rate limit, whatever). Before the fix, run_upskill called
+    validate_distilled_skill unconditionally right after _dispatch, so a
+    skip (out_dir never touched) read as "the model produced an invalid
+    distillation" and recorded a permanent false 'dont' lesson blaming
+    distillation quality for a stage that was never attempted."""
+
+    def setUp(self):
+        super().setUp()
+
+        class FlakyAfterFirstCallExecutor(Executor):
+            """available() (and so the gate) only lets the FIRST dispatch
+            through -- simulates the provider going away between the
+            research and distill stages of one run_upskill call."""
+            def __init__(self, research_dir, slug):
+                self.research_dir = research_dir
+                self.slug = slug
+                self.calls = 0
+
+            def available(self):
+                return self.calls == 0
+
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                self.calls += 1
+                for i, t in enumerate(("TRADES", "INTERVIEW", "BOOK", "WEB", "WEB"), start=1):
+                    _write_research_note(self.research_dir, self.slug, t, i)
+                return RunResult(exit_code=0, output="ok", stderr="", duration_ms=1,
+                                 model=model, provider=provider)
+
+        slug = upskill.slugify("widget repair")
+        research_dir = os.path.join(self.data_dir, "vault", "notes", "research", slug)
+        self.engine.executor = FlakyAfterFirstCallExecutor(research_dir, slug)
+        # The cloud-route env-var check in _provider_block is independent of
+        # available() -- set a key so ONLY available()'s True->False flip
+        # (simulating the provider going away between stages) does the
+        # gating this test is about, isolating it from the "no key at all"
+        # scenario TestDispatchProviderPrerequisiteGate already covers.
+        self._old_key = os.environ.get("OPENROUTER_API_KEY")
+        os.environ["OPENROUTER_API_KEY"] = "sk-test"
+
+    def tearDown(self):
+        if self._old_key is not None:
+            os.environ["OPENROUTER_API_KEY"] = self._old_key
+        else:
+            os.environ.pop("OPENROUTER_API_KEY", None)
+        super().tearDown()
+
+    def test_skipped_distill_returns_skipped_status_not_sandbox_failed(self):
+        result = upskill.run_upskill(self.engine, "widget repair")
+        self.assertEqual(result.status, "skipped_no_provider")
+
+    def test_skipped_distill_does_not_record_a_dont_lesson(self):
+        from anton.learning import unconsumed_lessons
+        result = upskill.run_upskill(self.engine, "widget repair")
+        db_path = os.path.join(self.data_dir, "isolation.db")
+        self.assertEqual(unconsumed_lessons(db_path, result.slug), [])
 
 
 class TestRunUpskillInsufficientResearch(UpskillTestBase):
@@ -299,6 +372,36 @@ class TestConsolidateSkill(UpskillTestBase):
         did = upskill.consolidate_skill(self.engine, "some-skill", threshold=3)
         self.assertTrue(did)
         self.assertEqual(unconsumed_lessons(db_path, "some-skill"), [])
+
+    def test_skipped_dispatch_leaves_lessons_unconsumed(self):
+        # No provider -> SKILL.md is never touched by _dispatch. Before the
+        # fix, consolidate_skill still marked these real, still-pending
+        # lessons "consumed" and reported success -- permanently losing
+        # them, since nothing else would ever re-surface an already-
+        # consumed lesson for a future consolidation attempt.
+        from anton.learning import record_lesson, unconsumed_lessons
+
+        class StubRealExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("executor.run must never be reached when blocked")
+        self.engine.executor = StubRealExecutor()
+        old_key = os.environ.pop("OPENROUTER_API_KEY", None)
+        try:
+            db_path = os.path.join(self.data_dir, "isolation.db")
+            skill_dir = os.path.join(self.data_dir, "skills", "some-skill")
+            os.makedirs(skill_dir, exist_ok=True)
+            with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write("---\nname: some-skill\n---\n\n## Do\nx\n\n## Don't\ny\n")
+            for i in range(3):
+                record_lesson(db_path, "some-skill", "dont", f"lesson {i}", source="test")
+            did = upskill.consolidate_skill(self.engine, "some-skill", threshold=3)
+            self.assertFalse(did)
+            self.assertEqual(len(unconsumed_lessons(db_path, "some-skill")), 3)
+        finally:
+            if old_key is not None:
+                os.environ["OPENROUTER_API_KEY"] = old_key
 
 
 if __name__ == "__main__":
