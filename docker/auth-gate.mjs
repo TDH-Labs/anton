@@ -249,9 +249,14 @@ const server = http.createServer(async (req, res) => {
     if (timingSafeEqualStr(submitted, TOKEN)) {
       recordSuccessfulLogin(ip)
       markClaimed()
+      // Secure only when we know the browser actually reached us over
+      // HTTPS (the VPS/Caddy path sets this; plain docker run / Umbrel LAN
+      // use has no TLS at all, and a Secure-flagged cookie would just get
+      // silently dropped there, breaking login).
+      const secureFlag = req.headers['x-forwarded-proto'] === 'https' ? ' Secure;' : ''
       res.writeHead(302, {
         Location: '/',
-        'Set-Cookie': `anton_session=${sessionMac()}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+        'Set-Cookie': `anton_session=${sessionMac()}; Path=/; HttpOnly;${secureFlag} SameSite=Lax; Max-Age=2592000`,
       })
       res.end()
     } else {

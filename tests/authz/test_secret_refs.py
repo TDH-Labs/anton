@@ -50,7 +50,7 @@ class TestSecretRefSchemes(RefTestBase):
                                     connection_id="conn-a")
         self.broker.register_secret("conn-b", "bw://item-id/notes",
                                     connection_id="conn-b")
-        self.broker.register_secret("conn-c", "vault://harwell/qbo_client_id",
+        self.broker.register_secret("conn-c", "vault://anton/qbo_client_id",
                                     connection_id="conn-c")
 
         cap_a = self._cap_for("conn-a")

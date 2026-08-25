@@ -19,14 +19,11 @@
 # process that binds a non-loopback interface: a password-gated reverse
 # proxy in front of dsh web, and the container's primary/published process.
 #
-# HARBOR_* variables are accepted as a compatibility fallback (pre-rebrand
-# deployments / in-flight Umbrel configs), same pattern as the dashboard
-# token fallback in dashboard.py.
 set -euo pipefail
 
-ANTON_EXECUTOR="${ANTON_EXECUTOR:-${HARBOR_EXECUTOR:-pi}}"
-ANTON_DATA_DIR="${ANTON_DATA_DIR:-${HARBOR_DATA_DIR:-/data}}"
-ANTON_PORT="${ANTON_PORT:-${HARBOR_PORT:-8799}}"
+ANTON_EXECUTOR="${ANTON_EXECUTOR:-pi}"
+ANTON_DATA_DIR="${ANTON_DATA_DIR:-/data}"
+ANTON_PORT="${ANTON_PORT:-8799}"
 ANTON_SERVE_PORT="${ANTON_SERVE_PORT:-8798}"
 ANTON_WEB_INTERNAL_PORT="${ANTON_WEB_INTERNAL_PORT:-3079}"
 export ANTON_WEB_PORT="${ANTON_WEB_PORT:-3080}"

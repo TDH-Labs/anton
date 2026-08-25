@@ -331,7 +331,7 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
                 <textarea
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="e.g. Every weekday at 7 AM, pull yesterday's job costs from the accounting file and email me anything over budget."
+                  placeholder="e.g. Every weekday at 7 AM, pull yesterday's sales totals from the accounting file and email me anything over budget."
                   rows={3}
                   style={{ width: '100%', marginBottom: 10, border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit', fontSize: 13, padding: 10, resize: 'vertical', boxSizing: 'border-box' }}
                 />

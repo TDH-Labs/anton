@@ -44,7 +44,7 @@ def record_out(text: str, delay: float = 0.0):
 
 def log_header(title: str):
     record_out(f"\n{BOLD}{CYAN}════════════════════════════════════════════════════════════════════════════════{RESET}\n")
-    record_out(f"{BOLD}{MAGENTA} 🌌 HARBOR-SAS SHOWCASE {RESET}│ {BOLD}{YELLOW}{title}{RESET}\n")
+    record_out(f"{BOLD}{MAGENTA} 🌌 ANTON SHOWCASE {RESET}│ {BOLD}{YELLOW}{title}{RESET}\n")
     record_out(f"{BOLD}{CYAN}════════════════════════════════════════════════════════════════════════════════{RESET}\n\n", delay=0.3)
 
 
@@ -98,13 +98,13 @@ def main():
 
     # 1. SETUP
     log_step(1, "Turnkey Provisioning & Idempotent Environment Initialization")
-    run_cmd(["python3", "-m", "harbor.cli", "setup", "--install-dir", DEMO_DIR, "--executor", "fake"])
+    run_cmd(["python3", "-m", "anton.cli", "setup", "--install-dir", DEMO_DIR, "--executor", "fake"])
     time.sleep(0.5)
 
     # 2. DOCTOR
     log_step(2, "Read-Only System Doctor Diagnostic Verification")
     data_dir = os.path.join(DEMO_DIR, "data")
-    run_cmd(["python3", "-m", "harbor.cli", "doctor", "--data-dir", data_dir, "--executor", "fake"])
+    run_cmd(["python3", "-m", "anton.cli", "doctor", "--data-dir", data_dir, "--executor", "fake"])
     time.sleep(0.5)
 
     # 3. SEEDING GATED JOBS
@@ -131,23 +131,23 @@ def main():
 
     # 4. LAUNCHING SERVICES (Serve on 8799, Dashboard on 8800)
     log_step(4, "Booting Services: Scheduler Engine (8799) & 3D Neural Dashboard (8800)")
-    env = {"HARBOR_DASHBOARD_TOKEN": "demo-secure-token-2026", "PYTHONPATH": REPO_DIR}
+    env = {"ANTON_DASHBOARD_TOKEN": "demo-secure-token-2026", "PYTHONPATH": REPO_DIR}
     
     serve_proc = subprocess.Popen(
-        ["python3", "-m", "harbor.cli", "serve", "--data-dir", data_dir, "--port", "8799"],
+        ["python3", "-m", "anton.cli", "serve", "--data-dir", data_dir, "--port", "8799"],
         cwd=REPO_DIR, env=dict(os.environ, **env),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     
     dash_proc = subprocess.Popen(
-        ["python3", "-m", "harbor.cli", "dashboard", "--data-dir", data_dir, "--port", "8800"],
+        ["python3", "-m", "anton.cli", "dashboard", "--data-dir", data_dir, "--port", "8800"],
         cwd=REPO_DIR, env=dict(os.environ, **env),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
     
     time.sleep(2.0)
-    record_out(f"{GREEN}✓ harbor serve active on http://0.0.0.0:8799 (PID: {serve_proc.pid}){RESET}\n")
-    record_out(f"{GREEN}✓ harbor dashboard active on http://0.0.0.0:8800 (PID: {dash_proc.pid}){RESET}\n")
+    record_out(f"{GREEN}✓ anton serve active on http://0.0.0.0:8799 (PID: {serve_proc.pid}){RESET}\n")
+    record_out(f"{GREEN}✓ anton dashboard active on http://0.0.0.0:8800 (PID: {dash_proc.pid}){RESET}\n")
 
     try:
         # 5. TRIGGER WEBHOOK
@@ -202,8 +202,8 @@ def main():
 
         # 9. GOVERNOR
         log_step(9, "Ambition Governor: Mathematical EV × Feasibility Scoring & Routing")
-        run_cmd(["python3", "-m", "harbor.cli", "governor", "--ev", "0.95", "--feasibility", "0.85", "--risk", "low"])
-        run_cmd(["python3", "-m", "harbor.cli", "governor", "--ev", "0.95", "--feasibility", "0.85", "--kind", "money"])
+        run_cmd(["python3", "-m", "anton.cli", "governor", "--ev", "0.95", "--feasibility", "0.85", "--risk", "low"])
+        run_cmd(["python3", "-m", "anton.cli", "governor", "--ev", "0.95", "--feasibility", "0.85", "--kind", "money"])
         time.sleep(0.5)
 
         # 10. SECOND BRAIN VAULT & 3D GRAPH
@@ -216,7 +216,7 @@ def main():
         with open(os.path.join(notes_dir, "infra-gate.md"), "w", encoding="utf-8") as f:
             f.write("# Infrastructure Safety Gate\n\nSecurity policies for [[mocs/strategy]] and [[notes/qbo-recon|QBO Notes]].\n")
 
-        run_cmd(["python3", "-m", "harbor.cli", "vault", "--data-dir", data_dir])
+        run_cmd(["python3", "-m", "anton.cli", "vault", "--data-dir", data_dir])
 
         record_out(f"\n{DIM}Querying 3D Force-Directed Neural Graph Payload (/api/vault/graph):{RESET}\n")
         g_st, g_data = http_req("http://127.0.0.1:8800/api/vault/graph")
@@ -225,7 +225,7 @@ def main():
 
         # 11. EXECUTIVE DIGEST
         log_step(11, "Generating Executive Agent Markdown Digest")
-        run_cmd(["python3", "-m", "harbor.cli", "digest", "--data-dir", data_dir])
+        run_cmd(["python3", "-m", "anton.cli", "digest", "--data-dir", data_dir])
         digest_file = os.path.join(vault_dir, "digests", "daily-digest.md")
         if os.path.exists(digest_file):
             record_out(f"\n{BOLD}{YELLOW}--- Digest Preview ({os.path.basename(digest_file)}) ---{RESET}\n")
@@ -235,7 +235,7 @@ def main():
 
         # 12. METERING & AUDIT LEDGER
         log_step(12, "LLM Usage Metering, Cloud Accounting & Append-Only Event Ledger")
-        run_cmd(["python3", "-m", "harbor.cli", "usage", "--data-dir", data_dir])
+        run_cmd(["python3", "-m", "anton.cli", "usage", "--data-dir", data_dir])
         runs_file = os.path.join(data_dir, "runs.jsonl")
         if os.path.exists(runs_file):
             record_out(f"\n{BOLD}{YELLOW}--- Event Ledger Tail (runs.jsonl) ---{RESET}\n")
@@ -253,7 +253,7 @@ def main():
                 p.kill()
         record_out(f"{GREEN}✓ Server shutdown complete.{RESET}\n")
 
-    log_header("DEMO COMPLETE: ALL HARBOR-SAS SUBSYSTEMS VERIFIED 100% OPERATIONAL")
+    log_header("DEMO COMPLETE: ALL ANTON SUBSYSTEMS VERIFIED 100% OPERATIONAL")
 
     # Write Asciinema Cast file
     cast_header = {

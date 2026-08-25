@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
 import os
 import secrets
@@ -247,7 +248,7 @@ def _require_token(request, token: str) -> None:
     if not token:
         return
     auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {token}":
+    if not hmac.compare_digest(auth, f"Bearer {token}"):
         raise HTTPException(401, "missing or invalid bearer token")
 
 _pending_oauth: dict = {}  # state -> pending OAuth flow (R-click-install)
@@ -271,7 +272,7 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     # split-brain on a partial config.
     _set_hmac_secret(
         ((config.get("authz") or {}).get("decision_secret") or "").strip())
-    token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("ANTON_DASHBOARD_TOKEN") or _os.environ.get("HARBOR_DASHBOARD_TOKEN") or ""
+    token = (config.get("general") or {}).get("dashboard_token") or _os.environ.get("ANTON_DASHBOARD_TOKEN") or ""
     if token:
         app.state.dashboard_token = token
     else:

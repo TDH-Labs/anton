@@ -176,7 +176,7 @@ export function AutomationsScreen() {
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g. Every weekday at 7 AM, pull yesterday's job costs from the accounting file and email me anything over budget."
+                placeholder="e.g. Every weekday at 7 AM, pull yesterday's sales totals from the accounting file and email me anything over budget."
                 rows={3}
                 style={{ width: '100%', marginTop: 10, marginBottom: 10, border: LN, background: 'transparent', color: 'var(--dsw-alias-label-primary)', fontFamily: 'inherit', fontSize: 13, padding: 10, resize: 'vertical', boxSizing: 'border-box' }}
               />

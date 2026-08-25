@@ -7,6 +7,8 @@ from PIL import Image, ImageDraw, ImageFont
 WIDTH, HEIGHT = 1920, 1080
 FPS = 30
 
+OUT_DIR = os.environ.get('DEMO_OUTPUT_DIR', os.path.join(os.getcwd(), 'demo-output'))
+
 # Fonts
 FONT_TITLE = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 28)
 FONT_SUB = ImageFont.truetype('/System/Library/Fonts/Helvetica.ttc', 20)
@@ -119,7 +121,7 @@ def draw_bezier_wire(d, x1, y1, x2, y2, color=BORDER_COLOR, pulse=False):
 
 def render_video_1():
     """Demo 1: Visual Reconciliation Workflow Creation & Gate Execution"""
-    out_path = '/Users/ai/rooms/devops/assets/demos/anton_demo_1_reconciliation_workflow.mp4'
+    out_path = os.path.join(OUT_DIR, 'anton_demo_1_reconciliation_workflow.mp4')
     proc = subprocess.Popen([
         '/opt/homebrew/bin/ffmpeg', '-y', '-f', 'image2pipe', '-vcodec', 'png',
         '-r', str(FPS), '-i', '-', '-vcodec', 'libx264', '-pix_fmt', 'yuv420p',
@@ -220,7 +222,7 @@ def render_video_1():
 
 def render_video_2():
     """Demo 2: Award Inbound -> 100x Upskilling in Sandbox -> GTM Campaign Synthesis"""
-    out_path = '/Users/ai/rooms/devops/assets/demos/anton_demo_2_award_gtm_upskilling.mp4'
+    out_path = os.path.join(OUT_DIR, 'anton_demo_2_award_gtm_upskilling.mp4')
     proc = subprocess.Popen([
         '/opt/homebrew/bin/ffmpeg', '-y', '-f', 'image2pipe', '-vcodec', 'png',
         '-r', str(FPS), '-i', '-', '-vcodec', 'libx264', '-pix_fmt', 'yuv420p',
@@ -301,7 +303,7 @@ def render_video_2():
 
 def render_video_3():
     """Demo 3: Son of Anton Mode Overdrive (Permissionless Auto-Bypass)"""
-    out_path = '/Users/ai/rooms/devops/assets/demos/anton_demo_3_son_of_anton_overdrive.mp4'
+    out_path = os.path.join(OUT_DIR, 'anton_demo_3_son_of_anton_overdrive.mp4')
     proc = subprocess.Popen([
         '/opt/homebrew/bin/ffmpeg', '-y', '-f', 'image2pipe', '-vcodec', 'png',
         '-r', str(FPS), '-i', '-', '-vcodec', 'libx264', '-pix_fmt', 'yuv420p',
@@ -373,7 +375,7 @@ if __name__ == '__main__':
 
 def render_video_4():
     """Demo 4: Conversational Chat in ⌘K + In-App Markdown Reader Drawer"""
-    out_path = '/Users/ai/rooms/devops/assets/demos/anton_demo_4_markdown_reader_and_chat.mp4'
+    out_path = os.path.join(OUT_DIR, 'anton_demo_4_markdown_reader_and_chat.mp4')
     proc = subprocess.Popen([
         '/opt/homebrew/bin/ffmpeg', '-y', '-f', 'image2pipe', '-vcodec', 'png',
         '-r', str(FPS), '-i', '-', '-vcodec', 'libx264', '-pix_fmt', 'yuv420p',

@@ -7,8 +7,8 @@ revocation-triggered refresh rotation. The HTTP transport is injectable so
 CI never touches the network; production uses httpx.
 
 Credentials come from env (QBO_CLIENT_ID / QBO_CLIENT_SECRET) or the
-operator's secrets.env (~/secrets/harwell/secrets.env on the Mac,
-/home/umbrel/secrets/harwell/secrets.env on Umbrel).
+operator's secrets.env (~/secrets/anton/secrets.env on the Mac,
+/home/umbrel/secrets/anton/secrets.env on Umbrel).
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ import os
 
 TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 SECRETS_ENV_CANDIDATES = (
-    os.path.expanduser("~/secrets/harwell/secrets.env"),
-    "/home/umbrel/secrets/harwell/secrets.env",
+    os.path.expanduser("~/secrets/anton/secrets.env"),
+    "/home/umbrel/secrets/anton/secrets.env",
 )
 # Vendor-bundled defaults: each deployment persists its own copy of the TDH
 # Labs Intuit app credentials at provision time (0600), so customer installs

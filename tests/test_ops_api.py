@@ -50,7 +50,7 @@ class TestOpsApi(unittest.TestCase):
 
     def test_automation_put_then_initiatives_get_round_trips(self):
         body = {
-            "name": "Nightly sync", "plain": "Syncs job costs",
+            "name": "Nightly sync", "plain": "Syncs sales totals",
             "nodes": [{"id": "n1", "kind": "trigger", "x": 0, "y": 0, "text": "3 AM daily"}],
             "links": [],
             "state": "awaiting_approval",
@@ -172,15 +172,15 @@ class TestOpsApi(unittest.TestCase):
             conn.execute(
                 "INSERT INTO playbooks(slug, method, source_initiative, ts, title, body, kind, "
                 "triggered_by, usage_count) VALUES(?,?,?,?,?,?,?,?,?)",
-                ("sage-lock", "delay to 3am", "remediate-sync", "2026-01-01T00:00:00Z",
-                 "Sage sync file-lock pattern", "Delay to 3 AM resolves the conflict.",
+                ("sync-lock", "delay to 3am", "remediate-sync", "2026-01-01T00:00:00Z",
+                 "Nightly sync file-lock pattern", "Delay to 3 AM resolves the conflict.",
                  "decision", "Incident #19", 3))
             conn.commit()
         finally:
             conn.close()
         entries = self.client.get("/api/learning").json()
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["title"], "Sage sync file-lock pattern")
+        self.assertEqual(entries[0]["title"], "Nightly sync file-lock pattern")
         self.assertEqual(entries[0]["usage"], 3)
 
     def test_incidents_shape_with_events(self):
@@ -212,14 +212,14 @@ class TestOpsApi(unittest.TestCase):
 
         added = self.client.post(
             "/api/wizard/mcp",
-            json={"name": "Sage Accounting", "command": "n/a", "room": "finance",
-                  "what": "Job costs", "permissions": ["read jobs", "write job costs"]})
+            json={"name": "Accounting Sync", "command": "n/a", "room": "finance",
+                  "what": "Sales totals", "permissions": ["read sales", "write sales totals"]})
         self.assertEqual(added.status_code, 200)
 
         second = self.client.get("/api/wizard/mcp").json()
         self.assertEqual(len(second), 3)
-        sage = next(a for a in second if a["name"] == "Sage Accounting")
-        self.assertEqual(sage["permissions"], ["read jobs", "write job costs"])
+        acct = next(a for a in second if a["name"] == "Accounting Sync")
+        self.assertEqual(acct["permissions"], ["read sales", "write sales totals"])
 
     def test_setup_wizard_records_picks(self):
         r = self.client.post("/api/setup", json={"step": "work", "picks": ["a", "b", "c"]})
