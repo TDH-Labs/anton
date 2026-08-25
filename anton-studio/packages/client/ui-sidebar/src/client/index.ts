@@ -4,16 +4,20 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { SidebarRootInjected } from './contract/slots.ts'
 import { SidebarRoot } from './SidebarRoot.tsx'
-import { LiveStrip } from './LiveStrip.tsx'
 import { en, zh, type SidebarKey } from './locales.ts'
-import { OpsCockpit } from './OpsCockpit.tsx'
-import { createNavScreenStore } from './nav-store.ts'
 
 export type {
   SidebarBrandMarkOwnerProps, SidebarBrandNameOwnerProps, SidebarFooterActionOwnerProps,
   SidebarRootComponentProps, SidebarRootInjected, SidebarSectionOwnerProps, SidebarSettingsOwnerProps,
+  SidebarNavOwnerProps,
 } from './contract/slots.ts'
 export type { SidebarKey } from './locales.ts'
+
+// Anton's Ops nav store: the factory + screen union live here so the
+// first-party ui-anton-ops package (and its cockpit + nav registrants) can
+// share one handle without importing product code into this package.
+export { createNavScreenStore } from './nav-store.ts'
+export type { OpsScreen } from './nav-store.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -40,10 +44,6 @@ export function apply(ctx: ClientContext): void {
     startSession: (workspaceId) => { ctx.workspaces.startSession(workspaceId) },
     toggleSidebar: () => { ctx.layout.toggleSidebar() },
   })
-  // Shared handle (not re-invoked per registration): the sidebar nav writes
-  // the active screen, ops-cockpit reads it — same store, two occupants
-  // ("Store handle... shared identity", ui-slots/src/store.d.ts).
-  const navScreenStore = createNavScreenStore()
   ctx.effect(
     () => ctx.slots.register({
       name: 'sidebar',
@@ -54,22 +54,15 @@ export function apply(ctx: ClientContext): void {
       children: {
         'sidebar.brand.mark': { kind: 'single', scope: 'root' },
         'sidebar.brand.name': { kind: 'single', scope: 'root' },
+        // Anton's Ops nav groups (ui-anton-ops registers the occupant);
+        // upstream deployments render nothing here.
+        'sidebar.nav': { kind: 'single', scope: 'root' },
         'sidebar.workspaces': { kind: 'single', scope: 'root' },
         'sidebar.settings': { kind: 'single', scope: 'root' },
         'sidebar.footer.action': { kind: 'list', scope: 'root' },
       },
-      store: navScreenStore,
       inject: injectProps,
     }, SidebarRoot),
     'ui-sidebar: slot registration',
   )
-
-  ctx.slots.inject('shell.rightSidebar', () => ctx.slots.register({ name: 'shell.rightSidebar', id: 'live-strip', order: 10 }, LiveStrip))
-
-  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-    name: 'shell.overlay',
-    id: 'ops-cockpit',
-    order: 5,
-    store: navScreenStore,
-  }, OpsCockpit))
 }

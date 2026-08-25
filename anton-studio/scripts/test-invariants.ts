@@ -6,7 +6,18 @@
  */
 
 import { expect } from 'vitest'
-import { FiberState, Inject, RegistryService, ValidationError } from '@deepseek-ai/cordis'
+import { Inject, RegistryService, ValidationError } from '@deepseek-ai/cordis'
+// Runtime mirror of cordis's `FiberState` const enum — same reason
+// @deepseek-ai/dsh-tool-cordis/fiber-state exists: a const enum has no runtime
+// object, so importing it as a value yields undefined under vitest/esbuild.
+const FiberState = {
+  PENDING: 0,
+  LOADING: 1,
+  ACTIVE: 2,
+  FAILED: 3,
+  DISPOSED: 4,
+  UNLOADING: 5,
+} as const
 import type { Context, Plugin } from '@deepseek-ai/cordis'
 import { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type {

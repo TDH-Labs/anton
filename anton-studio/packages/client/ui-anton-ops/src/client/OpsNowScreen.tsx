@@ -1,7 +1,7 @@
 import type { CSSProperties } from 'react'
 import type { PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import bp from './blueprint.module.css'
-import type { createNavScreenStore } from './nav-store.ts'
+import { createNavScreenStore } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { useOpsApi } from './useOpsApi.ts'
 
 type Tile = { label: string; value: string; color: string; note: string }

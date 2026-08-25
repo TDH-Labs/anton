@@ -1,214 +1,215 @@
-import { useEffect, useState } from 'react'
-import type { CSSProperties } from 'react'
-import { IconNewChatOutline16, IconPanelLeftOutline16, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+/**
+ * Sidebar shell: column geometry only. Collapse is a slide plus crossfade:
+ * content freezes at its expanded width (inline style) and fades out in place
+ * while the sliding column (AppFrame grid tracks) clips it — nothing reflows
+ * mid-slide. At settle the wide-only content unmounts and the four upper
+ * controls enter the 56px rail from the same horizontal offset (one icon each,
+ * same top-down order) on one fade that ends with the slide. The bottom-pinned
+ * settings control only fades. The workspace/session browsing region between
+ * the New Session button and the foot is the `sidebar.workspaces` registrant's,
+ * and the foot holds `sidebar.settings` plus `sidebar.footer.action`; the shell
+ * hands them the wide flag (plus an expand request callback for the browser).
+ *
+ * The column also owns whether the scroll regions nested in it draw a
+ * scrollbar at all: the shell tracks the pointer and rebinds ui-theme's
+ * scrollbar indirection away while it is elsewhere, so a list the user is not
+ * pointing at carries no bar.
+ */
+import { useEffect, useRef, useState } from 'react'
+import clsx from 'clsx'
+import {
+  FishLogo, IconNewChatOutline16, IconPanelLeftOutline16, Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarRootComponentProps } from './contract/slots.ts'
-import type { OpsScreen } from './nav-store.ts'
-import { useOpsApi } from './useOpsApi.ts'
+import css from './SidebarRoot.module.css'
 
-/** One leaf nav row: routes to an ops screen via the shared nav-screen store. */
-type NavItem = { key: OpsScreen; label: string; icon: string; badge?: 'approvals' }
-/** One labelled nav group (README Phase 3: "five labelled groups"). */
-type NavGroup = { label: string; items: NavItem[] }
-
-const NAV: NavGroup[] = [
-  { label: 'Ask', items: [
-    { key: 'ask', label: 'Ask Anton', icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' },
-  ] },
-  { label: 'Watch', items: [
-    { key: 'now', label: 'Right now', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
-    { key: 'approvals', label: 'Waiting on you', icon: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z', badge: 'approvals' },
-    { key: 'alerts', label: 'What went wrong', icon: 'M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0' },
-  ] },
-  { label: 'Run', items: [
-    { key: 'automations', label: 'Automations', icon: 'M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM15 6a9 9 0 0 0-9 9' },
-    { key: 'schedule', label: 'Schedule', icon: 'M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6' },
-  ] },
-  { label: 'Know', items: [
-    { key: 'memory', label: 'Memory', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10' },
-    { key: 'learning', label: 'What Anton learned', icon: 'M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6' },
-  ] },
-  { label: 'Extend', items: [
-    { key: 'addons', label: 'Add-ons', icon: 'm7.5 4.27 9 5.15M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z' },
-  ] },
-]
+/** Wide-content unmount delay; matches the 150ms wide-content fade-out. */
+const COLLAPSE_SETTLE_MS = 150
 
 /**
- * The sidebar shell: brand row (`sidebar.brand.mark` / `sidebar.brand.name`
- * — ui-brand-official overrides these; declaring is claiming, contract/
- * slots.ts), the ops-nav screen groups (README Phase 3), the workspace/
- * session browser and settings/footer-action holes this package declares
- * (`sidebar.workspaces` / `sidebar.settings` / `sidebar.footer.action`), and
- * the Son of Anton toggle.
- *
- * Retired from the pre-redesign shell: the pointer-hover scrollbar reveal
- * and the collapse crossfade choreography (COLLAPSE_SETTLE_MS/quietBars/
- * railIn in the old SidebarRoot.module.css) — polish independent of the
- * Ops Center contract, not restored here. The column still collapses to a
- * 56px rail (manually, via the toggle button below, or automatically below
- * the narrow-viewport breakpoint), just without the eased crossfade.
+ * How long the column's scrollbars stay drawn after the pointer leaves it.
+ * The bar is a pointer affordance here, and hiding it on the leave event
+ * itself makes it blink out while the pointer is only crossing the column's
+ * edge — on the way to the conversation, or around a portalled menu.
+ */
+const SCROLLBAR_LINGER_MS = 2000
+
+/**
+ * Render the sidebar column shell.
+ * @param props - composed slot props (runtime share + injected callbacks, contract/slots.ts).
+ * @returns the sidebar element tree.
  */
 export function SidebarRoot({
-  collapsed, renderSlot, startSession, toggleSidebar, t, useStore, actions,
+  collapsed,
+  width,
+  startSession,
+  toggleSidebar,
+  t,
+  renderSlot,
 }: SidebarRootComponentProps) {
-  const [son, setSon] = useState(false)
-
+  // Wide content stays mounted while the collapse animates (fading via
+  // .collapsed .wide), unmounts at settle, and remounts right away on expand.
+  const [settled, setSettled] = useState(collapsed)
   useEffect(() => {
-    setSon(localStorage.getItem('sonOfAntonMode') === 'true')
-    const handleToggle = () => { setSon(localStorage.getItem('sonOfAntonMode') === 'true') }
-    window.addEventListener('son-of-anton-toggle', handleToggle)
-    return () => { window.removeEventListener('son-of-anton-toggle', handleToggle) }
-  }, [])
+    if (!collapsed) { setSettled(false); return }
+    const timer = window.setTimeout(() => { setSettled(true) }, COLLAPSE_SETTLE_MS)
+    return () => { window.clearTimeout(timer) }
+  }, [collapsed])
+  const wide = !collapsed || !settled
 
-  const toggleSon = () => {
-    const isSon = !son
-    setSon(isSon)
-    localStorage.setItem('sonOfAntonMode', String(isSon))
-    if (isSon) {
-      document.body.setAttribute('data-anton-mode', 'son')
-    } else {
-      document.body.removeAttribute('data-anton-mode')
-    }
-    globalThis.fetch(isSon ? '/api/mode/son-of-anton' : '/api/mode/standard', { method: 'POST' }).catch(console.error)
+  // Freeze the content at its expanded width while it fades out (collapsed
+  // && wide): the sliding column then clips it instead of reflowing it. The
+  // rail layout (.collapsed styles) only applies once the fade settles.
+  const lastWideWidth = useRef(width)
+  if (!collapsed) lastWideWidth.current = width
+
+  // Rail-in only crossfades a live collapse: a refresh straight into the
+  // collapsed state renders the rail statically (no delay-hidden icons).
+  const everWide = useRef(!collapsed)
+  if (!collapsed) everWide.current = true
+
+  // Scrollbars in the column follow the pointer (.quietBars rebinds them
+  // away): drawn while it is inside, and for SCROLLBAR_LINGER_MS after it
+  // leaves. A pointer that returns within that window cancels the pending
+  // hide rather than restarting from a hidden bar.
+  const column = useRef<HTMLDivElement>(null)
+  const [pointerInside, setPointerInside] = useState(false)
+  const lingerTimer = useRef<number | undefined>(undefined)
+  const armLinger = (): void => {
+    if (lingerTimer.current !== undefined) return
+    lingerTimer.current = window.setTimeout(() => {
+      lingerTimer.current = undefined
+      setPointerInside(false)
+    }, SCROLLBAR_LINGER_MS)
   }
-
-  const activeScreen = useStore(s => s.screen)
-  const wide = !collapsed
-  const expandSidebar = () => { if (collapsed) toggleSidebar() }
-
-  // Live pending count for the Waiting-on-you badge — same endpoint the Right-now tile and the Approvals inbox read, so all three agree.
-  const approvalsState = useOpsApi<unknown[]>('/api/approvals')
-  const approvalsCount = (approvalsState.data ?? []).length
+  const cancelLinger = (): void => {
+    window.clearTimeout(lingerTimer.current)
+    lingerTimer.current = undefined
+  }
+  // Leaving is decided by the column's BOX, not by DOM containment, and only
+  // while the bars are drawn. ui-settings renders its full-viewport panel as a
+  // fixed-position DESCENDANT of this column, so a pointer moved onto that
+  // panel — or onto the conversation once it closes — fires no `pointerleave`
+  // here, and the bars would stay drawn over a column nobody is pointing at.
+  // The element's own leave stays as the one signal geometry cannot give: a
+  // pointer that leaves the window emits no further moves.
+  useEffect(() => {
+    if (!pointerInside) return
+    const onMove = (event: PointerEvent): void => {
+      const rect = column.current?.getBoundingClientRect()
+      /* v8 ignore next -- the listener only exists while the column is mounted and revealed. */
+      if (rect === undefined) return
+      const inside = event.clientX >= rect.left && event.clientX < rect.right
+        && event.clientY >= rect.top && event.clientY < rect.bottom
+      if (inside) cancelLinger()
+      else armLinger()
+    }
+    document.addEventListener('pointermove', onMove)
+    return () => {
+      document.removeEventListener('pointermove', onMove)
+      cancelLinger()
+    }
+  }, [pointerInside])
 
   return (
-    <div style={{
-      width: collapsed ? 56 : 242,
-      display: 'flex', flexDirection: 'column', height: '100%',
-      background: 'var(--dsw-specific-sidebar-fill)',
-      borderRight: '1px solid var(--dsw-alias-border-l2)',
-      overflow: 'hidden',
-    }}
+    <div
+      ref={column}
+      className={clsx(
+        css.root, !wide && css.collapsed, !wide && everWide.current && css.railIn,
+        collapsed && wide && css.fading, !pointerInside && css.quietBars,
+      )}
+      style={wide ? { width: collapsed ? lastWideWidth.current : width } : undefined}
+      onPointerEnter={() => {
+        cancelLinger()
+        setPointerInside(true)
+      }}
+      onPointerLeave={() => { armLinger() }}
     >
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 9, padding: '16px 16px 14px' }}>
+      <div className={css.logoRow}>
+        {/* Expanded, the brand doubles as a New Session shortcut; the
+            collapsed rail's logo is the expand toggle below instead. */}
         {wide && (
           <button
             type="button"
-            onClick={() => { startSession() }}
+            className={clsx(css.brand, css.wide)}
             aria-label={t('session.new.label')}
-            style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 9, padding: 0, border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
+            onClick={() => { startSession() }}
           >
-            <span aria-hidden="true" style={{ flex: 'none', display: 'inline-flex' }}>
-              {renderSlot('sidebar.brand.mark', { size: 26 }, {
-                fallback: <img src={son ? '/son_of_anton_logo.svg' : '/anton_logo.jpg'} alt="" style={{ width: 26, height: 26 }} />,
-              })}
-            </span>
-            <span style={{ minWidth: 0 }}>
-              {renderSlot('sidebar.brand.name', {}, {
-                fallback: (
-                  <>
-                    <div style={{ fontFamily: 'var(--dsw-font-family-heading, "Barlow Condensed", system-ui, sans-serif)', fontWeight: 600, fontSize: 19, lineHeight: 1, color: 'var(--dsw-alias-label-primary)', letterSpacing: '-0.01em' }}>{son ? 'Son of Anton' : 'Anton'}</div>
-                    <div style={{ fontFamily: 'var(--dsw-font-family, "Barlow", system-ui, sans-serif)', fontSize: 10, lineHeight: 1, letterSpacing: '.14em', textTransform: 'uppercase', marginTop: 3, color: 'var(--dsw-alias-label-secondary)' }}>{son ? 'Buckle Up' : 'Cog in Your Wheel'}</div>
-                  </>
-                ),
-              })}
+            <span className={css.brandIdentity} aria-hidden="true">
+              <span className={css.brandMark}>
+                {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
+              </span>
+              <span className={css.brandName}>
+                {renderSlot('sidebar.brand.name', {}, {
+                  fallback: (
+                    <>
+                      <span className={css.fallbackBrandName}>DSH Local Build</span>
+                      {process.env.DSH_CLIENT_COMMIT_HASH
+                        ? <span className={css.buildRevision}>{process.env.DSH_CLIENT_COMMIT_HASH}</span>
+                        : null}
+                    </>
+                  ),
+                })}
+              </span>
             </span>
           </button>
         )}
+        {/* Rail resting state is the whale mark; hovering swaps in the panel
+            icon (the expand affordance, figma sidebar-hover flow). */}
         <Tooltip label={collapsed ? t('toggle.open') : t('toggle.collapse')} delayMs={500}>
           <button
             type="button"
-            onClick={() => { toggleSidebar() }}
+            className={clsx(css.iconButton, css.toggle)}
             aria-label={collapsed ? t('toggle.open') : t('toggle.collapse')}
-            style={{ flex: 'none', width: 28, height: 28, display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)' }}
+            onClick={() => { toggleSidebar() }}
           >
-            {!wide
-              ? <span aria-hidden="true" style={{ display: 'inline-flex' }}>{renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <img src={son ? '/son_of_anton_logo.svg' : '/anton_logo.jpg'} alt="" style={{ width: 24, height: 24 }} /> })}</span>
-              : <IconPanelLeftOutline16 size={16} />}
+            {!wide && (
+              <span className={css.railMark} aria-hidden="true">
+                {renderSlot('sidebar.brand.mark', { size: 24 }, { fallback: <FishLogo size={24} /> })}
+              </span>
+            )}
+            {/* Rail icons render at 18 (figma rail spec); expanded keeps the glyph-native sizes. */}
+            <IconPanelLeftOutline16 className={css.panelIcon} size={wide ? 16 : 18} />
           </button>
         </Tooltip>
       </div>
 
-      <div style={{ flex: 'none', padding: '0 12px 10px' }}>
-        {/* Persistent trigger: the wordmark's New-Session shortcut only exists
-            while wide, so this is the sole way to start a session from the
-            collapsed rail. */}
-        <Tooltip label={t('session.new.label')} delayMs={500} disabled={wide}>
-          <button
-            type="button"
-            onClick={() => { startSession() }}
-            aria-label={t('session.new.label')}
-            style={{
-              width: '100%', display: 'flex', alignItems: 'center', justifyContent: wide ? 'flex-start' : 'center',
-              gap: 9, padding: wide ? '8px 10px' : '8px', cursor: 'pointer',
-              border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)',
-            }}
-          >
-            <IconNewChatOutline16 size={wide ? 14 : 18} />
-            {wide && <span style={{ fontSize: 12.5 }}>{t('session.new.label')}</span>}
-          </button>
-        </Tooltip>
-      </div>
-
-      <div style={{ flex: 'none', overflowY: 'auto', padding: '2px 8px 8px', maxHeight: '58%' }}>
-        {NAV.map((g, idx) => (
-          <div key={idx} style={{ marginBottom: 14 }}>
-            {!collapsed && <div style={{ padding: '0 8px 6px', fontFamily: 'var(--dsw-font-family, "Barlow", system-ui, sans-serif)', fontSize: 10, lineHeight: 1, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)' }}>{g.label}</div>}
-            {g.items.map((it, i) => {
-              const active = it.key === activeScreen
-              const rowStyle: CSSProperties = {
-                display: 'flex', alignItems: 'center', gap: 10, padding: '7px 9px', fontSize: 13.5, cursor: 'pointer',
-                background: active ? 'var(--dsw-alias-state-business-tertiary)' : 'transparent',
-                boxShadow: active ? 'inset 2px 0 0 var(--dsw-alias-state-business-primary)' : 'none',
-                color: active ? 'var(--dsw-alias-accent-strong)' : 'var(--dsw-alias-label-primary)',
-                fontWeight: active ? 500 : 400,
-              }
-              return (
-                <div key={i} onClick={() => { actions.setScreen(it.key) }} style={rowStyle}>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ flex: 'none', opacity: 0.85 }}><path d={it.icon} /></svg>
-                  {!collapsed && <span style={{ flex: 1, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</span>}
-                  {!collapsed && it.badge === 'approvals' && approvalsCount > 0 && <span style={{ flex: 'none', fontSize: 10, padding: '1px 6px', background: 'var(--dsw-alias-state-business-primary)', color: 'var(--dsw-alias-bg-base)', fontFamily: 'ui-monospace, monospace' }}>{approvalsCount}</span>}
-                </div>
-              )
-            })}
-          </div>
-        ))}
-      </div>
-
-      <div style={{ flex: 1, minHeight: 0, borderTop: '1px solid var(--dsw-alias-border-l2)', display: 'flex', flexDirection: 'column' }}>
-        {renderSlot('sidebar.workspaces', { wide, expandSidebar })}
-      </div>
-
-      <div style={{ flex: 'none', padding: '10px 12px 14px', borderTop: '1px solid var(--dsw-alias-border-l2)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div onClick={toggleSon} style={{
-          display: 'flex', alignItems: 'center', gap: 10, padding: '9px 10px', cursor: 'pointer',
-          border: `1px solid ${son ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-border-l2)'}`,
-          background: son ? 'var(--dsw-alias-state-business-tertiary)' : 'transparent',
-          color: son ? 'var(--dsw-alias-accent-strong)' : 'var(--dsw-alias-label-primary)',
-        }}
+      {/* Expanded, the button carries its own label — tooltip only on the rail. */}
+      <Tooltip label={t('session.new.label')} delayMs={500} disabled={wide}>
+        <button
+          type="button"
+          className={css.newSession}
+          aria-label={t('session.new.label')}
+          onClick={() => { startSession() }}
         >
-          <img src="/son_of_anton_logo.svg" alt="" style={{ width: 22, height: 22, flex: 'none' }} />
-          {!collapsed && (
-            <>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 500, lineHeight: 1.2 }}>Son of Anton</div>
-                <div style={{ fontSize: 10.5, lineHeight: 1.3, opacity: 0.7 }}>Buckle Up</div>
-              </div>
-              <div style={{ flex: 'none', width: 30, height: 16, padding: 2, background: son ? 'var(--dsw-alias-state-business-primary)' : 'transparent', border: `1px solid ${son ? 'var(--dsw-alias-state-business-primary)' : 'var(--dsw-alias-border-l2)'}`, display: 'flex', justifyContent: son ? 'flex-end' : 'flex-start', boxSizing: 'border-box' }}>
-                <div style={{ width: 10, height: 10, background: son ? 'var(--dsw-alias-bg-base)' : 'var(--dsw-alias-label-secondary)' }} />
-              </div>
-            </>
-          )}
+          <IconNewChatOutline16 size={wide ? 14 : 18} />
+          {wide && <span className={clsx(css.newSessionLabel, css.wide)}>{t('session.new')}</span>}
+        </button>
+      </Tooltip>
+
+      {/* Optional nav region (Anton's Ops groups; upstream renders nothing
+          when unregistered) between New Session and the browser region. */}
+      <div className={css.navArea}>
+        {renderSlot('sidebar.nav', { wide })}
+      </div>
+
+      {/* The browsing region fills the column between the controls and the
+          foot in both states; its rail icon column rides the same slot. */}
+      <div className={css.regionArea}>
+        {renderSlot('sidebar.workspaces', {
+          wide,
+          expandSidebar: () => { if (collapsed) toggleSidebar() },
+        })}
+      </div>
+
+      {/* Footer actions stack above Settings in both sidebar widths. */}
+      <div className={css.footArea}>
+        <div className={css.footerActions}>
+          {renderSlot('sidebar.footer.action', { wide })}
         </div>
-        <div onClick={() => { actions.setScreen('setup') }} style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '8px 10px', cursor: 'pointer',
-          border: '1px solid var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-primary)', fontSize: 12.5,
-        }}
-        >
-          {!collapsed ? 'Set up' : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-          )}
+        <div className={css.settingsArea}>
+          {renderSlot('sidebar.settings', { wide })}
         </div>
-        {renderSlot('sidebar.footer.action', { wide })}
-        {renderSlot('sidebar.settings', { wide })}
       </div>
     </div>
   )

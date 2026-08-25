@@ -6,7 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useSyncExternalStore } from 'react'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { createNavScreenStore } from '../src/client/nav-store.ts'
+import { createNavScreenStore } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type { PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 
 function bindStoreHook<T>(instance: { getSnapshot: () => T; subscribe: (fn: () => void) => () => void }) {

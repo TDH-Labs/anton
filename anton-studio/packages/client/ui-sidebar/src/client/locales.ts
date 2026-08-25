@@ -1,18 +1,20 @@
-/** `sidebar` namespace dictionaries. */
+/** `sidebar` namespace dictionaries: shell controls (brand row, New Session, fold toggle). */
 
 /** Simplified Chinese dictionary (the key-set source of truth). */
 export const zh = {
+  'session.new': '新会话',
   'session.new.label': '新建会话',
   'toggle.open': '打开侧边栏',
   'toggle.collapse': '收起侧边栏',
-} as const
+} satisfies Record<string, string>
 
-/** English dictionary, key-identical to the Chinese source of truth. */
-export const en: Record<SidebarKey, string> = {
+/** The sidebar namespace key union. */
+export type SidebarKey = keyof typeof zh
+
+/** English dictionary, checked complete against the zh key set. */
+export const en = {
+  'session.new': 'New Session',
   'session.new.label': 'New session',
   'toggle.open': 'Open sidebar',
   'toggle.collapse': 'Collapse sidebar',
-}
-
-/** Key domain of the `sidebar` namespace (zh is the source of truth). */
-export type SidebarKey = keyof typeof zh
+} satisfies Record<SidebarKey, string>
