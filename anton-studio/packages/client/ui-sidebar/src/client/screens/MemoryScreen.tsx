@@ -85,7 +85,7 @@ export function MemoryScreen() {
   }))
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base)' }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base)' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'flex-end', gap: 16, padding: '18px 26px 14px', borderBottom: LN }}>
         <div style={{ minWidth: 0 }}>
           <div className={bp.kicker}>EVERYTHING ANTON KNOWS AND WHERE IT CAME FROM</div>

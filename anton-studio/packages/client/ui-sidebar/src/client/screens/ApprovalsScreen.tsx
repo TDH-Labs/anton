@@ -45,7 +45,7 @@ export function ApprovalsScreen() {
   const approvals = (data ?? []).filter(a => !resolved.has(a.id))
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base)' }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--dsw-alias-bg-base)' }}>
       <div style={{ flex: 'none', display: 'flex', alignItems: 'flex-end', gap: 16, padding: '18px 26px 14px', borderBottom: LN }}>
         <div style={{ minWidth: 0 }}>
           <div className={bp.kicker}>{approvals.length} DECISION{approvals.length === 1 ? '' : 'S'} ONLY A PERSON CAN MAKE</div>
