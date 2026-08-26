@@ -23,6 +23,13 @@ services:
       - ANTON_SSH_USER=${ANTON_SSH_USER:-}
       - ANTON_SSH_KEY=${ANTON_SSH_KEY:-}
       - ANTON_SSH_COMMAND=${ANTON_SSH_COMMAND:-}
+      # The operator's own n8n instance, if connected (dashboard.py's
+      # /api/n8n/config, AutomationsScreen's "Draw it" link, N8NExecutor).
+      # A same-Umbrel n8n app is reachable by its container name over
+      # Umbrel's shared app network -- e.g. http://n8n_n8n_1:5678 -- find
+      # the real name with `docker ps | grep n8n` and set it here. Empty
+      # means n8n isn't connected; nothing breaks, "Draw it" just says so.
+      - ANTON_N8N_BASE_URL=${ANTON_N8N_BASE_URL:-}
     # Matches the Dockerfile's own HEALTHCHECK -- both call the dashboard's
     # real /health endpoint (returns {"ok": true, "jobs": N}) on its
     # container-internal port, not the auth-gate's public :3080/, which only
