@@ -4,7 +4,7 @@ name: Anton
 tagline: An AI agent for your small business — schedule, memory, and a governor that asks first
 icon: assets/icon.svg
 category: automation
-version: 0.1.0
+version: 0.2.0
 port: 3080
 description: >-
   Anton is an agent, harnessed: point it at the busywork and it does the
@@ -29,9 +29,10 @@ support: https://github.com/TDH-Labs/anton/issues
 dependencies: []
 gallery: []
 releaseNotes: >-
-  The Ops Center UI (port 3080) is now reachable directly through a
-  password-gated proxy — no SSH tunnel required. pi ships in the image and
-  is the default executor; complete the setup wizard with a provider API key
-  to do real work. Set ANTON_DASHBOARD_TOKEN before relying on the
-  dashboard/API ports directly; choose an executor via ANTON_EXECUTOR
-  (fake | pi | oi | ssh).
+  Anton can now connect to an n8n instance for the automations n8n's own
+  connector library covers better than a hand-built integration would —
+  set ANTON_N8N_BASE_URL (see this app's environment variables) to a
+  reachable n8n instance and the Automations screen's "Draw it" opens
+  straight into it. Fixed: job dispatch no longer requires a locally
+  reachable model endpoint for executors (like n8n) that don't call a
+  model through Anton at all.
