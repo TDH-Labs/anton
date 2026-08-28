@@ -22,6 +22,16 @@ COPY anton-studio/ /src/
 ARG DSH_CLIENT_COMMIT_HASH=d7d80f9
 ENV DSH_CLIENT_COMMIT_HASH=${DSH_CLIENT_COMMIT_HASH}
 
+# Anton is a white-labeled build of the vendored DeepSeek Harness frontend --
+# without these, the browser tab title falls back to "DSH Local Build" (its
+# hardcoded default; DocumentTitle.tsx) and the first-run onboarding modal
+# pushes signing up for DeepSeek's own hosted API by name
+# (DeepSeekOnboardingDialog.tsx). Both are DSH_CLIENT_* build-time values,
+# inlined by the bundler the same way DSH_CLIENT_COMMIT_HASH is above --
+# see scripts/client-build-environment.ts.
+ENV DSH_CLIENT_TITLE=Anton
+ENV DSH_CLIENT_OFFICIAL_ONBOARDING=false
+
 RUN pnpm install --frozen-lockfile
 RUN pnpm run build
 # Not pruned to production-only or `pnpm deploy`-isolated: apps/cli's `web`

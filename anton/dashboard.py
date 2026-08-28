@@ -123,6 +123,26 @@ def _save_secret(data_dir: str, key_name: str, value: str) -> None:
         f.write(content)
 
 
+def _set_n8n_base_url(data_dir: str, base_url: str) -> None:
+    """Persist Settings' n8n base URL into config.yaml n8n.base_url -- same
+    read-merge-write-atomic-replace discipline as _set_cloud_model, kept as
+    its own helper since n8n's key sits at the top level, not under routes."""
+    import yaml
+    config_path = _config_candidates(data_dir)[0]
+    current = {}
+    for candidate in reversed(_config_candidates(data_dir)):
+        if os.path.exists(candidate):
+            with open(candidate, encoding="utf-8") as f:
+                current = yaml.safe_load(f) or {}
+    n8n = current.get("n8n") or {}
+    n8n["base_url"] = base_url
+    current["n8n"] = n8n
+    tmp = config_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(current, f)
+    os.replace(tmp, config_path)
+
+
 def _set_cloud_model(data_dir: str, model: str) -> None:
     """Persist the wizard's model pick into config.yaml routes.cloud_model
     (the executor's routing default), flipping prefer to cloud -- a key the
@@ -222,6 +242,10 @@ class BrowserLoginReq(BaseModel):
     password_selector: str = "input[type=password]"
     submit_selector: str = "button[type=submit]"
     success_selector: str
+
+class N8nConfigReq(BaseModel):
+    base_url: str = ""
+
 
 class ModeReq(BaseModel):
     # Default True, not required: the Ops Center UI's two calling sites
@@ -323,6 +347,31 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         that honestly rather than guessing at a default."""
         base_url = (config.get("n8n") or {}).get("base_url") or os.environ.get("ANTON_N8N_BASE_URL") or ""
         return {"base_url": base_url or None}
+
+    @app.post("/api/n8n/config")
+    def set_n8n_config(req: N8nConfigReq, request: Request):
+        """Settings' n8n section save action -- writes config.yaml directly
+        rather than ANTON_N8N_BASE_URL, since a running container's env can't
+        be edited from inside the app. An explicit config.yaml value already
+        won GET's precedence check above, so saving here takes effect on the
+        very next GET with no restart needed."""
+        _require_token(request, token)
+        base_url = req.base_url.strip()
+        try:
+            _set_n8n_base_url(data_dir, base_url)
+        except OSError as e:
+            return JSONResponse(
+                {"detail": f"failed to persist n8n base url: {type(e).__name__}: {e}"},
+                status_code=500)
+        # A fresh dict, never an in-place mutation: load_config() only deep-
+        # copies keys an override actually touches, so an unmodified "n8n"
+        # here is literally config.DEFAULTS["n8n"] by reference -- mutating it
+        # in place would leak this save into every future load_config() call
+        # for the rest of the process (real bug, caught by the full test
+        # suite: an n8n save in one test poisoned another test's "unset"
+        # expectation).
+        config["n8n"] = {**(config.get("n8n") or {}), "base_url": base_url}
+        return {"status": "saved", "base_url": base_url or None}
 
     @app.get("/api/mode")
     def get_mode():
@@ -1104,7 +1153,22 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 out.extend(nango_integrations(config["bridges"]["nango"]["secret_key"]))
             except Exception:
                 pass
-        return {"connections": out, "bridges": bridges,
+        # The live MCP registry (registry.modelcontextprotocol.io) is known to
+        # list the same server more than once (republished versions, mirrored
+        # entries) -- id derives from its name, so those collide. A React key
+        # collision on the duplicate id then breaks the Add-ons grid's own
+        # reconciliation once the search box filters the list down (stale
+        # cards from the pre-filter render linger onscreen). Dedupe here,
+        # first occurrence wins, so every source is protected the same way.
+        seen: set[str] = set()
+        deduped = []
+        for entry in out:
+            eid = entry.get("id")
+            if eid in seen:
+                continue
+            seen.add(eid)
+            deduped.append(entry)
+        return {"connections": deduped, "bridges": bridges,
                 "registry_error": LAST_REGISTRY_ERROR}
 
     @app.post("/api/connections/connect")

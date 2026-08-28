@@ -76,6 +76,9 @@ MACHINE_TOKEN_SCOPES: dict[str, set[tuple[str, str]]] = {
         # pasting a hosted-OAuth bridge credential from the Add-ons screen
         # (settings.write trust tier, same as the wizard provider-key POSTs)
         ("POST", "/api/integrations/bridges/configure"),
+        # n8n connection settings (Automations screen's "Draw it" notice +
+        # the Settings n8n section).
+        ("GET", "/api/n8n*"), ("POST", "/api/n8n*"),
     },
 }
 
@@ -126,6 +129,7 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     # collection route; this prefix covers /{name}/deregister + health-check.
     ("POST", "/api/authz/portals", "connections.connect"),
     ("POST", "/api/authz/portals/", "connections.connect"),
+    ("POST", "/api/n8n/", "settings.write"),
 ]
 
 DEFAULT_MUTATING_CAPABILITY = "settings.write"

@@ -166,6 +166,11 @@ export class ApiProxyService extends Service implements ApiProxy {
       // keep the two lists in lockstep (see test_ci_t_cred_apiproxy.py).
       ctx2.webServer.register({ kind: 'prefix', path: '/api/connections', handler: proxyHandler })
       ctx2.webServer.register({ kind: 'prefix', path: '/api/integrations', handler: proxyHandler })
+      // n8n connection settings (dashboard.py GET/POST /api/n8n/config) --
+      // without this the Automations screen's "not connected" notice and the
+      // Settings n8n section both 404 at this Node layer before ever
+      // reaching Python, masquerading as "not configured".
+      ctx2.webServer.register({ kind: 'prefix', path: '/api/n8n', handler: proxyHandler })
     })
 
     const api = createApiProxy(ctx, {

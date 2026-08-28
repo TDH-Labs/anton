@@ -106,6 +106,26 @@ class TestConnectionsEndpoints(_Ctx):
         self.assertGreaterEqual(len(body["connections"]), len(BUNDLED))
         self.assertIn("bridges", body)
 
+    def test_catalog_dedupes_entries_sharing_an_id(self):
+        # The live MCP registry is known to list the same server more than
+        # once (registry_servers derives id from name, so republished/
+        # mirrored entries collide) -- a duplicate id breaks the Add-ons
+        # grid's React key reconciliation once the search box filters the
+        # list down, leaving stale cards onscreen.
+        with mock.patch("anton.dashboard.registry_servers", return_value=[
+                {"id": "dup-mcp", "name": "Dup One", "category": "registry",
+                 "transport": "stdio", "auth": "none", "what": "first"},
+                {"id": "dup-mcp", "name": "Dup Two", "category": "registry",
+                 "transport": "stdio", "auth": "none", "what": "second"},
+        ]):
+            client = self._app()
+            r = client.get("/api/connections/catalog?registry=1")
+        ids = [c["id"] for c in r.json()["connections"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        # First occurrence wins.
+        dup = next(c for c in r.json()["connections"] if c["id"] == "dup-mcp")
+        self.assertEqual(dup["name"], "Dup One")
+
     def test_catalog_includes_bridge_apps_when_configured(self):
         cfg = {"bridges": {"composio": {"api_key": "k"}, "nango": {"secret_key": "s"}}}
         with mock.patch("anton.dashboard.composio_apps", return_value=[

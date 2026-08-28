@@ -131,10 +131,19 @@ export function apply(ctx: ClientContext): void {
     order: -100,
     inject: welcomeInjected,
   }, WelcomeNotice))
-  ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
-    name: 'settings.onboarding',
-    id: 'deepseek-official',
-    order: 0,
-    inject: deepSeekOnboardingInjected,
-  }, DeepSeekOnboardingDialog))
+  // A build that white-labels the product (DSH_CLIENT_TITLE set to something
+  // other than the official DeepSeek Harness build) has no business pushing a
+  // sign-up funnel for DeepSeek's own hosted API by name. This is a
+  // DSH_CLIENT_* build-time value, inlined by the bundler exactly like
+  // DSH_CLIENT_TITLE and DSH_CLIENT_COMMIT_HASH -- see
+  // scripts/client-build-environment.ts. Unset (the official build) keeps
+  // today's behavior.
+  if (process.env.DSH_CLIENT_OFFICIAL_ONBOARDING !== 'false') {
+    ctx.slots.inject('settings.onboarding', () => ctx.slots.register({
+      name: 'settings.onboarding',
+      id: 'deepseek-official',
+      order: 0,
+      inject: deepSeekOnboardingInjected,
+    }, DeepSeekOnboardingDialog))
+  }
 }

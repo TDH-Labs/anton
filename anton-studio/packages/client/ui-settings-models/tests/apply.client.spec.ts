@@ -153,6 +153,20 @@ describe('ui-settings-models apply', () => {
     expect(() => b.locale.register('settings.models', 'en', {})).not.toThrow()
   })
 
+  it('drops the official-DeepSeek onboarding step for a white-labeled build (DSH_CLIENT_OFFICIAL_ONBOARDING=false)', async () => {
+    vi.stubEnv('DSH_CLIENT_OFFICIAL_ONBOARDING', 'false')
+    try {
+      const b = await bench()
+      declare(b.slots)
+      await b.ctx.plugin({ inject: [...inject], apply }).await()
+      const onboarding = b.slots.entries('settings.onboarding')
+      expect(onboarding).toHaveLength(1)
+      expect(onboarding[0]!.options.id).toBe('welcome-notice')
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('keeps remote-browser acknowledgement in process memory', async () => {
     const b = await bench(false)
     declare(b.slots)

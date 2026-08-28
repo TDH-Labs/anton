@@ -47,7 +47,9 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
                      # Add-ons connectors: bundled+registry catalog and the
                      # Composio/Nango bridge-status read (previously 403 for
                      # the proxy credential, leaving Add-ons silently empty).
-                     "/api/connections/catalog", "/api/integrations/bridges"):
+                     "/api/connections/catalog", "/api/integrations/bridges",
+                     # n8n connection settings: same previously-403 class.
+                     "/api/n8n/config"):
             r = self.env.client.get(path, headers=self.proxy_h)
             self.assertEqual(r.status_code, 200,
                              f"GET {path}: {r.status_code} {r.text}")
@@ -59,6 +61,12 @@ class TestApiProxyScopedSurfaces(ApiProxyPrincipalBase):
         r = self.env.client.post("/api/setup", headers=self.proxy_h,
                                  json={"step": "work", "picks": ["email"]})
         self.assertEqual(r.status_code, 200)
+
+    def test_proxy_n8n_config_save_within_scope_succeeds(self):
+        r = self.env.client.post("/api/n8n/config", headers=self.proxy_h,
+                                 json={"base_url": "http://n8n_server_1:5678"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
 
     def test_proxy_connect_mutations_within_scope_succeed(self):
         # POST /api/connections/connect is fully exercisable: it persists a

@@ -15,8 +15,13 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls ui-layout's SlotMap merge ('shell.overlay',
 // 'shell.rightSidebar') into this program so PropsRuntime/slot keys resolve.
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: pulls the settings shell's SlotMap merge ('settings.section')
+// into this program. Cross-plugin collaboration goes through the shared
+// slot, never a value import (client bundle purity gate).
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { createNavScreenStore } from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import { LiveStrip } from './LiveStrip.tsx'
+import { N8nSettingsSection } from './N8nSettingsSection.tsx'
 import { OpsCockpit } from './OpsCockpit.tsx'
 import { OpsNav } from './OpsNav.tsx'
 import { AntonBrandMark, AntonBrandName, AntonFooterActions } from './Sidebar.tsx'
@@ -66,4 +71,16 @@ export function apply(ctx: ClientContext): void {
     order: 30,
     store: navScreenStore,
   }, AntonFooterActions))
+
+  // n8n connection settings. No shared inject face -- the section fetches
+  // its own state directly from dashboard.py, same as every other Ops
+  // Center screen (useOpsApi), rather than joining the Host settings-
+  // document system that ui-settings-models/-plugins use: n8n's base URL
+  // lives in Anton's own config.yaml, not a cordis plugin's settings scope.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'n8n',
+    order: 20,
+    label: () => 'n8n',
+  }, N8nSettingsSection))
 }

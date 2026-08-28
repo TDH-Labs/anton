@@ -25,6 +25,11 @@ type Provider = { id: string; label: string; keyHint?: string; signupUrl?: strin
 type PickCard = { id: string; label: string; sub: string }
 type WorkCategory = { id: string; label: string; cards: PickCard[] }
 
+/** "a"/"an" for a provider label pulled from the live catalog ("Get {article} DeepSeek key"). */
+function article(label: string): string {
+  return /^[aeiou]/i.test(label) ? 'an' : 'a'
+}
+
 // Rendered only until the backend catalog arrives (or if it fails to).
 const FALLBACK_PROVIDERS: Provider[] = [
   { id: 'anthropic', label: 'Anthropic', keyHint: 'sk-ant-…', signupUrl: 'https://console.anthropic.com/settings/keys' },
@@ -303,7 +308,7 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
             )}
             {activeProvider?.signupUrl && (
               <div style={{ fontSize: 11.5, color: 'var(--dsw-alias-label-secondary)', marginTop: 8, lineHeight: 1.5 }}>
-                Don't have one? <a href={activeProvider.signupUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--dsw-alias-state-business-primary)' }}>Get a {activeProvider.label} key</a> — this is billed by {activeProvider.label} based on how much Anton actually uses, typically a few dollars a month for one small business. Anton never sees this bill directly; check the provider's own dashboard for usage and spending limits.
+                Don't have one? <a href={activeProvider.signupUrl} target="_blank" rel="noreferrer" style={{ color: 'var(--dsw-alias-state-business-primary)' }}>Get {article(activeProvider.label)} {activeProvider.label} key</a> — this is billed by {activeProvider.label} based on how much Anton actually uses, typically a few dollars a month for one small business. Anton never sees this bill directly; check the provider's own dashboard for usage and spending limits.
               </div>
             )}
             {keySaved && <div style={{ fontSize: 12, color: 'var(--dsw-alias-state-success-primary)', marginTop: 8 }}>Saved.</div>}
@@ -432,7 +437,7 @@ export function SetupScreen({ onExit }: { onExit?: () => void } = {}) {
             onClick={() => { setStep(s => s + 1) }}
             style={{ padding: '9px 18px', background: 'var(--dsw-alias-state-business-primary)', border: 'none', color: 'var(--dsw-alias-bg-base)', fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}
           >
-            Next — connect them
+            {step === 1 ? 'Next — connect them' : step === 2 ? 'Next — set the risk' : 'Next — see the plan'}
           </button>
         ) : (
           <button

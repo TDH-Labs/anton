@@ -276,6 +276,34 @@ class TestN8NConfig(unittest.TestCase):
         r = client.get("/api/n8n/config")
         self.assertEqual(r.json()["base_url"], "https://from-config.example.com")
 
+    def test_post_persists_base_url_to_config_yaml(self):
+        client = TestClient(create_app(self.engine, self.dir.name, load_config()))
+        r = client.post("/api/n8n/config", json={"base_url": "http://n8n_server_1:5678"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+        # The write lands on disk, not just the in-memory config dict --
+        # a fresh app instance (a process restart) must still see it.
+        reloaded = TestClient(create_app(self.engine, self.dir.name,
+                                          load_config(os.path.join(self.dir.name, "config.yaml"))))
+        r = reloaded.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+
+    def test_post_is_immediately_visible_on_the_same_app_instance(self):
+        client = TestClient(create_app(self.engine, self.dir.name, load_config()))
+        client.post("/api/n8n/config", json={"base_url": "http://n8n_server_1:5678"})
+        r = client.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+
+    def test_post_empty_string_clears_the_saved_url(self):
+        config = load_config()
+        config["n8n"] = {"base_url": "https://old.example.com"}
+        client = TestClient(create_app(self.engine, self.dir.name, config))
+        r = client.post("/api/n8n/config", json={"base_url": ""})
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["base_url"])
+        r = client.get("/api/n8n/config")
+        self.assertIsNone(r.json()["base_url"])
+
 
 class TestVolumeRootDataDir(unittest.TestCase):
     """Umbrel runs with ANTON_DATA_DIR=/data -- a volume ROOT, so
