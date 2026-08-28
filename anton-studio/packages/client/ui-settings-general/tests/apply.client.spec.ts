@@ -17,12 +17,15 @@ import type { SettingsDocumentActionInjected } from '../src/client/SettingsDocum
 // FALLBACK_LOCALE (en); bench stages zh explicitly on the locale instead.
 
 /** The seats this plugin fills for a loopback browser (slot name → expected component). */
+// [slot, first-registered component, how many entries this plugin seats].
+// Every seat holds exactly one except `settings.section`, where this plugin
+// seats General (order 0) and API Providers (order 1).
 const SEATS = [
-  ['settings.trigger', TriggerContent],
-  ['settings.header', HeaderContent],
-  ['settings.action', SettingsDocumentAction],
-  ['settings.close', CloseLabel],
-  ['settings.section', GeneralSection],
+  ['settings.trigger', TriggerContent, 1],
+  ['settings.header', HeaderContent, 1],
+  ['settings.action', SettingsDocumentAction, 1],
+  ['settings.close', CloseLabel, 1],
+  ['settings.section', GeneralSection, 2],
 ] as const
 
 async function bench(isLoopback = true) {
@@ -111,10 +114,10 @@ describe('ui-settings-general apply', () => {
     for (const [name] of SEATS) expect(after.slots.entries(name)).toHaveLength(0)
     declare(after.slots)
     await Promise.resolve()
-    for (const [name, component] of SEATS) {
+    for (const [name, component, count] of SEATS) {
       expect(after.slots.entries(name)[0]!.component).toBe(component)
       // The self-inflicted ledger notifications hit the duplicate guard.
-      expect(after.slots.entries(name)).toHaveLength(1)
+      expect(after.slots.entries(name)).toHaveLength(count)
     }
     await vi.waitFor(() => {
       expect(after.slots.spec('settings.general.item')).toEqual({ kind: 'list', scope: 'root' })
@@ -144,9 +147,9 @@ describe('ui-settings-general apply', () => {
     b.locale.setLocale('en')
     // No ledger churn: freshness rides the thunk (and the renderer's locale
     // subscription), not re-registration.
-    SEATS.forEach(([name], i) => {
+    SEATS.forEach(([name, , count], i) => {
       expect(b.slots.getVersion(name)).toBe(zhVersions[i]!)
-      expect(b.slots.entries(name)).toHaveLength(1)
+      expect(b.slots.entries(name)).toHaveLength(count)
     })
     expect(resolveSlotLabel(generalEntry(b.slots)!.options.label)).toBe('General')
     b.locale.setLocale('zh')
@@ -174,7 +177,10 @@ describe('ui-settings-general apply', () => {
     const fiber = b.ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
     expect(b.slots.entries('settings.action')).toEqual([])
-    expect(b.settingsDescribe).not.toHaveBeenCalled()
+    // The shared describe mirror still reads off-loopback — settings follow
+    // the transport's trust. Only this action is withheld, because it opens a
+    // document in a native editor ON THE HOST, which a remote browser must
+    // not be able to trigger.
     await fiber.dispose()
     for (const [name] of SEATS) expect(b.slots.entries(name)).toEqual([])
   })

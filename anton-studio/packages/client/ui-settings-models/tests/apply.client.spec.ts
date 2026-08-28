@@ -167,8 +167,31 @@ describe('ui-settings-models apply', () => {
     }
   })
 
-  it('keeps remote-browser acknowledgement in process memory', async () => {
-    const b = await bench(false)
+  it('persists remote-browser acknowledgement to the host, not process memory', async () => {
+    // The welcome notice follows its settings scope, which is host-backed for
+    // every browser that reached the transport. Off-loopback it must reach
+    // the host rather than acknowledging into memory that dies with the tab —
+    // otherwise the owner of a remote install is greeted by the same
+    // first-run notice on every visit.
+    const describe = vi.fn(() => Promise.resolve({
+      rpcId: 'apply-welcome-remote' as never,
+      result: {
+        ok: true as const,
+        value: {
+          writable: true,
+          hasDocument: false,
+          namespaces: [{
+            ns: WELCOME_NOTICE_SETTINGS_NAMESPACE,
+            schema: {},
+            value: {},
+            applies: 'live' as const,
+            secrets: [],
+            revision: 0,
+          }],
+        },
+      },
+    }))
+    const b = await bench(false, { describe })
     declare(b.slots)
     await b.ctx.plugin({ inject: [...inject], apply }).await()
     const entry = b.slots.entries('settings.onboarding')
@@ -178,9 +201,14 @@ describe('ui-settings-models apply', () => {
     )()
 
     await injected.controller.load()
-    expect(injected.controller.store.getSnapshot()).toEqual({
-      status: 'ready', acknowledged: false, error: null,
+    await vi.waitFor(() => {
+      expect(injected.controller.store.getSnapshot()).toEqual({
+        status: 'ready', acknowledged: false, error: null,
+      })
     })
+    // The read actually reached the host — off-loopback is no longer a
+    // pre-emptive refusal.
+    expect(describe).toHaveBeenCalled()
   })
 })
 

@@ -452,10 +452,15 @@ describe('SettingsScopeBinder.bind', () => {
     expect(theme.getSnapshot()).toMatchObject({ revision: 1 })
   })
 
-  it('binds a remote browser in memory mode without starting a settings read', async () => {
-    const describeCall = vi.fn()
+  it('binds a remote browser host-backed: settings follow the transport, not the page hostname', async () => {
+    // A non-loopback page is the normal case for this product: the owner
+    // reaches it through a password-gated proxy. The host serves settings
+    // reads and writes with no loopback gate, so binding must be host-backed
+    // there too — a memory-mode bind silently discarded the owner's settings
+    // when the tab closed.
+    const describeCall = vi.fn(async () => described({ enabled: true }))
     const wire = { settings: { describe: describeCall } }
-    const mirror = new SettingsDescribeMirror(wire as never, 'memory')
+    const mirror = new SettingsDescribeMirror(wire as never)
     const ctx = new Context()
     ctx.provide('connection', { api: wire, isLoopback: false } as never)
     let scope!: SettingsScope<UiTestSettings>
@@ -468,8 +473,8 @@ describe('SettingsScopeBinder.bind', () => {
       },
     })
     await fiber.await()
-    expect(scope.getSnapshot()).toMatchObject({ status: 'unavailable', mode: 'memory', writable: false })
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalled() })
+    expect(scope.getSnapshot()).toMatchObject({ mode: 'host' })
     await fiber.dispose()
-    expect(describeCall).not.toHaveBeenCalled()
   })
 })

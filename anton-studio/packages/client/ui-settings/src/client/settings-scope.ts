@@ -275,11 +275,16 @@ export class SettingsScopeBinder extends Service {
   bind<T>(spec: SettingsScopeSpec<T>): SettingsScope<T> {
     const ctx = this.ctx
     const connection = ctx.get('connection') as ConnectionHandle
+    // Host-backed for every browser that reached the transport, matching the
+    // shared describe mirror: the host serves this namespace's reads and
+    // writes with no loopback gate, so a remote owner behind the
+    // password-gated proxy must be able to persist a setting rather than
+    // silently editing a process-local copy that dies with the tab.
     const controller = new SettingsScopeController<T>(
       connection.api,
       spec,
       this.mirror,
-      connection.isLoopback ? 'host' : 'memory',
+      'host',
       this.schema,
     )
     ctx.effect(() => {

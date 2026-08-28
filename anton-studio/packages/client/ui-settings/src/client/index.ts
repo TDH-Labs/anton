@@ -49,10 +49,19 @@ export const inject = ['connection', 'remote']
 export function apply(ctx: ClientContext): void {
   const schema = new SettingsSchemaService(ctx)
   const connection = ctx.get('connection') as ConnectionHandle
-  const mirror = new SettingsDescribeMirror(
-    connection.api,
-    connection.isLoopback ? 'host' : 'memory',
-  )
+  // Settings reads follow the TRANSPORT's trust, not the browser's hostname.
+  // The host serves settings.describe/update/replace with no loopback gate of
+  // its own (apiproxy's settings channel), and the /api transport is already
+  // fenced by isTrustedApiRequest (Host header + sec-fetch-site) behind a
+  // password-gated proxy. Deriving persistence from location.hostname instead
+  // made every non-localhost deployment fail closed with "settings are
+  // unavailable in this browser" — the owner of a remote install could not
+  // configure the product they had just logged into.
+  //
+  // The genuinely host-sensitive action stays loopback-only and is gated
+  // separately: SettingsDocumentStore (opens a file in a native editor ON THE
+  // HOST) in ui-settings-general's apply. Do not fold that gate into this one.
+  const mirror = new SettingsDescribeMirror(connection.api, 'host')
   ctx.effect(() => {
     const disposers = [
       (ctx.get('remote') as ClientContext['remote']).$on('settings/document-updated', () => { void mirror.load() }),
