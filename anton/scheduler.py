@@ -298,14 +298,77 @@ class JobEngine:
         now = now or dt.datetime.now(dt.timezone.utc)
         floor = now.replace(second=0, microsecond=0)
         minute_key = floor.strftime("%Y-%m-%dT%H:%M")
+        states = self._steering_states()
         due = []
         for job in self.jobs:
+            state = states.get(job.id) or {}
+            if state.get("paused"):
+                continue
+            # An explicit run-now outranks the cron window entirely, including
+            # for a job with no cron at all (webhook/manual triggers), and is
+            # consumed here so it fires exactly once.
+            if state.get("run_now"):
+                self._consume_steering("run_now", job.id)
+                due.append(job)
+                continue
             if job.cron is None or not job.cron.matches(floor):
                 continue
             last = self.ledger.last_run(job.id)
             if last is None or not str(last.get("ts", "")).startswith(minute_key):
+                # skip-next burns on the window it would have fired in, so the
+                # job returns to its normal cadence the window after.
+                if state.get("skip_next"):
+                    self._consume_steering("skip_next", job.id)
+                    continue
                 due.append(job)  # fire once per matching minute (idempotent)
         return due
+
+    def _mark_running(self, job_id: str) -> None:
+        """Best-effort: in-flight reporting is observability, never a
+        precondition for doing the work."""
+        if not self.data_dir:
+            return
+        try:
+            from .job_state import mark_running
+            mark_running(self.data_dir, job_id)
+        except Exception:
+            pass
+
+    def _clear_running(self, job_id: str) -> None:
+        if not self.data_dir:
+            return
+        try:
+            from .job_state import clear_running
+            clear_running(self.data_dir, job_id)
+        except Exception:
+            pass
+
+    def _steering_states(self) -> dict:
+        """Operator pause/run-now/skip-next flags, written by the dashboard
+        process. Steering is best-effort: an unreadable store must never stop
+        the scheduler, so a failure here means "nothing is steered"."""
+        if not self.data_dir:
+            return {}
+        try:
+            from .job_state import all_states
+            return all_states(self.data_dir)
+        except Exception:
+            return {}
+
+    def _consume_steering(self, flag: str, job_id: str) -> None:
+        if not self.data_dir:
+            return
+        try:
+            from . import job_state
+            if flag == "run_now":
+                job_state.consume_run_now(self.data_dir, job_id)
+            else:
+                job_state.consume_skip_next(self.data_dir, job_id)
+        except Exception:
+            # A one-shot request that cannot be cleared would otherwise repeat
+            # every tick. Surfacing it is the dashboard's job; the scheduler
+            # keeps running either way.
+            pass
 
     def _usage_today(self, provider: str) -> dict:
         """Tokens/cost for the current UTC day from the ledger (cloud rows only)."""
@@ -438,8 +501,17 @@ class JobEngine:
 
         started = time.monotonic()
         timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
-        result = executor.run(job.recipe, model=route.model, provider=route.provider,
-                              timeout_s=timeout_s)
+        # Publish in-flight state around the ONE blocking call, so "Right Now"
+        # reports work actually being done rather than work merely due. The
+        # finally is what keeps a crashed executor from stranding the row --
+        # a container killed outright is caught instead by the boot-time
+        # stale sweep in cmd_serve.
+        self._mark_running(job.id)
+        try:
+            result = executor.run(job.recipe, model=route.model, provider=route.provider,
+                                  timeout_s=timeout_s)
+        finally:
+            self._clear_running(job.id)
 
         breach = self.enforce_budget(job, {"tokens_in": result.tokens_in,
                                            "tokens_out": result.tokens_out,

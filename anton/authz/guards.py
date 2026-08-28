@@ -107,6 +107,11 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/automations/draft", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
     ("POST", "/api/chat", "jobs.run"),
+    # Operator steering (ops_api.py): pause/resume, run-now, skip-next. These
+    # decide whether and when a job runs, so they carry jobs.run rather than
+    # settings.write -- a Viewer must not be able to silence an automation,
+    # and an Operator must be able to without holding settings rights.
+    ("POST", "/api/jobs/", "jobs.run"),
     ("GET", "/api/vault/note", "vault.read"),
     ("GET", "/api/authz/users", "users.manage"),
     ("DELETE", "/api/auth/sessions/", ""),

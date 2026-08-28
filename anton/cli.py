@@ -230,6 +230,16 @@ def cmd_serve(args, config: dict) -> int:
     srv.start()
     print(f"anton serve: http://{host}:{srv.port}  (jobs={len(jobs)}, "
           f"executor={args.executor}, poll={config['general']['poll_seconds']}s)", flush=True)
+    # Boot is the one moment a still-"running" row from a previous process is
+    # known dead: nothing else is dispatching yet. A container killed
+    # mid-dispatch would otherwise report that job as in flight forever.
+    try:
+        from .job_state import clear_stale_running
+        stale = clear_stale_running(args.data_dir)
+        if stale:
+            print(f"anton serve: cleared {stale} stale in-flight job row(s)", flush=True)
+    except Exception as e:
+        print(f"anton serve: could not sweep stale in-flight rows: {e}", flush=True)
     engine._touch_heartbeat()
     try:
         while True:

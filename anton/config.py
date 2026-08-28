@@ -1,6 +1,7 @@
 """config.yaml loading with defaults. YAML (not TOML) for uniformity with jobs.yaml."""
 from __future__ import annotations
 
+import copy
 import dataclasses
 import os
 from typing import Optional
@@ -51,7 +52,18 @@ DEFAULTS = {
 
 
 def deep_merge(base: dict, override: dict) -> dict:
-    out = dict(base)
+    """Merge `override` onto `base`, returning a result that shares no nested
+    container with `base`.
+
+    The deep copy is load-bearing, not defensive: `load_config()` merges onto
+    the module-level DEFAULTS, and a shallow `dict(base)` left every nested
+    section (`general`, `routes`, `budgets`, `n8n`) aliased to the DEFAULTS
+    object itself. Any caller mutating a section in place -- the n8n config
+    write, `apply_bridge_credential_overrides`, a test setting a dashboard
+    token -- silently rewrote the defaults for every later `load_config()` in
+    the same process.
+    """
+    out = copy.deepcopy(base)
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = deep_merge(out[k], v)
