@@ -1,50 +1,21 @@
-# anton — turnkey image: docker/auth-gate.mjs (Node, port 3080, the
-# container's only published port) is a password-gated reverse proxy in
-# front of the anton-studio web UI, which stays loopback-only by its own
-# design (dsh web refuses --host 0.0.0.0 — no auth/TLS on that surface).
-# The anton Python API (dashboard on 8799, scheduler on 8798)
-# stays container-internal too — apiproxy's Node half talks to dashboard
-# over localhost:8799 in-container, see packages/host/apiproxy/src/index.ts.
+# anton — turnkey image. docker/auth-gate.mjs (Node, port 3080) is the
+# container's only published port: a password-gated reverse proxy in front of
+# `anton dashboard`, which serves both the /api surface and Anton's own Ops
+# Center UI. The Python processes (dashboard 8799, scheduler 8798) stay bound
+# to container loopback.
 
-# ---- stage 1: build the anton-studio Node frontend/host -------------------
-FROM node:22-slim AS node-build
+# ---- stage 1: build Anton's own web UI ------------------------------------
+# A single Vite app (anton/web), not a plugin monorepo: ~39 packages and a
+# sub-second bundle. Node is needed only here and for the runtime's auth-gate
+# and agent CLIs below.
+FROM node:22-slim AS web-build
+WORKDIR /web
+COPY anton/web/package.json anton/web/package-lock.json* /web/
+RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
+COPY anton/web/ /web/
+RUN npm run build
 
-# scripts/build.ts shells out to `git rev-parse HEAD` to stamp the build
-# revision (DSH_CLIENT_COMMIT_HASH, shown in the sidebar footer). The
-# vendored anton-studio/ copied in below has no .git of its own to rev-parse
-# against -- installing git doesn't fix that, only bypassing the shell-out
-# does, via the ARG/ENV pair below.
-RUN corepack enable
-ENV CI=true
-
-WORKDIR /src
-COPY anton-studio/ /src/
-ARG DSH_CLIENT_COMMIT_HASH=d7d80f9
-ENV DSH_CLIENT_COMMIT_HASH=${DSH_CLIENT_COMMIT_HASH}
-
-# Anton is a white-labeled build of the vendored DeepSeek Harness frontend --
-# without these, the browser tab title falls back to "DSH Local Build" (its
-# hardcoded default; DocumentTitle.tsx) and the first-run onboarding modal
-# pushes signing up for DeepSeek's own hosted API by name
-# (DeepSeekOnboardingDialog.tsx). Both are DSH_CLIENT_* build-time values,
-# inlined by the bundler the same way DSH_CLIENT_COMMIT_HASH is above --
-# see scripts/client-build-environment.ts.
-ENV DSH_CLIENT_TITLE=Anton
-ENV DSH_CLIENT_OFFICIAL_ONBOARDING=false
-
-RUN pnpm install --frozen-lockfile
-RUN pnpm run build
-# Not pruned to production-only or `pnpm deploy`-isolated: apps/cli's `web`
-# profile boots its plugin roster at runtime by package name (cordis Loader
-# reading packages/bundle/web-app/cordis.patch.yml), not through apps/cli's
-# own static imports, so the actual runtime package closure isn't fully
-# reachable from apps/cli's declared dependency graph. Both prune --prod and
-# pnpm deploy resolve statically and silently dropped real runtime deps
-# (dsh-jobs-local -> dsh-scope, and others past it) as a result. Shipping
-# the full dev install is the correct closure; it costs image size, not
-# correctness.
-
-# ---- stage 2: runtime (python backend + node web UI) ----------------
+# ---- stage 2: runtime -----------------------------------------------------
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -93,6 +64,13 @@ RUN python3 -m playwright install --with-deps chromium
 ENV PLAYWRIGHT_LAUNCH_OPTIONS='{"chromiumSandbox": false}'
 RUN mkdir -p /data
 
+# The built UI, served by dashboard.py's StaticFiles mount. `pip install .`
+# above copied the anton package into site-packages, so the module that runs
+# is NOT /app/anton -- point it explicitly at the artifact rather than
+# relying on a module-relative guess.
+COPY --from=web-build /web/dist /app/anton/web/dist
+ENV ANTON_WEB_DIST=/app/anton/web/dist
+
 # Run as a non-root user: the agent executes job recipes and (with oi/opencode
 # executors) arbitrary code — root amplifies any escape. /data is chowned so
 # the named volume stays writable; entrypoint.sh needs no privileged ops.
@@ -100,21 +78,15 @@ RUN useradd -m -u 10001 anton \
     && chown -R anton:anton /app /data
 USER anton
 
-# Built Node app (source, lib/, apps/web/dist, and node_modules) replaces
-# the raw source .dockerignore let through.
-RUN rm -rf /app/anton-studio
-COPY --from=node-build /src /app/anton-studio
-
 # Hits the dashboard's real /health ({"ok": true, "jobs": N}) on its
 # container-internal port, not the auth-gate's public :3080/ -- that only
 # proves a login page renders, not that the job engine is actually up. curl
-# is already installed above for the pi/dsh install steps.
+# is already installed above for the agent-CLI install steps.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8799/health || exit 1
 
-# entrypoint.sh runs `anton serve` (background), `anton dashboard`
-# (background), and `dsh web` (foreground, the primary process) itself;
-# there is no CMD to pass through.
+# entrypoint.sh runs `anton serve` and `anton dashboard` in the background and
+# the auth-gate as the primary process; there is no CMD to pass through.
 ENTRYPOINT ["/app/entrypoint.sh"]
 
 EXPOSE 3080

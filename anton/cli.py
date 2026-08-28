@@ -100,16 +100,6 @@ def _build(config: dict, data_dir: str, executor_name: str):
     _load_secrets_into_env(data_dir)
     from .config import apply_bridge_credential_overrides
     apply_bridge_credential_overrides(config, data_dir)
-    # Mirror already-saved provider keys into the dsh web host's settings
-    # document so chat sessions see them (hot-reloaded there). Best-effort:
-    # a bridge failure must never block boot.
-    try:
-        from .dsh_bridge import sync_dsh_settings
-        notes = sync_dsh_settings(data_dir, config)
-        for n in notes:
-            print(f"[dsh-bridge] {n}", flush=True)
-    except Exception as e:  # pragma: no cover - defensive
-        print(f"[dsh-bridge] sync failed (non-fatal): {type(e).__name__}: {e}", flush=True)
     os.makedirs(data_dir, exist_ok=True)
     init_db(os.path.join(data_dir, "isolation.db"))
     _assert_isolation_trigger_integrity(data_dir)

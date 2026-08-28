@@ -24,6 +24,12 @@ EXEMPT_PATHS = {
     # Intuit redirects the operator's browser here mid-OAuth — the browser
     # carries no bearer; state-token validation inside the route is the gate.
     "/api/wizard/oauth/callback",
+    # Anton's own built UI (dashboard.py mounts anton/web/dist). Same trust
+    # class as "/" above: application code and fonts, no user data, and a
+    # browser must be able to load them BEFORE it can render the sign-in or
+    # owner-claim screen. Everything here still sits behind auth-gate's
+    # password on the only published port.
+    "/assets", "/fonts",
 }
 
 # REQ-CRED-03: the executor's callback identity may invoke ONLY these

@@ -43,14 +43,18 @@ class TestDashboard(unittest.TestCase):
         self.dir.cleanup()
 
     def test_index_page(self):
-        # This port is never published in the real Docker deployment -- the
-        # Ops Center at :3080 is. This is just the honest "you're on the
-        # wrong port" landing page, not a real UI (see dashboard.py's PAGE
-        # comment for why the old fake-demo chat prototype was removed).
+        # "/" serves Anton's own built UI (anton/web/dist) when a build is
+        # present, and the honest "you're on the wrong port" stub when it is
+        # not. Both are valid; a source checkout that has never run the
+        # frontend build must still answer rather than 500.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
         self.assertIn("Anton", r.text)
-        self.assertIn("3080", r.text)
+        built = '<div id="root">' in r.text
+        if built:
+            self.assertIn("/assets/", r.text, "a built index must link its bundle")
+        else:
+            self.assertIn("3080", r.text, "the fallback stub must name the real port")
 
     def test_n8n_config_defaults_to_unset(self):
         r = self.client.get("/api/n8n/config")
@@ -406,3 +410,23 @@ class TestVolumeRootDataDir(unittest.TestCase):
         self.lock_volume_root()
         keys = self.client.get("/api/wizard/keys").json()
         self.assertTrue(keys["have_key"].get("groq"))
+
+
+class TestWebDistResolution(unittest.TestCase):
+    """The built UI is a deployment artifact, not package data: `pip install`
+    copies anton/ into site-packages and leaves anton/web/dist behind, so the
+    container must be able to say where the build actually is."""
+
+    def test_env_override_wins(self):
+        from anton.dashboard import _resolve_web_dist
+        with patch.dict(os.environ, {"ANTON_WEB_DIST": "/somewhere/else/dist"}):
+            self.assertEqual(_resolve_web_dist(), "/somewhere/else/dist")
+
+    def test_defaults_to_the_module_relative_build(self):
+        from anton.dashboard import _resolve_web_dist
+        import anton.dashboard as dash
+        env = {k: v for k, v in os.environ.items() if k != "ANTON_WEB_DIST"}
+        with patch.dict(os.environ, env, clear=True):
+            expected = os.path.join(
+                os.path.dirname(os.path.abspath(dash.__file__)), "web", "dist")
+            self.assertEqual(_resolve_web_dist(), expected)

@@ -96,6 +96,27 @@ def _read_secrets(data_dir: str) -> dict:
     return merged
 
 
+def _resolve_web_dist() -> str:
+    """Where Anton's built UI lives (anton/web/dist).
+
+    ANTON_WEB_DIST wins because the built UI is a DEPLOYMENT ARTIFACT, not
+    Python package data: `pip install .` copies the anton package into
+    site-packages and leaves the build behind, so a container that installs
+    the package and then drops a fresh build into the source tree would
+    otherwise import a module that cannot see it. The module-relative path is
+    the source-checkout default, where the build sits next to the code.
+    """
+    override = os.environ.get("ANTON_WEB_DIST")
+    if override:
+        return override
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
+
+
+# Absent in a source checkout that has not run the frontend build; every use
+# is guarded rather than assumed.
+_WEB_DIST = _resolve_web_dist()
+
+
 def _config_candidates(data_dir: str) -> list[str]:
     """Same shape story as _secrets_candidates, for config.yaml."""
     candidates = [os.path.join(data_dir, "config.yaml")]
@@ -310,6 +331,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index():
+        """The Ops Center itself when a build is present, otherwise the
+        wrong-port stub. Anton's own React app (anton/web) is built into
+        anton/web/dist and mounted below; PAGE remains the honest answer for
+        a source checkout that has never run the frontend build."""
+        index_html = os.path.join(_WEB_DIST, "index.html")
+        if os.path.exists(index_html):
+            with open(index_html, encoding="utf-8") as f:
+                return f.read()
         return PAGE
 
     @app.get("/health")
@@ -773,14 +802,6 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 pass
             if req.model.strip():
                 _set_cloud_model(data_dir, f"{req.provider}/{req.model.strip()}")
-            # Hot-apply into the dsh web host's settings document so the
-            # composer's picker + default model reflect this save without a
-            # restart (settings.yaml/.credentials.yaml are hot-reloaded there).
-            try:
-                from .dsh_bridge import sync_dsh_settings
-                sync_dsh_settings(data_dir, config)
-            except Exception:
-                pass
         except OSError as e:
             return JSONResponse(
                 {"detail": f"failed to persist provider key: "
@@ -1244,6 +1265,17 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     if authz_cfg.get("enabled"):
         from .authz import wire_authz
         wire_authz(app, data_dir, config)
+
+    # Built SPA assets. Mounted AFTER every API route so a static path can
+    # never shadow one, and only when a build exists -- mounting a missing
+    # directory raises at import time and would take the API down with it.
+    if os.path.isdir(_WEB_DIST):
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/assets", StaticFiles(directory=os.path.join(_WEB_DIST, "assets")),
+                  name="anton-web-assets")
+        fonts_dir = os.path.join(_WEB_DIST, "fonts")
+        if os.path.isdir(fonts_dir):
+            app.mount("/fonts", StaticFiles(directory=fonts_dir), name="anton-web-fonts")
     return app
 
 def _day_ago_iso() -> str:

@@ -19,7 +19,11 @@ import net from 'node:net'
 import path from 'node:path'
 
 const LISTEN_PORT = Number(process.env.ANTON_WEB_PORT || 3080)
-const TARGET_PORT = Number(process.env.ANTON_WEB_INTERNAL_PORT || 3079)
+// Anton's own FastAPI process serves both the built Ops Center and the
+// /api surface, so the gate proxies straight to it. ANTON_WEB_INTERNAL_PORT
+// still wins when set, which keeps an operator's existing override working.
+const TARGET_PORT = Number(
+  process.env.ANTON_WEB_INTERNAL_PORT || process.env.ANTON_PORT || 8799)
 const DATA_DIR = process.env.ANTON_DATA_DIR || '/data'
 
 const TOKEN_PATH = path.join(DATA_DIR, 'web-token')
