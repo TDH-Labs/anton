@@ -4,7 +4,7 @@ name: Anton
 tagline: An AI agent for your small business — schedule, memory, and a governor that asks first
 icon: assets/icon.svg
 category: automation
-version: 0.2.0
+version: 0.3.0
 port: 3080
 description: >-
   Anton is an agent, harnessed: point it at the busywork and it does the
@@ -29,10 +29,19 @@ support: https://github.com/TDH-Labs/anton/issues
 dependencies: []
 gallery: []
 releaseNotes: >-
-  Anton can now connect to an n8n instance for the automations n8n's own
-  connector library covers better than a hand-built integration would —
-  set ANTON_N8N_BASE_URL (see this app's environment variables) to a
-  reachable n8n instance and the Automations screen's "Draw it" opens
-  straight into it. Fixed: job dispatch no longer requires a locally
-  reachable model endpoint for executors (like n8n) that don't call a
-  model through Anton at all.
+  Anton now ships its own interface. The vendored third-party UI framework is
+  gone, taking its branding with it -- no other company's name or logo
+  appears anywhere in the app, and the image is about 2GB smaller. Fixed: the
+  Models settings page failed with "settings are unavailable in this browser"
+  on every install reached over a network rather than from the machine itself
+  (which is every real install).
+
+  New: the Right Now screen shows what Anton is actually working on this
+  moment, not just what is scheduled, and lets you steer it -- pause an
+  automation, run one now, or skip its next turn. Changes take effect within
+  about 15 seconds and never interrupt a job already running.
+
+  Also new: connect Anton to any MCP client (Claude Desktop, Claude Code) to
+  check on it and steer it from there, and two ready-made n8n workflows in
+  examples/n8n -- an approval gate for anything touching money or outbound
+  messages, and an auditor that switches off any workflow trying to skip it.

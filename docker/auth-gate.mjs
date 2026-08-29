@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // anton auth-gate: the only process bound to a non-loopback interface in
-// this container. dsh web itself refuses --host 0.0.0.0 (no auth/TLS/origin
-// policy on that surface — an RCE-capable coding agent), so it stays on
-// ANTON_WEB_INTERNAL_PORT/127.0.0.1, untouched, exactly as its own CLI
-// requires. This process is the thing that's actually safe to publish: a
+// this container. `anton dashboard` serves both the Ops Center UI and the
+// /api surface, and entrypoint.sh pins it to 127.0.0.1 — it carries no auth
+// or TLS of its own, and its API can move money through the approvals
+// spine. This process is the thing that's actually safe to publish: a
 // cookie-session gate in front of a plain reverse proxy, no new npm
 // dependencies (node:http/crypto/fs only).
 //
