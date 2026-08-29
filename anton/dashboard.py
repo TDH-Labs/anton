@@ -267,6 +267,16 @@ class BrowserLoginReq(BaseModel):
 class N8nConfigReq(BaseModel):
     base_url: str = ""
 
+class InboxMessageReq(BaseModel):
+    """One message from the operator's harness (mail monitor / webhook).
+    Only from/subject/body are required; everything else degrades to a
+    default so any forwarder shape works."""
+    message_id: str = ""
+    from_addr: str = ""
+    subject: str = ""
+    body: str = ""
+    received_at: str = ""
+
 
 class ModeReq(BaseModel):
     # Default True, not required: the Ops Center UI's two calling sites
@@ -1283,6 +1293,45 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         finally:
             conn.close()
         return {"status": "saved", "id": req.id}
+
+    @app.post("/api/inbox/messages")
+    def inbox_ingest(req: InboxMessageReq, request: Request):
+        """Inbox loop entry: classify one message and apply it. Ungated
+        kinds (file/extract/summarize/flag/draft) complete synchronously and
+        the response says what actually happened; kind=send parks a held
+        draft behind the outbound gate instead of firing anything. This is
+        the same governance split the scheduler enforces for jobs — the only
+        way a message changes the outside world is an explicit approval."""
+        _require_token(request, token)
+        from . import inbox
+        msg = inbox.InboxMessage.from_body({
+            "message_id": req.message_id,
+            "from": req.from_addr,
+            "subject": req.subject,
+            "body": req.body,
+            "received_at": req.received_at,
+        })
+        outcome = inbox.apply(msg, data_dir)
+        record = msg.to_record()
+        return {
+            "status": "ok",
+            "message": msg.message_id,
+            "kind": msg.kind,
+            "gate": msg.gate,
+            "outcome": outcome,
+            "notes": msg.notes,
+            "record": record,
+        }
+
+    @app.get("/api/inbox/queue")
+    def inbox_queue(request: Request, stream: str = "digest"):
+        """Read back one inbox work stream (digest | flags | extractions),
+        newest first. Honest read-side of what apply() wrote."""
+        _require_token(request, token)
+        if stream not in ("digest", "flags", "extractions"):
+            raise HTTPException(400, f"unknown stream {stream!r}")
+        from . import inbox
+        return {"stream": stream, "items": inbox.read_work(stream, data_dir)}
 
     @app.post("/api/wizard/browser-login")
     def add_browser_login(req: BrowserLoginReq, request: Request):

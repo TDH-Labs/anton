@@ -112,6 +112,10 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     # mutating route.
     ("POST", "/api/automations/draft", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
+    # Inbox loop: ingesting a message is a mutation of the work queue/vault
+    # (settings.write tier — same as every other write surface). Reads of
+    # the queue are authenticated-but-unmapped, like other read routes.
+    ("POST", "/api/inbox/messages", "settings.write"),
     ("POST", "/api/chat", "jobs.run"),
     # Ask Anton: streaming a prompt dispatches through the executor exactly as
     # the one-shot endpoint does, and session lifecycle is the same trust
