@@ -23,10 +23,21 @@ DEFAULTS = {
         "poll_seconds": 15,
         "org_id": "default",
         # How often the proactive opportunity scanner (opportunity.py)
-        # surveys connected sources (vault + mcp_servers) for things worth
-        # upskilling toward before anything breaks. Real dispatch cost, so
-        # this is hours, not the poll_seconds cadence.
+        # surveys connected sources for things worth upskilling toward
+        # before anything breaks. Real dispatch cost, so this is hours, not
+        # the poll_seconds cadence.
         "opportunity_scan_hours": 24,
+        # Extra sources the opportunity scanner surveys alongside the vault
+        # and Add-ons connections. Each entry is {name, what, path?}:
+        #   - name: a noun the scan prompt shows the agent, e.g. "agent-sessions"
+        #   - what: what the source is, for the scan prompt
+        #   - path: (optional) a directory the dispatched agent should look
+        #     under. The scan prompt tells the agent it may READ these; the
+        #     executor's tool grant (general.pi_tools) governs whether it
+        #     actually can. Sessions from other agents, prompts, and bounded
+        #     disk roots are all expressible here -- nothing is hardcoded.
+        "opportunity_extra_sources": [
+        ],
     },
     "routes": {
         "local_model": "ollama/llama3.1:8b",

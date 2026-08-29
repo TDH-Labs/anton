@@ -135,15 +135,16 @@ class TestSequencePendingOpportunities(MetaLearningTestBase):
 class TestProcessPendingOpportunities(MetaLearningTestBase):
     def setUp(self):
         super().setUp()
-        # process_pending_opportunities routes through the same research-
-        # start governor gate as process_pending_candidates, which is
-        # conservative (risk="medium") by default -- force AUTO_EXECUTE
-        # for this test, same as a deployment opting in via
-        # upskill.set_dispatch_risk_profile().
+        # Default is now autonomous (upskill._DISPATCH_RISK_PROFILE
+        # ev 0.9/fe 0.9/risk low -> AUTO_EXECUTE) -- the earlier
+        # conservative default was reversed by explicit operator
+        # direction (Anton should upskill+execute without prompting).
+        # The force is still explicit here so the test is deterministic
+        # regardless of future default drift.
         upskill.set_dispatch_risk_profile(ev=0.9, feasibility=0.9, risk="low")
 
     def tearDown(self):
-        upskill.set_dispatch_risk_profile(ev=0.5, feasibility=0.8, risk="medium")
+        upskill.set_dispatch_risk_profile(ev=0.9, feasibility=0.9, risk="low")
         super().tearDown()
 
     def test_reuses_existing_skill_without_dispatch(self):
@@ -162,6 +163,17 @@ class TestProcessPendingOpportunities(MetaLearningTestBase):
         # reuse short-circuits before any research dispatch -- no ledger rows
         self.assertEqual(self.ledger.read(), [])
 
+    def test_default_dispatch_profile_is_autonomous_but_self_bound(self):
+        """Operator direction: Anton upskills+executes without prompting.
+        The automatic dispatch profile clears auto_execute for internal
+        work, but the governor hard-gates money/outbound regardless of
+        how high the score is -- autonomy is bounded, not unbounded."""
+        from anton.governor import AUTO_EXECUTE, PRESENT_FOR_APPROVAL, classify
+        r = classify(0.9, 0.9, risk="low", kind="internal")
+        self.assertEqual(r.route, AUTO_EXECUTE)
+        for kind in ("money", "outbound"):
+            r_kind = classify(0.9, 0.9, risk="low", kind=kind)
+            self.assertEqual(r_kind.route, PRESENT_FOR_APPROVAL)
 
 class TestTriageSkillPortfolio(MetaLearningTestBase):
     def _make_skill(self, slug):
