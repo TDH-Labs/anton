@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from anton import browser_vault
 from anton.browser_login import LoginResult
 from anton.config import load_config
+from anton import dashboard as anton_dashboard
 from anton.dashboard import create_app
 from anton.db import init_db
 from anton.executor import FakeExecutor
@@ -42,19 +43,26 @@ class TestDashboard(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def test_index_page(self):
-        # "/" serves Anton's own built UI (anton/web/dist) when a build is
-        # present, and the honest "you're on the wrong port" stub when it is
-        # not. Both are valid; a source checkout that has never run the
-        # frontend build must still answer rather than 500.
+    def test_index_serves_the_stub_when_no_build_is_present(self):
+        # Forced, not observed. The previous version branched on whichever
+        # answer it happened to get and asserted something true of that
+        # branch, so neither outcome could fail.
+        with patch("anton.dashboard._WEB_DIST", "/nonexistent/web/dist"):
+            r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("3080", r.text, "the fallback stub must name the real port")
+        self.assertNotIn('<div id="root">', r.text)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(
+        os.path.dirname(os.path.abspath(anton_dashboard.__file__)), "web", "dist", "index.html")),
+        "no frontend build in this checkout (run `npm run build` in anton/web)")
+    def test_index_serves_the_built_app_when_a_build_is_present(self):
+        # A visible skip when the build is absent, rather than a silent
+        # branch that always passes.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("Anton", r.text)
-        built = '<div id="root">' in r.text
-        if built:
-            self.assertIn("/assets/", r.text, "a built index must link its bundle")
-        else:
-            self.assertIn("3080", r.text, "the fallback stub must name the real port")
+        self.assertIn('<div id="root">', r.text)
+        self.assertIn("/assets/", r.text)
 
     def test_n8n_config_defaults_to_unset(self):
         r = self.client.get("/api/n8n/config")
@@ -146,23 +154,30 @@ class TestDashboard(unittest.TestCase):
         self.assertTrue(rooms)  # the seed actually ran
         self.assertNotIn("devops", rooms)
 
-    def test_oauth_start_is_honest_when_no_app_is_registered(self):
-        # No oauth.<provider>.client_id is configured here. On a machine
-        # with NO provisioned credentials anywhere (config/env/secrets.env)
-        # this must say so plainly instead of returning a fake URL. On a
-        # machine WITH provisioned vendor credentials (e.g. the reference
-        # Mac), a real auth_url is correct behavior — both are honest.
+    def test_no_credentials_anywhere_says_not_configured(self):
+        # Deterministic on every machine: the suite conftest strips the QBO
+        # env vars and redirects $HOME, so load_qbo_credentials() has nothing
+        # to find. This replaced a test that asked the endpoint and the
+        # function it calls whether they agreed -- a tautology that passed
+        # everywhere and pinned nothing.
+        from anton.qbo_oauth import load_qbo_credentials
+        self.assertEqual(load_qbo_credentials(), ("", ""))
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "quickbooks"})
         self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "not_configured")
+
+    def test_provisioned_credentials_produce_a_real_intuit_url(self):
+        # The other half, forced rather than hoped for. dashboard.py imports
+        # load_qbo_credentials inside the handler, so patching the module
+        # attribute reaches it.
+        with patch("anton.qbo_oauth.load_qbo_credentials",
+                   return_value=("client-abc", "secret-xyz")):
+            r = self.client.get("/api/wizard/oauth/start",
+                                params={"provider": "quickbooks"})
         body = r.json()
-        from anton.qbo_oauth import load_qbo_credentials
-        cid, _ = load_qbo_credentials()
-        if cid:
-            self.assertEqual(body["status"], "listening")
-            self.assertIn("state", body)
-            self.assertIn("appcenter.intuit.com", body["auth_url"])
-        else:
-            self.assertEqual(body["status"], "not_configured")
+        self.assertEqual(body["status"], "listening")
+        self.assertIn("appcenter.intuit.com", body["auth_url"])
+        self.assertIn("client-abc", body["auth_url"])
 
     def test_oauth_start_unknown_provider_is_also_honest(self):
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "some-unknown-service"})

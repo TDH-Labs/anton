@@ -42,6 +42,12 @@ def _http_get(url: str, timeout_s: float):
 
 
 class N8NExecutor(Executor):
+    # The work happens inside the operator's own workflow -- Anton POSTs a
+    # payload and does not make a model call -- so the routed model says
+    # nothing about whether this dispatch can succeed. Reachability of the
+    # n8n instance itself is still gated, through available().
+    requires_model_provider = False
+
     def __init__(self, webhook_url: str, api_key: Optional[str] = None,
                 health_url: Optional[str] = None,
                 post_transport=None, get_transport=None):

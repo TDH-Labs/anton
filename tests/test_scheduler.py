@@ -217,15 +217,13 @@ class TestProviderPrerequisiteGate(unittest.TestCase):
             def run(self, task, *, model, provider, cwd=None, timeout_s=None):
                 raise AssertionError("executor.run must never be reached when blocked")
         self.executor = StubPiExecutor()
-        # Point local routes at a port nothing listens on.
-        self._old_ollama_host = os.environ.get("OLLAMA_HOST")
-        os.environ["OLLAMA_HOST"] = "127.0.0.1:59999"
+        # OLLAMA_HOST is already pinned at an unreachable port for the whole
+        # suite (tests/conftest.py) and restored per test, so this class no
+        # longer juggles it by hand. 127.0.0.1:59999 also sat inside macOS's
+        # ephemeral port range, where something could legitimately be
+        # listening.
 
     def tearDown(self):
-        if self._old_ollama_host is None:
-            os.environ.pop("OLLAMA_HOST", None)
-        else:
-            os.environ["OLLAMA_HOST"] = self._old_ollama_host
         self.dir.cleanup()
 
     def _engine(self, executor=None):
@@ -238,7 +236,9 @@ class TestProviderPrerequisiteGate(unittest.TestCase):
         rec = engine.run_job(engine.by_id("cron-job"))
         self.assertEqual(rec.exit, 6)
         self.assertIn("skipped:no-provider", rec.flags)
-        self.assertIn("nothing listening on 127.0.0.1:59999", rec.output)
+        # Follows whatever the suite pins OLLAMA_HOST to (tests/conftest.py)
+        # rather than restating a literal that has to be kept in sync.
+        self.assertIn(f"nothing listening on {os.environ['OLLAMA_HOST']}", rec.output)
         row = self.ledger.last_run("cron-job")
         self.assertIsNotNone(row)
         self.assertEqual(row["exit"], 6)

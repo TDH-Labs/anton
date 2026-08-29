@@ -2,6 +2,7 @@
 dashboard /api/connections/* endpoints)."""
 import json
 import os
+import tempfile
 import sys
 import unittest
 from unittest import mock
@@ -15,13 +16,18 @@ from anton.connections import (BUNDLED, bridges_configured, bundled_catalog,
 
 class _Ctx(unittest.TestCase):
     def setUp(self):
-        self.data_dir = "/tmp/anton-test-connections"
+        # A per-test temp dir, not a fixed /tmp path shared across runs and
+        # concurrent processes. The fixed path was actively unsafe: both
+        # cli._load_secrets_into_env and config.apply_bridge_credential_overrides
+        # read `dirname(data_dir)/secrets.yaml`, and dirname("/tmp/anything")
+        # is "/tmp" -- so a stray /tmp/secrets.yaml left by any other program
+        # was loaded straight into os.environ for the rest of the run.
+        self._tmp = tempfile.TemporaryDirectory(prefix="anton-connections-")
+        self.data_dir = os.path.join(self._tmp.name, "data")
         os.makedirs(self.data_dir, exist_ok=True)
-        # clean cached registry and any persisted secrets between tests
-        for stale in ("mcp-registry-cache.json", "secrets.yaml"):
-            p = os.path.join(self.data_dir, stale)
-            if os.path.exists(p):
-                os.remove(p)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def _app(self, config=None):
         from anton.dashboard import create_app

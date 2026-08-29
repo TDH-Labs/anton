@@ -14,7 +14,6 @@ from typing import List, Optional
 from .canary import attempt_repairs, compute_tripwires
 from .db import isolation_approvals_integrity
 from .executor import Executor
-from .executor.fake import FakeExecutor
 from .jobs import Job
 from .ledger import Ledger
 from .models import RunRecord
@@ -413,29 +412,26 @@ class JobEngine:
         """Honest prerequisite gate: return a reason string when the routed
         executor/provider structurally cannot succeed (executor binary
         missing, local Ollama endpoint unreachable, cloud key absent), else
-        None. The FakeExecutor (deterministic test/demo stub) is exempt —
-        there is no real provider behind it by construction. Pure function
-        of (route, executor) — no `self`/job dependency, so any caller with
-        a route and an executor can gate a dispatch through it (run_job
-        below; opportunity.py's scan_for_opportunities, a different
-        module's dispatch loop, the same way)."""
-        if isinstance(executor, FakeExecutor):
-            return None
+        None. An executor declares whether it needs a model behind it
+        (Executor.requires_model_provider); the model gates below are skipped
+        for those that do not. Pure function of (route, executor) — no
+        `self`/job dependency, so any caller with a route and an executor can
+        gate a dispatch through it (run_job below; opportunity.py's
+        scan_for_opportunities, a different module's dispatch loop, the same
+        way).
+
+        Order is load-bearing. Reachability of the executor ITSELF is checked
+        first and applies to everyone: an n8n instance that is down must still
+        skip (exit 6), even though its dispatch needs no model. Only after
+        that does the model requirement decide whether the local/cloud legs
+        run at all."""
         available = getattr(executor, "available", None)
         if callable(available) and not available():
             bin_name = (getattr(executor, "pi_bin", None)
                         or getattr(executor, "opencode_bin", None)
                         or type(executor).__name__)
             return f"executor unavailable ({bin_name} binary not found on PATH)"
-        # An n8n webhook job's actual work happens inside the operator's own
-        # workflow (deterministic steps, its own AI Agent node where needed):
-        # Anton POSTs a payload, it does not make a model call. The default
-        # route therefore says nothing about whether this dispatch can
-        # succeed — the model gates below must not fire on it, or every fresh
-        # install without a reachable Ollama would skip all n8n jobs forever
-        # (CI caught exactly that: exit-6 skip with no Ollama on 127.0.0.1).
-        from .executor.n8n_executor import N8NExecutor
-        if isinstance(executor, N8NExecutor):
+        if not executor.requires_model_provider:
             return None
         if route.provider == "local":
             host, port = _local_endpoint()
