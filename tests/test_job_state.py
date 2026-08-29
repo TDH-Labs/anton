@@ -14,7 +14,8 @@ from anton import job_state
 from anton.config import load_config
 from anton.dashboard import create_app
 from anton.db import init_db
-from anton.executor.base import Executor, RunResult
+from anton.executor import FakeExecutor
+from anton.executor.base import RunResult
 from anton.jobs import Job, load_jobs
 from anton.ledger import Ledger
 from anton.scheduler import JobEngine
@@ -30,15 +31,16 @@ JOBS = """
 """
 
 
-class FakeExecutor(Executor):
-    def available(self) -> bool:
-        return True
+# Both subclass the real FakeExecutor rather than Executor directly.
+# scheduler._provider_block exempts FakeExecutor by isinstance -- there is no
+# real provider behind a deterministic stub, so gating one on a reachable
+# Ollama or a cloud key is meaningless. A stub deriving straight from
+# Executor misses that exemption and gets SKIPPED instead of dispatched,
+# which passes on a developer machine that happens to run Ollama and fails
+# on CI, which runs neither.
 
-    def run(self, task, *, model, provider, cwd=None, timeout_s=None):
-        return RunResult(0, f"[fake] {task}", "", 1, model, provider)
 
-
-class SpyRunningExecutor(Executor):
+class SpyRunningExecutor(FakeExecutor):
     """Reads the in-flight table from inside the dispatch, which is the only
     moment a row is supposed to exist."""
 
@@ -46,18 +48,12 @@ class SpyRunningExecutor(Executor):
         self.data_dir = data_dir
         self.seen_running: list = []
 
-    def available(self) -> bool:
-        return True
-
     def run(self, task, *, model, provider, cwd=None, timeout_s=None):
         self.seen_running = job_state.list_running(self.data_dir)
         return RunResult(0, "ok", "", 1, model, provider)
 
 
-class BoomExecutor(Executor):
-    def available(self) -> bool:
-        return True
-
+class BoomExecutor(FakeExecutor):
     def run(self, task, *, model, provider, cwd=None, timeout_s=None):
         raise RuntimeError("executor exploded mid-dispatch")
 
