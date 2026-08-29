@@ -1,0 +1,265 @@
+{
+  "name": "Anton Gate",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "anton-gate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "gate-webhook",
+      "name": "Gate Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        400
+      ],
+      "webhookId": "anton-gate",
+      "notes": "POST body contract: { kind: 'money'|'outbound'|'other', risk: 'low'|'medium'|'high', title: string, description: string, callback_url: string (where to POST the decision back) }"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "not-money",
+              "leftValue": "={{ $json.body.kind }}",
+              "rightValue": "money",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "not-outbound",
+              "leftValue": "={{ $json.body.kind }}",
+              "rightValue": "outbound",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "low-risk",
+              "leftValue": "={{ $json.body.risk }}",
+              "rightValue": "low",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "risk-check",
+      "name": "Auto-clear? (not money/outbound AND low risk)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        460,
+        400
+      ],
+      "notes": "Mirrors anton/governor.py: money/outbound is a HARD gate -- it never auto-clears regardless of risk score, matching HARD_GATE_KINDS. Each kind is compared with its own notEquals: a single notContains against \"money,outbound\" asks whether the KIND contains that list, which is false for \"money\" and silently auto-approved every payment."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"approved\": true, \"reason\": \"auto-cleared: low risk, not money/outbound\" } }}",
+        "options": {}
+      },
+      "id": "auto-clear-response",
+      "name": "Respond: Auto-cleared",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        700,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.body.notify_url || $env.ANTON_GATE_NOTIFY_URL }}",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"text\": \"Anton needs your OK: \" + $json.body.title + \" \u2014 \" + $json.body.description + \"\\nApprove: \" + $execution.resumeUrl + \"?decision=approve\" + \"\\nReject: \" + $execution.resumeUrl + \"?decision=reject\" } }}",
+        "options": {}
+      },
+      "id": "notify-human",
+      "name": "Notify (Slack/webhook \u2014 configure URL)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        700,
+        480
+      ],
+      "notes": "Set ANTON_GATE_NOTIFY_URL (n8n environment variable) to a real Slack incoming webhook or similar. This is the routing point from the earlier design discussion: swap this one node for 'notify the bookkeeper under $500, the owner above it' logic without touching anything else in this workflow."
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "options": {
+          "webhookSuffix": "={{ '/' + $json.body.title.replace(/[^a-zA-Z0-9]/g, '-') }}"
+        }
+      },
+      "id": "wait-for-human",
+      "name": "Wait for human decision",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        940,
+        480
+      ],
+      "webhookId": "anton-gate-resume",
+      "notes": "Pauses here until the resume webhook (its URL is $execution.resumeUrl, sent in the notify step) is hit with ?decision=approve or ?decision=reject. No timeout set by default \u2014 a real deployment should add one via the node's own options (n8n supports a max-wait limit) so a forgotten approval doesn't hang a workflow forever; left to the operator to set based on what's actually being gated."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "decision-approve",
+              "leftValue": "={{ $json.query.decision }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "decision-check",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"approved\": true, \"reason\": \"human approved\" } }}",
+        "options": {}
+      },
+      "id": "human-approve-response",
+      "name": "Respond: Approved",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"approved\": false, \"reason\": \"human rejected\" } }}",
+        "options": {}
+      },
+      "id": "human-reject-response",
+      "name": "Respond: Rejected",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1420,
+        580
+      ]
+    }
+  ],
+  "connections": {
+    "Gate Request": {
+      "main": [
+        [
+          {
+            "node": "Auto-clear? (not money/outbound AND low risk)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auto-clear? (not money/outbound AND low risk)": {
+      "main": [
+        [
+          {
+            "node": "Respond: Auto-cleared",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notify (Slack/webhook \u2014 configure URL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify (Slack/webhook \u2014 configure URL)": {
+      "main": [
+        [
+          {
+            "node": "Wait for human decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for human decision": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Respond: Approved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond: Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    "anton-gate"
+  ]
+}

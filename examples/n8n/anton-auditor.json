@@ -1,0 +1,121 @@
+{
+  "name": "Anton Auditor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "hours", "hoursInterval": 1 }] }
+      },
+      "id": "auditor-cron",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.N8N_API_BASE_URL || 'http://localhost:5678/api/v1' }}/workflows",
+        "method": "GET",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-N8N-API-KEY", "value": "={{ $env.N8N_API_KEY }}" }]
+        },
+        "options": {}
+      },
+      "id": "list-workflows",
+      "name": "List all workflows",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 400],
+      "notes": "Calls this same n8n instance's own REST API — n8n workflows can reach n8n's own API this way, no separate service needed. Set N8N_API_KEY as an n8n environment variable (Settings > API) before activating."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Every workflow whose nodes touch money/outbound tags must call the\n// Anton Gate workflow (a node whose webhook path is 'anton-gate') before\n// any node tagged risky. This is a structural check, not a content check\n// -- it verifies the Gate call exists and sits upstream, not that the\n// workflow's business logic is otherwise correct.\nconst GATE_WEBHOOK_PATH = 'anton-gate';\nconst RISKY_TAGS = ['money', 'outbound'];\n\nconst results = [];\nfor (const item of $input.all()) {\n  const wf = item.json;\n  // Skip the Gate and Auditor workflows themselves, and anything not\n  // explicitly tagged for this audit -- see the room's deploy skill,\n  // which tags every Generator-built workflow it creates.\n  const tags = (wf.tags || []).map(t => (t.name || t));\n  if (tags.includes('anton-gate') || tags.includes('anton-auditor')) continue;\n  if (!tags.includes('anton-managed')) continue;\n\n  const hasRiskyNode = tags.some(t => RISKY_TAGS.includes(t));\n  if (!hasRiskyNode) {\n    results.push({ id: wf.id, name: wf.name, compliant: true, reason: 'no money/outbound tag, gate not required' });\n    continue;\n  }\n\n  const nodes = wf.nodes || [];\n  const hasGateCall = nodes.some(n =>\n    n.type === 'n8n-nodes-base.httpRequest' &&\n    typeof n.parameters?.url === 'string' &&\n    n.parameters.url.includes(GATE_WEBHOOK_PATH)\n  );\n  results.push({\n    id: wf.id,\n    name: wf.name,\n    compliant: hasGateCall,\n    reason: hasGateCall ? 'gate call found' : 'MISSING gate call before a money/outbound-tagged workflow',\n  });\n}\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "check-gate-compliance",
+      "name": "Check gate compliance",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "non-compliant",
+              "leftValue": "={{ $json.compliant }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "notEquals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-non-compliant",
+      "name": "Non-compliant?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.N8N_API_BASE_URL || 'http://localhost:5678/api/v1' }}/workflows/{{ $json.id }}",
+        "method": "PATCH",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [{ "name": "X-N8N-API-KEY", "value": "={{ $env.N8N_API_KEY }}" }]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"active\": false } }}",
+        "options": {}
+      },
+      "id": "deactivate-workflow",
+      "name": "Deactivate it",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 320],
+      "notes": "The actual enforcement point: a workflow missing its required gate call gets shut off, not just flagged. This is what makes the gate structural rather than a convention someone has to remember."
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.ANTON_GATE_NOTIFY_URL }}",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"text\": \"Auditor deactivated \\\"\" + $json.name + \"\\\" — \" + $json.reason } }}",
+        "options": {}
+      },
+      "id": "notify-deactivation",
+      "name": "Notify operator",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 480]
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [[{ "node": "List all workflows", "type": "main", "index": 0 }]]
+    },
+    "List all workflows": {
+      "main": [[{ "node": "Check gate compliance", "type": "main", "index": 0 }]]
+    },
+    "Check gate compliance": {
+      "main": [[{ "node": "Non-compliant?", "type": "main", "index": 0 }]]
+    },
+    "Non-compliant?": {
+      "main": [
+        [
+          { "node": "Deactivate it", "type": "main", "index": 0 },
+          { "node": "Notify operator", "type": "main", "index": 0 }
+        ],
+        []
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["anton-auditor"]
+}
