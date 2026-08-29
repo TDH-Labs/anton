@@ -471,6 +471,17 @@ def cmd_dashboard(args, config: dict) -> int:
     return 0
 
 
+def cmd_mcp(args, config: dict) -> int:
+    """Serve Anton over MCP (stdio) so any MCP client is a front door.
+
+    Talks to a RUNNING `anton dashboard` over HTTP rather than building its
+    own engine: the dashboard process owns the database connections and the
+    authz middleware, and a second in-process JobEngine would give this
+    server a private view of state the real scheduler does not share."""
+    from .mcp_server import main as mcp_main
+    return mcp_main(base_url=args.base_url, token=args.token)
+
+
 def cmd_doctor(args, config: dict) -> int:
     lines, ok = run_doctor(args.data_dir, executor_name=args.executor)
     for ln in lines:
@@ -603,6 +614,14 @@ def main(argv=None) -> int:
     dash.set_defaults(fn=cmd_dashboard)
     skills.add_argument("--index", action="store_true",
                         help="index data/skills into skill_dependencies")
+
+    mcp_p = sub.add_parser(
+        "mcp", help="serve Anton over MCP (stdio) for Claude Desktop / Code / any client")
+    mcp_p.add_argument("--base-url", default=None,
+                       help="running dashboard to talk to (default http://127.0.0.1:8799)")
+    mcp_p.add_argument("--token", default=None,
+                       help="bearer token when this install has authz enabled")
+    mcp_p.set_defaults(fn=cmd_mcp)
 
     doctor = sub.add_parser("doctor", help="read-only diagnostics")
     doctor.add_argument("--data-dir", default=".dev-data")
