@@ -102,6 +102,10 @@ def ensure_ops_schema(isolation_db_conn: sqlite3.Connection) -> None:
     # dashboard process reads them.
     from .job_state import ensure_schema as ensure_job_state_schema
     ensure_job_state_schema(isolation_db_conn)
+    # chat_sessions / chat_messages: durable Ask Anton history, owned by
+    # chat.py.
+    from .chat import ensure_schema as ensure_chat_schema
+    ensure_chat_schema(isolation_db_conn)
     isolation_db_conn.commit()
 
 

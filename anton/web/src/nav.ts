@@ -8,6 +8,7 @@
  */
 
 export type ScreenId =
+  | 'ask'
   | 'right-now'
   | 'approvals'
   | 'alerts'
@@ -23,7 +24,7 @@ export type ScreenId =
 export interface NavEntry {
   id: ScreenId
   label: string
-  group: 'watch' | 'run' | 'know' | 'setup'
+  group: 'ask' | 'watch' | 'run' | 'know' | 'setup'
 }
 
 /**
@@ -32,6 +33,7 @@ export interface NavEntry {
  * behind it.
  */
 export const NAV: NavEntry[] = [
+  { id: 'ask', label: 'Ask Anton', group: 'ask' },
   { id: 'right-now', label: 'Right now', group: 'watch' },
   { id: 'approvals', label: 'Waiting on you', group: 'watch' },
   { id: 'alerts', label: 'What went wrong', group: 'watch' },
@@ -44,6 +46,7 @@ export const NAV: NavEntry[] = [
 ]
 
 export const GROUP_LABEL: Record<NavEntry['group'], string> = {
+  ask: 'Ask',
   watch: 'Watch',
   run: 'Run',
   know: 'Know',

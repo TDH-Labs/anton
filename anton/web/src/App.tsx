@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import bp from './blueprint.module.css'
 import { GROUP_LABEL, NAV, screenFromHash, type NavEntry, type ScreenId } from './nav.ts'
 import { useOpsApi } from './useOpsApi.ts'
+import { AskAntonScreen } from './screens/AskAntonScreen.tsx'
 import { RightNowScreen } from './screens/RightNowScreen.tsx'
 import { ApprovalsScreen } from './screens/ApprovalsScreen.tsx'
 import { AlertsScreen } from './screens/AlertsScreen.tsx'
@@ -17,6 +18,7 @@ const LN = '1px solid var(--dsw-alias-border-l2)'
 
 function renderScreen(id: ScreenId) {
   switch (id) {
+    case 'ask': return <AskAntonScreen />
     case 'right-now': return <RightNowScreen />
     case 'approvals': return <ApprovalsScreen />
     case 'alerts': return <AlertsScreen />
@@ -51,7 +53,7 @@ export function App() {
     setScreen(id)
   }
 
-  const groups = ['watch', 'run', 'know', 'setup'] as const
+  const groups = ['ask', 'watch', 'run', 'know', 'setup'] as const
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' }}>

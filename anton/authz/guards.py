@@ -113,6 +113,13 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     ("POST", "/api/automations/draft", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
     ("POST", "/api/chat", "jobs.run"),
+    # Ask Anton: streaming a prompt dispatches through the executor exactly as
+    # the one-shot endpoint does, and session lifecycle is the same trust
+    # tier -- a Viewer must not be able to spend model budget or delete
+    # another person's conversation.
+    ("POST", "/api/chat/stream", "jobs.run"),
+    ("POST", "/api/chat/sessions", "jobs.run"),
+    ("DELETE", "/api/chat/sessions/", "jobs.run"),
     # Operator steering (ops_api.py): pause/resume, run-now, skip-next. These
     # decide whether and when a job runs, so they carry jobs.run rather than
     # settings.write -- a Viewer must not be able to silence an automation,

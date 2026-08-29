@@ -278,6 +278,13 @@ class ModeReq(BaseModel):
 class ChatReq(BaseModel):
     prompt: str
 
+class ChatStreamReq(BaseModel):
+    prompt: str
+    # Client-generated so a browser can start streaming into a new
+    # conversation without a round trip to create one first; chat.append_message
+    # inserts the session row on demand.
+    session_id: str
+
 def _require_token(request, token: str) -> None:
     # When the authZ spine is wired (config authz.enabled), identity comes
     # from per-user sessions resolved by AuthzMiddleware; the legacy shared
@@ -526,12 +533,12 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.post("/api/chat")
     def chat_prompt(request: Request, req: ChatReq):
-        """Real dispatch through the configured executor. This backs both direct
-        callers of this endpoint and the Ops Center's own "Anton" chat provider
-        option (apiproxy's AntonFastApiAdapter registers an LLM provider that
-        POSTs here) -- a customer selecting "Anton" as their chat provider used
-        to get keyword-matched fabricated replies indistinguishable from a real
-        response. prefer="cloud": a fresh install's setup wizard captures a
+        """Real dispatch through the configured executor, one shot.
+
+        Kept for callers that want a plain request/response; the Ask Anton
+        screen uses /api/chat/stream instead, which reports progress while a
+        blocking dispatch runs. prefer="cloud": a fresh install's setup
+        wizard captures a
         cloud provider key (Anthropic/OpenAI/DeepSeek/OpenRouter), which is what
         this should actually route to by default, not a local model server this
         deployment doesn't run."""
@@ -550,6 +557,68 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if result.exit_code != 0:
             raise HTTPException(502, result.stderr or result.output or "chat dispatch failed")
         return {"reply": result.output}
+
+    @app.get("/api/chat/sessions")
+    def list_chat_sessions(request: Request):
+        """Ask Anton conversations, most recently active first."""
+        from .chat import list_sessions
+        return {"sessions": list_sessions(data_dir)}
+
+    @app.post("/api/chat/sessions")
+    def new_chat_session(request: Request):
+        _require_token(request, token)
+        from .chat import create_session
+        return create_session(data_dir)
+
+    @app.get("/api/chat/sessions/{session_id}")
+    def read_chat_session(session_id: str, request: Request):
+        from .chat import get_messages
+        return {"session_id": session_id, "messages": get_messages(data_dir, session_id)}
+
+    @app.delete("/api/chat/sessions/{session_id}")
+    def remove_chat_session(session_id: str, request: Request):
+        _require_token(request, token)
+        from .chat import delete_session
+        if not delete_session(data_dir, session_id):
+            raise HTTPException(404, f"no session {session_id!r}")
+        return {"status": "deleted"}
+
+    @app.post("/api/chat/stream")
+    def chat_stream(req: ChatStreamReq, request: Request):
+        """Ask Anton, as server-sent events.
+
+        Streams PROGRESS, not tokens: the Executor contract is one blocking
+        run() call, so no executor can emit partial output. Frames are
+        `start`, `tick` (elapsed seconds, while the dispatch runs), then
+        `result` or `error`. That is what separates a slow answer from a
+        hung one in the UI.
+        """
+        _require_token(request, token)
+        from fastapi.responses import StreamingResponse
+        from .chat import stream_reply
+        route = select_route(prefer="cloud")
+
+        def dispatch():
+            result = engine.executor.run(req.prompt, model=route.model,
+                                         provider=route.provider)
+            record = RunRecord.new(
+                task="chat", exit_code=result.exit_code, flags="source:api/chat",
+                output=result.output, model=result.model, provider=result.provider,
+                fallback_used=result.fallback_used, tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out, cost_usd=result.cost_usd,
+                duration_ms=result.duration_ms,
+            )
+            ledger.append(record)
+            engine._record_metering(record)
+            return result
+
+        return StreamingResponse(
+            stream_reply(dispatch, data_dir, req.session_id, req.prompt),
+            media_type="text/event-stream",
+            # Without this a reverse proxy may buffer the whole stream and
+            # deliver it at the end, which is exactly the hang this replaces.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/canary")
     def canary():
