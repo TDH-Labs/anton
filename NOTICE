@@ -5,8 +5,10 @@ in LICENSE.
 --------------------------------------------------------------------------
 DeepSeek Harness (github.com/deepseek-ai/deepseek-harness)
 --------------------------------------------------------------------------
-The Ops Center web UI and its host runtime (anton-studio/) are a fork of
-DeepSeek Harness.
+The Ops Center web UI's predecessor was a fork of DeepSeek Harness
+(anton-studio/). It was replaced by Anton's own first-party React UI
+(anton/web/) in the first-party front-door rewrite; the fork attribution
+is retained here for versions that still contained it.
 
 MIT License
 

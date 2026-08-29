@@ -128,19 +128,21 @@ you would any other important folder; see
 
 ## What's actually running
 
-One container, four processes:
+One container, three processes:
 
 - **`anton serve`** — the cron/webhook scheduler loop, plus tripwire detection: a job
   that's gone quiet gets auto-repaired (re-run) if the governor scores it low-risk, or
   surfaced for your review otherwise. Internal only.
-- **`anton dashboard`** — the FastAPI `/api/*` surface the Ops Center UI talks to.
-  Internal only.
-- **`dsh web`** — the Ops Center UI itself. Binds loopback-only by its own design — no
-  auth or TLS on that surface, and it has real file and shell access, so it never
-  touches the network directly.
+- **`anton dashboard`** — the FastAPI `/api/*` surface **and Anton's own built Ops
+  Center** (`anton/web/dist`, mounted by dashboard.py): approvals, steering, memory,
+  the whole day-to-day UI. Internal only.
 - **`docker/auth-gate.mjs`** — the one process actually published. A small password-
-  gated reverse proxy in front of `dsh web`, so the whole thing is safe to expose
+  gated reverse proxy in front of the dashboard, so the whole thing is safe to expose
   directly without an SSH tunnel.
+
+The published port is `3080` (auth-gate); everything else stays on the container's
+loopback. `anton mcp` runs as a subcommand of the dashboard (or standalone) and serves
+Anton's tools to any MCP client — see [_Anton as a protocol_](docs/ANTON-AS-PROTOCOL.md).
 
 For a docker-compose file, Umbrel app manifest, and the full set of environment
 variables Anton reads, see [`umbrel/anton/docker-compose.yml`](umbrel/anton/docker-compose.yml)
@@ -156,8 +158,6 @@ service without a separate agreement.
 Anton is built on top of real, credited open-source work — full license text for
 each is in [NOTICE](NOTICE):
 
-- **[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)** — the Ops
-  Center UI (`anton-studio/`) is a fork of it.
 - **[pi](https://github.com/earendil-works/pi)** — the default executor, bundled in
   the image.
 - **[opencode](https://github.com/anomalyco/opencode)** — a second executor, used
@@ -167,6 +167,11 @@ each is in [NOTICE](NOTICE):
   stored-login browser feature; Chromium itself ships in the image via Playwright.
 - **[Caddy](https://caddyserver.com/)** — used, not bundled: the VPS install path
   runs it as its own separate container for HTTPS.
+
+The Ops Center UI (the `anton/web/` React app) is Anton's own first-party
+code — it was previously a fork of DeepSeek Harness (`anton-studio/`), removed in
+[the first-party front-door rewrite](https://github.com/TDH-Labs/anton/pull/1).
+Historical fork attribution remains in [NOTICE](NOTICE) for older versions.
 
 ---
 
@@ -181,7 +186,9 @@ the product day to day.
 coding agent, tool-restricted to read-only by default via `pi_tools` in config.yaml),
 `opencode` (a multi-provider agent with MCP support — the executor a job uses when it
 needs browser tools on an already-authenticated stored-login session, see the
-`executor:` job field below), `oi` (Open Interpreter, scoped as an office/PDF/media
+`executor:` job field below), `n8n` (dispatch to a workflow in your own n8n instance —
+the N8NExecutor POSTs to the job's `webhook_url`, so the work runs in your n8n, not
+in Anton), `oi` (Open Interpreter, scoped as an office/PDF/media
 specialist), `ssh` (run on a remote host you control), or `fake` (a mock, for testing).
 
 ### Commands (native / non-Docker install)
@@ -195,6 +202,7 @@ anton canary    --data-dir …                           # expected-vs-actual tr
 anton digest    --data-dir …                           # daily status digest
 anton vault     --provision | scan                     # second-brain provision / scan
 anton governor  --ev 0.8 --feasibility 0.9 --kind money  # score one decision
+anton mcp       [--base-url …] [--token …]                # serve the 8 governance/memory tools over MCP (see docs/ANTON-AS-PROTOCOL.md)
 anton doctor    --data-dir …                           # read-only install diagnostics
 anton run       --task "…" --executor pi               # one-off run into the ledger
 ```
@@ -228,10 +236,11 @@ via Docker — useful for a host that should run Anton directly rather than cont
 - Gates: `money`/`outbound` jobs block until an approval exists (Ops Center's Waiting
   on you, or the dashboard API).
 - Executor override: `executor: {name, ...}` runs just that one job through a different
-  executor than the install's default — today, `{name: opencode, mcp_profile: <id>}`
-  for a job that needs an Add-ons stored-login connection's already-authenticated
+  executor than the install's default — `{name: opencode, mcp_profile: <id>}` for a job
+  that needs an Add-ons stored-login connection's already-authenticated
   browser session (the password itself never reaches the job; only the logged-in
-  session does).
+  session does), or `{name: n8n, webhook_url: <url>, api_key: <optional>}` to dispatch
+  the job into your own n8n workflow via N8NExecutor.
 - Canary: a job that misses 2× its expected cadence trips a tripwire — if it has a
   mapped repair recipe and scores low-risk, Anton re-runs it itself; otherwise it's
   surfaced for you.
