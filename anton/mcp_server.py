@@ -121,15 +121,21 @@ TOOLS: list[dict] = [
     {
         "name": "anton_search_memory",
         "description": (
-            "Read a note from Anton's second brain by slug. The vault is "
-            "markdown on disk; this returns one note's content."),
+            "Read a note from Anton's second brain by its vault path. The "
+            "vault is markdown on disk; this returns one note's content."),
         "schema": {
             "type": "object",
-            "properties": {"slug": {"type": "string", "description": "Note slug, e.g. 'index'"}},
-            "required": ["slug"],
+            "properties": {"path": {"type": "string",
+                                    "description": "Note path under the vault, e.g. 'index'"}},
+            "required": ["path"],
         },
+        # Matches dashboard.py's GET /api/vault/note?path=... exactly --
+        # this was "slug" until a real cross-container run against a live
+        # Anton returned 422 "path: Field required": the route was never
+        # verified end-to-end before, only exercised with the one tool that
+        # takes no arguments at all.
         "method": "GET", "path": "/api/vault/note",
-        "query": ["slug"],
+        "query": ["path"],
     },
     {
         "name": "anton_propose_work",
@@ -186,6 +192,14 @@ def dispatch(client: AntonClient, name: str, arguments: dict) -> Any:
             return {"error": f"unknown decision {decision!r}"}
         return client.call("POST", f"/api/approvals/{aid}", {"decision": decision})
 
+    if name == "anton_report_failure":
+        subject = arguments.get("subject")
+        body = arguments.get("body")
+        if not subject:
+            return {"error": "anton_report_failure requires 'subject'"}
+        return client.call("POST", "/api/inbox/messages",
+                           {"subject": subject, "body": body or ""})
+
     return {"error": f"unknown tool {name!r}"}
 
 
@@ -211,9 +225,9 @@ def _register(server, client: "AntonClient") -> None:
 
         server.add_tool(make(), name=spec["name"], description=spec["description"])
 
-    def anton_search_memory(slug: str) -> str:
-        """Read one note from Anton's second brain by slug."""
-        return _json(dispatch(client, "anton_search_memory", {"slug": slug}))
+    def anton_search_memory(path: str) -> str:
+        """Read one note from Anton's second brain by its vault path."""
+        return _json(dispatch(client, "anton_search_memory", {"path": path}))
 
     server.add_tool(
         anton_search_memory, name="anton_search_memory",
@@ -247,6 +261,24 @@ def _register(server, client: "AntonClient") -> None:
             "instance only; 'always' approves and stops asking for this kind; "
             "'defer' leaves it pending. This releases real money movement or "
             "outbound messages -- confirm with the person before calling it."))
+
+    def anton_report_failure(subject: str, body: str = "") -> str:
+        """File something that needs a person's attention -- e.g. a
+        connector or workflow going unreachable -- through Anton's inbox
+        loop."""
+        return _json(dispatch(client, "anton_report_failure",
+                              {"subject": subject, "body": body}))
+
+    server.add_tool(
+        anton_report_failure, name="anton_report_failure",
+        description=(
+            "File something that needs a person's attention through Anton's "
+            "inbox loop -- a connector down, a workflow that stopped working, "
+            "anything a human should see. This is for DIAGNOSIS, never for "
+            "silently fixing something: an expired credential or a broken "
+            "integration is not something to resolve on your own. Subject "
+            "should name what broke plainly; Anton's own classifier reads it "
+            "to decide how it is filed."))
 
 
 def _require_bearer(app, token: str):
@@ -322,11 +354,26 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
             f"mcp transport={transport!r} requires a token "
             "(--token or ANTON_DASHBOARD_TOKEN) so the surface is not open")
 
+    # The SDK's default TransportSecuritySettings rejects any request whose
+    # Host header is not 127.0.0.1/localhost -- DNS-rebinding protection
+    # aimed at a BROWSER tricked into calling a "local" service. That is not
+    # the threat model here: a caller reaching this surface at all already
+    # crossed a real network boundary (an explicit --host 0.0.0.0 bind the
+    # operator chose, e.g. so a sibling n8n container can reach it by
+    # container name), and _require_bearer below is the actual, deliberate
+    # access control -- confirmed live: n8n calling Anton by container name
+    # got 421 Misdirected Request from this check alone, before the bearer
+    # check ever ran, on a request the token would have accepted.
+    from mcp.server.transport_security import TransportSecuritySettings
+    transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
     import uvicorn
     if transport == "sse":
-        app = server.sse_app(sse_path="/sse", host=host)
+        app = server.sse_app(sse_path="/sse", host=host,
+                             transport_security=transport_security)
     elif transport == "http":
-        app = server.streamable_http_app(streamable_http_path="/mcp")
+        app = server.streamable_http_app(streamable_http_path="/mcp",
+                                         transport_security=transport_security)
     else:
         raise ValueError(f"unknown transport {transport!r}")
 

@@ -11,16 +11,14 @@
     },
     {
       "parameters": {
-        "endpointUrl": "http://127.0.0.1:8877/mcp",
+        "endpointUrl": "={{ $env.ANTON_MCP_URL || 'http://anton:8877/mcp' }}",
         "authentication": "headerAuth",
         "tool": {
-          "value": "anton_status",
-          "label": "anton_status"
+          "mode": "id",
+          "value": "anton_status"
         },
-        "manualParameters": true,
-        "toolInput": {
-          "define": "string"
-        }
+        "inputMode": "json",
+        "jsonInput": "{}"
       },
       "id": "anton-mcp-client",
       "name": "Anton MCP Client",
@@ -32,18 +30,40 @@
           "id": "ANTON_HEADER_AUTH_ID",
           "name": "Anton header auth"
         }
-      }
+      },
+      "notes": "anton_status takes no arguments, hence the empty {} -- for a tool that does, e.g. anton_search_memory, jsonInput becomes ={{ { \"path\": \"index\" } }}. See the second node below for a real parameterized call."
+    },
+    {
+      "parameters": {
+        "endpointUrl": "={{ $env.ANTON_MCP_URL || 'http://anton:8877/mcp' }}",
+        "authentication": "headerAuth",
+        "tool": {
+          "mode": "id",
+          "value": "anton_search_memory"
+        },
+        "inputMode": "json",
+        "jsonInput": "={{ { \"path\": \"index\" } }}"
+      },
+      "id": "anton-mcp-client-param",
+      "name": "Anton MCP Client (parameterized)",
+      "type": "@n8n/n8n-nodes-langchain.mcpClient",
+      "typeVersion": 1,
+      "position": [220, 160],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTON_HEADER_AUTH_ID",
+          "name": "Anton header auth"
+        }
+      },
+      "notes": "Verified live against a real Anton instance, container-to-container: inputMode must be \"json\" with jsonInput carrying the argument object directly. A field-by-field parameter map does NOT exist on this node -- assuming one silently sends an empty argument object and any parameterized tool call fails with a Pydantic 'field required' error."
     }
   ],
   "connections": {
     "When clicked": {
       "main": [
         [
-          {
-            "node": "Anton MCP Client",
-            "type": "main",
-            "index": 0
-          }
+          { "node": "Anton MCP Client", "type": "main", "index": 0 },
+          { "node": "Anton MCP Client (parameterized)", "type": "main", "index": 0 }
         ]
       ]
     }

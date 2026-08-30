@@ -1,0 +1,75 @@
+{
+  "name": "Anton Notify on Failure",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "et",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [220, 300],
+      "notes": "n8n calls this automatically whenever a workflow that names this one as its Settings -> Error Workflow fails. Payload fields used below (execution.id/url/error.message/error.node.name, workflow.id/name) verified against a live n8n execution, not assumed from docs."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "subject",
+              "name": "subject",
+              "type": "string",
+              "value": "={{ 'ACTION REQUIRED: n8n workflow failed — ' + $json.workflow.name }}"
+            },
+            {
+              "id": "body",
+              "name": "body",
+              "type": "string",
+              "value": "={{ 'Workflow: ' + $json.workflow.name + ' (' + $json.workflow.id + ')\\nFailed node: ' + ($json.execution.error.node ? $json.execution.error.node.name : 'unknown') + '\\nError: ' + $json.execution.error.message + '\\nExecution: ' + $json.execution.url }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "shape",
+      "name": "Shape the report",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 300],
+      "notes": "Feeds the MCP Client node's JSON input mode below, which references $json.subject / $json.body directly."
+    },
+    {
+      "parameters": {
+        "endpointUrl": "={{ $env.ANTON_MCP_URL || 'http://anton:8877/mcp' }}",
+        "authentication": "headerAuth",
+        "tool": {
+          "mode": "id",
+          "value": "anton_report_failure"
+        },
+        "inputMode": "json",
+        "jsonInput": "={{ { \"subject\": $json.subject, \"body\": $json.body } }}"
+      },
+      "id": "notify",
+      "name": "Tell Anton",
+      "type": "@n8n/n8n-nodes-langchain.mcpClient",
+      "typeVersion": 1,
+      "position": [700, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTON_HEADER_AUTH_ID",
+          "name": "Anton header auth"
+        }
+      },
+      "notes": "The public auth-gate (port 3080) is a cookie-session login page, not a bearer-token API door -- confirmed live, a valid Bearer header gets the login HTML back regardless. This calls Anton's SEPARATE MCP surface instead (anton mcp --transport http --host 0.0.0.0 --port 8877 --token <ANTON_DASHBOARD_TOKEN>), which does real per-request bearer auth and is what n8n's MCP Client node already speaks (see anton-mcp-client.json). anton_report_failure classifies through the SAME inbox loop /api/inbox/messages uses; the ACTION REQUIRED subject text is what earns kind=flag (inbox.py's _RULE_FLAG) -- ungated, synchronous, visible at GET /api/inbox/queue?stream=flags. It can never reach kind=send: nothing here asks Anton to reply to anyone, so the outbound gate never engages.\n\nCredential 'Anton header auth' (HTTP Header Auth): Name=Authorization, Value=Bearer <ANTON_DASHBOARD_TOKEN>. Set ANTON_MCP_URL if Anton is not reachable at the container name 'anton' on this n8n instance's network."
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Shape the report", "type": "main", "index": 0 }]]
+    },
+    "Shape the report": {
+      "main": [[{ "node": "Tell Anton", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": ["anton-managed"]
+}

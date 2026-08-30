@@ -52,9 +52,12 @@ class TestReadTools(unittest.TestCase):
         self.assertEqual(t.calls, [], "must not call Anton with a missing parameter")
 
     def test_a_query_tool_appends_its_parameter(self):
+        # path, not slug: dashboard.py's GET /api/vault/note requires
+        # `path` -- verified live, this was wrong until a real
+        # cross-container run against a real Anton returned a 422.
         c, t = client()
-        dispatch(c, "anton_search_memory", {"slug": "index"})
-        self.assertEqual(t.calls[0][1], "/api/vault/note?slug=index")
+        dispatch(c, "anton_search_memory", {"path": "index"})
+        self.assertEqual(t.calls[0][1], "/api/vault/note?path=index")
 
 
 class TestSteerTool(unittest.TestCase):
@@ -89,6 +92,34 @@ class TestApprovalTool(unittest.TestCase):
         c, t = client()
         out = dispatch(c, "anton_decide_approval", {"approval_id": 1, "decision": "yolo"})
         self.assertIn("unknown decision", out["error"])
+        self.assertEqual(t.calls, [])
+
+
+class TestReportFailureTool(unittest.TestCase):
+    """The n8n Error Trigger workflow's whole path to Anton: no /hooks/*
+    surface is reachable from a sibling container (WebhookServer binds
+    container loopback), and the public auth-gate is a cookie-session login
+    page, not a bearer-token API door -- confirmed live, a bare Bearer
+    header gets the login HTML back regardless of validity. This tool, over
+    the MCP HTTP transport's real per-request auth, is the only door an
+    external caller like n8n actually has."""
+
+    def test_reports_through_the_inbox_route(self):
+        c, t = client()
+        dispatch(c, "anton_report_failure",
+                {"subject": "n8n workflow failed", "body": "detail"})
+        self.assertEqual(t.calls[0][:2], ("POST", "/api/inbox/messages"))
+        self.assertEqual(t.calls[0][2], {"subject": "n8n workflow failed", "body": "detail"})
+
+    def test_body_defaults_to_empty_string(self):
+        c, t = client()
+        dispatch(c, "anton_report_failure", {"subject": "x"})
+        self.assertEqual(t.calls[0][2]["body"], "")
+
+    def test_missing_subject_is_refused_without_calling_anton(self):
+        c, t = client()
+        out = dispatch(c, "anton_report_failure", {"body": "no subject"})
+        self.assertIn("requires", out["error"])
         self.assertEqual(t.calls, [])
 
 
@@ -128,13 +159,14 @@ class TestToolRegistration(unittest.TestCase):
         _register(s, c)
         return s
 
-    def test_every_declared_tool_plus_both_mutating_ones_are_registered(self):
+    def test_every_declared_tool_plus_all_mutating_ones_are_registered(self):
         import asyncio
         tools = asyncio.run(self._server().list_tools())
         names = {t.name for t in tools}
         self.assertEqual(
             names,
-            {t["name"] for t in TOOLS} | {"anton_steer_job", "anton_decide_approval"})
+            {t["name"] for t in TOOLS} | {"anton_steer_job", "anton_decide_approval",
+                                          "anton_report_failure"})
 
     def test_the_steering_tool_states_its_timing_honestly(self):
         import asyncio
@@ -153,7 +185,7 @@ class TestToolRegistration(unittest.TestCase):
         import asyncio
         tools = asyncio.run(self._server().list_tools())
         mem = next(t for t in tools if t.name == "anton_search_memory")
-        self.assertIn("slug", mem.input_schema.get("properties", {}))
+        self.assertIn("path", mem.input_schema.get("properties", {}))
 
     def test_propose_work_tool_is_declared_and_dispatches_to_opportunities(self):
         import asyncio
