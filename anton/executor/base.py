@@ -28,6 +28,18 @@ class RunResult:
 
 
 class Executor(abc.ABC):
+    #: Does a successful run() need a live model provider behind it -- a
+    #: reachable local endpoint or a cloud API key? Declared here rather than
+    #: inferred with isinstance in scheduler._provider_block, so a stub
+    #: inherits the right answer from whatever it subclasses and a new
+    #: executor states its own. A nominal isinstance check in another module
+    #: is undiscoverable to the author of a new executor: a test stub
+    #: subclassing Executor directly silently became gated on the developer's
+    #: local Ollama, passing locally and failing on CI. True is the honest
+    #: conservative default -- an executor that calls a model must say
+    #: nothing and still be gated.
+    requires_model_provider: bool = True
+
     @abc.abstractmethod
     def run(self, task: str, *, model: str, provider: str,
             cwd: Optional[str] = None, timeout_s: Optional[float] = None) -> RunResult:

@@ -1,6 +1,7 @@
 """config.yaml loading with defaults. YAML (not TOML) for uniformity with jobs.yaml."""
 from __future__ import annotations
 
+import copy
 import dataclasses
 import os
 from typing import Optional
@@ -22,10 +23,21 @@ DEFAULTS = {
         "poll_seconds": 15,
         "org_id": "default",
         # How often the proactive opportunity scanner (opportunity.py)
-        # surveys connected sources (vault + mcp_servers) for things worth
-        # upskilling toward before anything breaks. Real dispatch cost, so
-        # this is hours, not the poll_seconds cadence.
+        # surveys connected sources for things worth upskilling toward
+        # before anything breaks. Real dispatch cost, so this is hours, not
+        # the poll_seconds cadence.
         "opportunity_scan_hours": 24,
+        # Extra sources the opportunity scanner surveys alongside the vault
+        # and Add-ons connections. Each entry is {name, what, path?}:
+        #   - name: a noun the scan prompt shows the agent, e.g. "agent-sessions"
+        #   - what: what the source is, for the scan prompt
+        #   - path: (optional) a directory the dispatched agent should look
+        #     under. The scan prompt tells the agent it may READ these; the
+        #     executor's tool grant (general.pi_tools) governs whether it
+        #     actually can. Sessions from other agents, prompts, and bounded
+        #     disk roots are all expressible here -- nothing is hardcoded.
+        "opportunity_extra_sources": [
+        ],
     },
     "routes": {
         "local_model": "ollama/llama3.1:8b",
@@ -51,7 +63,18 @@ DEFAULTS = {
 
 
 def deep_merge(base: dict, override: dict) -> dict:
-    out = dict(base)
+    """Merge `override` onto `base`, returning a result that shares no nested
+    container with `base`.
+
+    The deep copy is load-bearing, not defensive: `load_config()` merges onto
+    the module-level DEFAULTS, and a shallow `dict(base)` left every nested
+    section (`general`, `routes`, `budgets`, `n8n`) aliased to the DEFAULTS
+    object itself. Any caller mutating a section in place -- the n8n config
+    write, `apply_bridge_credential_overrides`, a test setting a dashboard
+    token -- silently rewrote the defaults for every later `load_config()` in
+    the same process.
+    """
+    out = copy.deepcopy(base)
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
             out[k] = deep_merge(out[k], v)

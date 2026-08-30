@@ -96,6 +96,27 @@ def _read_secrets(data_dir: str) -> dict:
     return merged
 
 
+def _resolve_web_dist() -> str:
+    """Where Anton's built UI lives (anton/web/dist).
+
+    ANTON_WEB_DIST wins because the built UI is a DEPLOYMENT ARTIFACT, not
+    Python package data: `pip install .` copies the anton package into
+    site-packages and leaves the build behind, so a container that installs
+    the package and then drops a fresh build into the source tree would
+    otherwise import a module that cannot see it. The module-relative path is
+    the source-checkout default, where the build sits next to the code.
+    """
+    override = os.environ.get("ANTON_WEB_DIST")
+    if override:
+        return override
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "web", "dist")
+
+
+# Absent in a source checkout that has not run the frontend build; every use
+# is guarded rather than assumed.
+_WEB_DIST = _resolve_web_dist()
+
+
 def _config_candidates(data_dir: str) -> list[str]:
     """Same shape story as _secrets_candidates, for config.yaml."""
     candidates = [os.path.join(data_dir, "config.yaml")]
@@ -121,6 +142,26 @@ def _save_secret(data_dir: str, key_name: str, value: str) -> None:
     fd = os.open(secrets_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with open(fd, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def _set_n8n_base_url(data_dir: str, base_url: str) -> None:
+    """Persist Settings' n8n base URL into config.yaml n8n.base_url -- same
+    read-merge-write-atomic-replace discipline as _set_cloud_model, kept as
+    its own helper since n8n's key sits at the top level, not under routes."""
+    import yaml
+    config_path = _config_candidates(data_dir)[0]
+    current = {}
+    for candidate in reversed(_config_candidates(data_dir)):
+        if os.path.exists(candidate):
+            with open(candidate, encoding="utf-8") as f:
+                current = yaml.safe_load(f) or {}
+    n8n = current.get("n8n") or {}
+    n8n["base_url"] = base_url
+    current["n8n"] = n8n
+    tmp = config_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(current, f)
+    os.replace(tmp, config_path)
 
 
 def _set_cloud_model(data_dir: str, model: str) -> None:
@@ -223,6 +264,20 @@ class BrowserLoginReq(BaseModel):
     submit_selector: str = "button[type=submit]"
     success_selector: str
 
+class N8nConfigReq(BaseModel):
+    base_url: str = ""
+
+class InboxMessageReq(BaseModel):
+    """One message from the operator's harness (mail monitor / webhook).
+    Only from/subject/body are required; everything else degrades to a
+    default so any forwarder shape works."""
+    message_id: str = ""
+    from_addr: str = ""
+    subject: str = ""
+    body: str = ""
+    received_at: str = ""
+
+
 class ModeReq(BaseModel):
     # Default True, not required: the Ops Center UI's two calling sites
     # (SidebarRoot.tsx, Brand.tsx) POST here with no body at all -- the
@@ -232,6 +287,13 @@ class ModeReq(BaseModel):
 
 class ChatReq(BaseModel):
     prompt: str
+
+class ChatStreamReq(BaseModel):
+    prompt: str
+    # Client-generated so a browser can start streaming into a new
+    # conversation without a round trip to create one first; chat.append_message
+    # inserts the session row on demand.
+    session_id: str
 
 def _require_token(request, token: str) -> None:
     # When the authZ spine is wired (config authz.enabled), identity comes
@@ -286,6 +348,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index():
+        """The Ops Center itself when a build is present, otherwise the
+        wrong-port stub. Anton's own React app (anton/web) is built into
+        anton/web/dist and mounted below; PAGE remains the honest answer for
+        a source checkout that has never run the frontend build."""
+        index_html = os.path.join(_WEB_DIST, "index.html")
+        if os.path.exists(index_html):
+            with open(index_html, encoding="utf-8") as f:
+                return f.read()
         return PAGE
 
     @app.get("/health")
@@ -323,6 +393,31 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         that honestly rather than guessing at a default."""
         base_url = (config.get("n8n") or {}).get("base_url") or os.environ.get("ANTON_N8N_BASE_URL") or ""
         return {"base_url": base_url or None}
+
+    @app.post("/api/n8n/config")
+    def set_n8n_config(req: N8nConfigReq, request: Request):
+        """Settings' n8n section save action -- writes config.yaml directly
+        rather than ANTON_N8N_BASE_URL, since a running container's env can't
+        be edited from inside the app. An explicit config.yaml value already
+        won GET's precedence check above, so saving here takes effect on the
+        very next GET with no restart needed."""
+        _require_token(request, token)
+        base_url = req.base_url.strip()
+        try:
+            _set_n8n_base_url(data_dir, base_url)
+        except OSError as e:
+            return JSONResponse(
+                {"detail": f"failed to persist n8n base url: {type(e).__name__}: {e}"},
+                status_code=500)
+        # A fresh dict, never an in-place mutation: load_config() only deep-
+        # copies keys an override actually touches, so an unmodified "n8n"
+        # here is literally config.DEFAULTS["n8n"] by reference -- mutating it
+        # in place would leak this save into every future load_config() call
+        # for the rest of the process (real bug, caught by the full test
+        # suite: an n8n save in one test poisoned another test's "unset"
+        # expectation).
+        config["n8n"] = {**(config.get("n8n") or {}), "base_url": base_url}
+        return {"status": "saved", "base_url": base_url or None}
 
     @app.get("/api/mode")
     def get_mode():
@@ -448,12 +543,12 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
 
     @app.post("/api/chat")
     def chat_prompt(request: Request, req: ChatReq):
-        """Real dispatch through the configured executor. This backs both direct
-        callers of this endpoint and the Ops Center's own "Anton" chat provider
-        option (apiproxy's AntonFastApiAdapter registers an LLM provider that
-        POSTs here) -- a customer selecting "Anton" as their chat provider used
-        to get keyword-matched fabricated replies indistinguishable from a real
-        response. prefer="cloud": a fresh install's setup wizard captures a
+        """Real dispatch through the configured executor, one shot.
+
+        Kept for callers that want a plain request/response; the Ask Anton
+        screen uses /api/chat/stream instead, which reports progress while a
+        blocking dispatch runs. prefer="cloud": a fresh install's setup
+        wizard captures a
         cloud provider key (Anthropic/OpenAI/DeepSeek/OpenRouter), which is what
         this should actually route to by default, not a local model server this
         deployment doesn't run."""
@@ -472,6 +567,68 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         if result.exit_code != 0:
             raise HTTPException(502, result.stderr or result.output or "chat dispatch failed")
         return {"reply": result.output}
+
+    @app.get("/api/chat/sessions")
+    def list_chat_sessions(request: Request):
+        """Ask Anton conversations, most recently active first."""
+        from .chat import list_sessions
+        return {"sessions": list_sessions(data_dir)}
+
+    @app.post("/api/chat/sessions")
+    def new_chat_session(request: Request):
+        _require_token(request, token)
+        from .chat import create_session
+        return create_session(data_dir)
+
+    @app.get("/api/chat/sessions/{session_id}")
+    def read_chat_session(session_id: str, request: Request):
+        from .chat import get_messages
+        return {"session_id": session_id, "messages": get_messages(data_dir, session_id)}
+
+    @app.delete("/api/chat/sessions/{session_id}")
+    def remove_chat_session(session_id: str, request: Request):
+        _require_token(request, token)
+        from .chat import delete_session
+        if not delete_session(data_dir, session_id):
+            raise HTTPException(404, f"no session {session_id!r}")
+        return {"status": "deleted"}
+
+    @app.post("/api/chat/stream")
+    def chat_stream(req: ChatStreamReq, request: Request):
+        """Ask Anton, as server-sent events.
+
+        Streams PROGRESS, not tokens: the Executor contract is one blocking
+        run() call, so no executor can emit partial output. Frames are
+        `start`, `tick` (elapsed seconds, while the dispatch runs), then
+        `result` or `error`. That is what separates a slow answer from a
+        hung one in the UI.
+        """
+        _require_token(request, token)
+        from fastapi.responses import StreamingResponse
+        from .chat import stream_reply
+        route = select_route(prefer="cloud")
+
+        def dispatch():
+            result = engine.executor.run(req.prompt, model=route.model,
+                                         provider=route.provider)
+            record = RunRecord.new(
+                task="chat", exit_code=result.exit_code, flags="source:api/chat",
+                output=result.output, model=result.model, provider=result.provider,
+                fallback_used=result.fallback_used, tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out, cost_usd=result.cost_usd,
+                duration_ms=result.duration_ms,
+            )
+            ledger.append(record)
+            engine._record_metering(record)
+            return result
+
+        return StreamingResponse(
+            stream_reply(dispatch, data_dir, req.session_id, req.prompt),
+            media_type="text/event-stream",
+            # Without this a reverse proxy may buffer the whole stream and
+            # deliver it at the end, which is exactly the hang this replaces.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/canary")
     def canary():
@@ -508,6 +665,34 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 "nodes": json.loads(nodes_json or "[]"), "links": json.loads(links_json or "[]"),
             })
         return out
+
+    @app.get("/api/opportunities")
+    def opportunities(request: Request):
+        """Read-only view of what the proactive opportunity scanner has
+        surfaced: pending initiative candidates (opportunity-<slug>,
+        source 'scan:<source>:worth=<worth>') that meta_learning has not
+        dispatched yet. Backs the `anton_propose_work` MCP tool so any
+        harness can ask "what should I be doing?" and get Anton's answer.
+        Same authenticated-read posture as the other read routes."""
+        _require_token(request, token)
+        conn = open_isolation_db(data_dir)
+        try:
+            rows = conn.execute(
+                "SELECT slug, source, risk, ts FROM initiatives "
+                "WHERE status='pending' AND slug LIKE 'opportunity-%' "
+                "ORDER BY ts DESC LIMIT 20").fetchall()
+        finally:
+            conn.close()
+        out = []
+        for slug, source, risk, ts in rows:
+            subject = slug[len("opportunity-"):]
+            worth = "low"
+            if "worth=" in source:
+                worth = source.rsplit("worth=", 1)[1]
+            src = source.split(":")[1] if source.startswith("scan:") and ":" in source else source
+            out.append({"slug": slug, "subject": subject, "source": src,
+                        "worth": worth, "risk": risk, "ts": ts})
+        return {"opportunities": out}
 
     @app.get("/api/jobs")
     def jobs():
@@ -724,14 +909,6 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 pass
             if req.model.strip():
                 _set_cloud_model(data_dir, f"{req.provider}/{req.model.strip()}")
-            # Hot-apply into the dsh web host's settings document so the
-            # composer's picker + default model reflect this save without a
-            # restart (settings.yaml/.credentials.yaml are hot-reloaded there).
-            try:
-                from .dsh_bridge import sync_dsh_settings
-                sync_dsh_settings(data_dir, config)
-            except Exception:
-                pass
         except OSError as e:
             return JSONResponse(
                 {"detail": f"failed to persist provider key: "
@@ -1104,7 +1281,22 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
                 out.extend(nango_integrations(config["bridges"]["nango"]["secret_key"]))
             except Exception:
                 pass
-        return {"connections": out, "bridges": bridges,
+        # The live MCP registry (registry.modelcontextprotocol.io) is known to
+        # list the same server more than once (republished versions, mirrored
+        # entries) -- id derives from its name, so those collide. A React key
+        # collision on the duplicate id then breaks the Add-ons grid's own
+        # reconciliation once the search box filters the list down (stale
+        # cards from the pre-filter render linger onscreen). Dedupe here,
+        # first occurrence wins, so every source is protected the same way.
+        seen: set[str] = set()
+        deduped = []
+        for entry in out:
+            eid = entry.get("id")
+            if eid in seen:
+                continue
+            seen.add(eid)
+            deduped.append(entry)
+        return {"connections": deduped, "bridges": bridges,
                 "registry_error": LAST_REGISTRY_ERROR}
 
     @app.post("/api/connections/connect")
@@ -1129,6 +1321,52 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
         finally:
             conn.close()
         return {"status": "saved", "id": req.id}
+
+    @app.post("/api/inbox/messages")
+    def inbox_ingest(req: InboxMessageReq, request: Request):
+        """Inbox loop entry: classify one message and apply it. Ungated
+        kinds (file/extract/summarize/flag/draft) complete synchronously and
+        the response says what actually happened; kind=send parks a held
+        draft behind the outbound gate instead of firing anything. This is
+        the same governance split the scheduler enforces for jobs — the only
+        way a message changes the outside world is an explicit approval."""
+        _require_token(request, token)
+        from . import inbox
+        msg = inbox.InboxMessage.from_body({
+            "message_id": req.message_id,
+            "from": req.from_addr,
+            "subject": req.subject,
+            "body": req.body,
+            "received_at": req.received_at,
+        })
+        try:
+            outcome = inbox.apply(
+                msg, data_dir,
+                outbound_gate=lambda m: inbox.park_for_approval(m, data_dir))
+        except ValueError as e:
+            # A send with no wired gate is a config error, not a user error:
+            # surface it as a 500 so it is never silently mis-claimed.
+            raise HTTPException(500, str(e))
+        record = msg.to_record()
+        return {
+            "status": "ok",
+            "message": msg.message_id,
+            "kind": msg.kind,
+            "gate": msg.gate,
+            "outcome": outcome,
+            "notes": msg.notes,
+            "record": record,
+        }
+
+    @app.get("/api/inbox/queue")
+    def inbox_queue(request: Request, stream: str = "digest"):
+        """Read back one inbox work stream (digest | flags | extractions),
+        newest first. Honest read-side of what apply() wrote."""
+        _require_token(request, token)
+        if stream not in ("digest", "flags", "extractions"):
+            raise HTTPException(400, f"unknown stream {stream!r}")
+        from . import inbox
+        return {"stream": stream, "items": inbox.read_work(stream, data_dir)}
 
     @app.post("/api/wizard/browser-login")
     def add_browser_login(req: BrowserLoginReq, request: Request):
@@ -1180,6 +1418,17 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
     if authz_cfg.get("enabled"):
         from .authz import wire_authz
         wire_authz(app, data_dir, config)
+
+    # Built SPA assets. Mounted AFTER every API route so a static path can
+    # never shadow one, and only when a build exists -- mounting a missing
+    # directory raises at import time and would take the API down with it.
+    if os.path.isdir(_WEB_DIST):
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/assets", StaticFiles(directory=os.path.join(_WEB_DIST, "assets")),
+                  name="anton-web-assets")
+        fonts_dir = os.path.join(_WEB_DIST, "fonts")
+        if os.path.isdir(fonts_dir):
+            app.mount("/fonts", StaticFiles(directory=fonts_dir), name="anton-web-fonts")
     return app
 
 def _day_ago_iso() -> str:

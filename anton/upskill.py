@@ -42,12 +42,17 @@ SOURCE_TYPES = ("TRADES", "INTERVIEW", "BOOK", "WEB")
 
 # Governor inputs for an *automatically* delta-detected upskill candidate
 # (nobody chose the subject -- see delta.py's scan_upskill_candidates).
-# Deliberately conservative: research dispatch needs a wider bash+write tool
-# grant than any other auto-executed job, so a fresh install should not have
-# an unattended agent with that grant firing on its own inference by
-# default. A deployment that wants full autonomy calls
-# set_dispatch_risk_profile() to lower this below the auto_threshold.
-_DISPATCH_RISK_PROFILE = {"ev": 0.5, "feasibility": 0.8, "risk": "medium", "kind": "internal"}
+# AUTONOMOUS BY DEFAULT: the operator's explicit, repeated direction is that
+# Anton sees information, decides what it's worth, and upskills+executes
+# without prompting. The score (0.9 x 0.9 = 0.81) clears the governor's
+# 0.7 auto_threshold at risk="low", so scan-found and delta-detected
+# opportunities AUTO_EXECUTE into research. This is NOT an escape from
+# governance: the governor hard-gates money/outbound HARD_GATE_KINDS BEFORE
+# any scoring (governor.py classify), and promotion still requires research
+# sufficiency + the sandbox gate before the promoted skill ships. A
+# deployment that wants the old conservative posture calls
+# set_dispatch_risk_profile(ev=0.5, feasibility=0.8, risk="medium").
+_DISPATCH_RISK_PROFILE = {"ev": 0.9, "feasibility": 0.9, "risk": "low", "kind": "internal"}
 
 # Governor inputs for promoting an already-research-verified, already
 # sandbox-gate-passed distillation. "low risk" here is earned by two prior
@@ -57,8 +62,11 @@ _PROMOTION_RISK_PROFILE = {"ev": 0.9, "feasibility": 0.9, "risk": "low", "kind":
 
 def set_dispatch_risk_profile(*, ev: float, feasibility: float, risk: str = "low",
                               kind: str = "internal") -> None:
-    """Let a deployment opt an automatically-detected upskill candidate into
-    unattended dispatch (mirrors canary.py's register_repair_recipe)."""
+    """Tune the autonomous dispatch profile. The default is autonomous
+    (ev 0.9 / feasibility 0.9 / risk low -> AUTO_EXECUTE); call this to
+    return to the previous conservative posture
+    (set_dispatch_risk_profile(ev=0.5, feasibility=0.8, risk="medium")).
+    Money/outbound remain hard-gated regardless (governor.py)."""
     _DISPATCH_RISK_PROFILE.update({"ev": ev, "feasibility": feasibility, "risk": risk, "kind": kind})
 
 

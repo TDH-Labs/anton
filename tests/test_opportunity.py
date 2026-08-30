@@ -100,6 +100,30 @@ class TestListConnectedSources(OpportunityTestBase):
         self.assertIn("quickbooks", names)
         self.assertNotIn("retired-tool", names)
 
+    def test_config_declared_extra_sources_are_listed(self):
+        # The operator's own information sources -- sessions with other
+        # agents, prompts, bounded disk roots -- are expressible via config
+        # and surface in the scan source list with their path.
+        cfg = {"general": {"opportunity_extra_sources": [
+            {"name": "agent-sessions",
+             "what": "transcripts of sessions with other agents",
+             "path": "/tmp/sessions"},
+            {"name": "notes-dir", "what": "bounded disk root"},
+        ]}}
+        sources = opportunity.list_connected_sources(self.data_dir, cfg)
+        by_name = {s["name"]: s for s in sources}
+        self.assertIn("agent-sessions", by_name)
+        self.assertEqual(by_name["agent-sessions"]["path"], "/tmp/sessions")
+        self.assertIn("notes-dir", by_name)
+
+    def test_malformed_extra_sources_are_skipped(self):
+        cfg = {"general": {"opportunity_extra_sources": [
+            {"name": "", "what": "nameless"},
+            "not-a-dict",
+        ]}}
+        sources = opportunity.list_connected_sources(self.data_dir, cfg)
+        self.assertEqual([s["name"] for s in sources], ["vault"])
+
 
 class TestVerifyOpportunities(OpportunityTestBase):
     def test_no_dir_returns_empty(self):

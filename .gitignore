@@ -32,3 +32,8 @@ harbor_sas.egg-info/
 *.egg-info/
 .playwright-mcp/
 examples/qbo_sandbox/tokens.json
+
+# Anton's own web UI: dependencies and build output are produced by the
+# image's web-build stage (Dockerfile) and by `npm run build` locally.
+anton/web/node_modules/
+anton/web/dist/

@@ -8,6 +8,9 @@ from .base import Executor, RunResult
 
 
 class FakeExecutor(Executor):
+    # No provider behind it by construction, so the model gates never apply.
+    requires_model_provider = False
+
     def run(self, task: str, *, model: str, provider: str,
             cwd: Optional[str] = None, timeout_s: Optional[float] = None) -> RunResult:
         started = time.monotonic()

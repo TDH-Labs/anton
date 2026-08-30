@@ -10,18 +10,6 @@ __pycache__/
 .git/
 *.db
 
-# anton-studio (Node side) — kept in the build context for the node-build
-# stage, but its own build output/dependency caches are regenerated inside
-# that stage, not reused from the host. anton-studio/.git/ stays IN the
-# context: scripts/build.ts shells out to `git rev-parse HEAD` to stamp the
-# build revision, so the node-build stage needs a real .git to read.
-anton-studio/node_modules/
-anton-studio/**/node_modules/
-anton-studio/**/lib/
-anton-studio/**/dist/
-anton-studio/**/coverage/
-anton-studio/.pnpm-store/
-anton-studio/**/*.tsbuildinfo
 
 # Local-only artifacts that must never enter the image
 secrets.yaml
@@ -45,3 +33,8 @@ progress.md
 context.md
 fleet/
 scripts/
+
+# Anton's own web UI: the image builds it in its own stage from source, so a
+# host-side install or build must not enter the context.
+anton/web/node_modules/
+anton/web/dist/

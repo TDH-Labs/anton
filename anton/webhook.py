@@ -47,6 +47,49 @@ def make_handler(engine: JobEngine):
                 length = 0
             length = max(0, min(length, 1048576))
             body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
+
+            # Inbox loop: messages posted to an inbox-* webhook job are
+            # classified and applied (ungated kinds complete here; send
+            # parks behind the outbound gate), just like /api/inbox/messages.
+            # The engine's data_dir is the one anchor every consumer already
+            # carries, so inbox.apply writes to the same vault/workqueue the
+            # dashboard reads.
+            if job_id.startswith("inbox-"):
+                from . import inbox
+                try:
+                    payload = json.loads(body) if body else {}
+                except ValueError:
+                    payload = {}
+                if isinstance(payload, list):
+                    outcomes = []
+                    gate = lambda m: inbox.park_for_approval(m, engine.data_dir)
+                    for item in payload[:50]:
+                        if not isinstance(item, dict):
+                            continue
+                        msg = inbox.InboxMessage.from_body(item)
+                        try:
+                            outcome = inbox.apply(msg, engine.data_dir,
+                                                  outbound_gate=gate)
+                        except Exception as e:  # one bad message must not drop the batch
+                            outcome = f"error: {type(e).__name__}: {e}"
+                        outcomes.append({"message": msg.message_id, "kind": msg.kind,
+                                         "gate": msg.gate, "outcome": outcome,
+                                         "notes": msg.notes})
+                    self._send(200, {"status": "ok", "count": len(outcomes),
+                                     "items": outcomes})
+                    return
+                if isinstance(payload, dict):
+                    msg = inbox.InboxMessage.from_body(payload)
+                    gate = lambda m: inbox.park_for_approval(m, engine.data_dir)
+                    outcome = inbox.apply(msg, engine.data_dir,
+                                          outbound_gate=gate)
+                    self._send(200, {"status": "ok", "message": msg.message_id,
+                                     "kind": msg.kind, "gate": msg.gate,
+                                     "outcome": outcome, "notes": msg.notes})
+                    return
+                self._send(400, {"error": "inbox webhook body must be a message object or array"})
+                return
+
             record = engine.run_job(job)
             self._send(200, {"job_id": job.id, "exit": record.exit,
                              "ts": record.ts, "flags": record.flags})

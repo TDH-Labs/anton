@@ -24,6 +24,12 @@ EXEMPT_PATHS = {
     # Intuit redirects the operator's browser here mid-OAuth — the browser
     # carries no bearer; state-token validation inside the route is the gate.
     "/api/wizard/oauth/callback",
+    # Anton's own built UI (dashboard.py mounts anton/web/dist). Same trust
+    # class as "/" above: application code and fonts, no user data, and a
+    # browser must be able to load them BEFORE it can render the sign-in or
+    # owner-claim screen. Everything here still sits behind auth-gate's
+    # password on the only published port.
+    "/assets", "/fonts",
 }
 
 # REQ-CRED-03: the executor's callback identity may invoke ONLY these
@@ -76,6 +82,9 @@ MACHINE_TOKEN_SCOPES: dict[str, set[tuple[str, str]]] = {
         # pasting a hosted-OAuth bridge credential from the Add-ons screen
         # (settings.write trust tier, same as the wizard provider-key POSTs)
         ("POST", "/api/integrations/bridges/configure"),
+        # n8n connection settings (Automations screen's "Draw it" notice +
+        # the Settings n8n section).
+        ("GET", "/api/n8n*"), ("POST", "/api/n8n*"),
     },
 }
 
@@ -103,7 +112,23 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     # mutating route.
     ("POST", "/api/automations/draft", "settings.write"),
     ("POST", "/api/connections/connect", "connections.connect"),
+    # Inbox loop: ingesting a message is a mutation of the work queue/vault
+    # (settings.write tier — same as every other write surface). Reads of
+    # the queue are authenticated-but-unmapped, like other read routes.
+    ("POST", "/api/inbox/messages", "settings.write"),
     ("POST", "/api/chat", "jobs.run"),
+    # Ask Anton: streaming a prompt dispatches through the executor exactly as
+    # the one-shot endpoint does, and session lifecycle is the same trust
+    # tier -- a Viewer must not be able to spend model budget or delete
+    # another person's conversation.
+    ("POST", "/api/chat/stream", "jobs.run"),
+    ("POST", "/api/chat/sessions", "jobs.run"),
+    ("DELETE", "/api/chat/sessions/", "jobs.run"),
+    # Operator steering (ops_api.py): pause/resume, run-now, skip-next. These
+    # decide whether and when a job runs, so they carry jobs.run rather than
+    # settings.write -- a Viewer must not be able to silence an automation,
+    # and an Operator must be able to without holding settings rights.
+    ("POST", "/api/jobs/", "jobs.run"),
     ("GET", "/api/vault/note", "vault.read"),
     ("GET", "/api/authz/users", "users.manage"),
     ("DELETE", "/api/auth/sessions/", ""),
@@ -126,6 +151,7 @@ ROUTE_CAPABILITIES: list[tuple[str, str, str]] = [
     # collection route; this prefix covers /{name}/deregister + health-check.
     ("POST", "/api/authz/portals", "connections.connect"),
     ("POST", "/api/authz/portals/", "connections.connect"),
+    ("POST", "/api/n8n/", "settings.write"),
 ]
 
 DEFAULT_MUTATING_CAPABILITY = "settings.write"

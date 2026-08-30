@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import socket
@@ -9,12 +10,12 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from typing import List, Optional
 
 from .canary import attempt_repairs, compute_tripwires
 from .db import isolation_approvals_integrity
 from .executor import Executor
-from .executor.fake import FakeExecutor
 from .jobs import Job
 from .ledger import Ledger
 from .models import RunRecord
@@ -57,6 +58,34 @@ def _tcp_reachable(host: str, port: int, timeout_s: float = 1.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def _ollama_model_missing(host: str, port: int, model: str, timeout_s: float = 2.0) -> bool:
+    """True only when Ollama answered cleanly and the configured model tag is
+    definitively absent from it -- e.g. `ollama/llama3.1:8b` configured but
+    never `ollama pull`ed. A live server with the wrong model rejects a
+    dispatch immediately (pi's own provider client 404s in well under a
+    second), but that still burns the run: the job is marked failed for the
+    poll cycle instead of skipped-with-reason, and a human reading the
+    ledger sees an opaque exit 1 rather than "pull this model".
+
+    Deliberately asymmetric with _tcp_reachable: any failure to reach or
+    parse /api/tags returns False (not missing) rather than blocking --
+    _tcp_reachable already covers "Ollama is down"; this only adds a new
+    skip reason when it has positive evidence the model genuinely is not
+    there, never on an ambiguous/errored probe.
+    """
+    tag = model.split("/", 1)[1] if "/" in model else model
+    try:
+        with urllib.request.urlopen(
+                f"http://{host}:{port}/api/tags", timeout=timeout_s) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return False
+    names = {m.get("name") for m in body.get("models", []) if isinstance(m, dict)}
+    if not names:
+        return False
+    return tag not in names
 
 
 def get_son_of_anton_mode(data_dir: Optional[str]) -> bool:
@@ -298,14 +327,77 @@ class JobEngine:
         now = now or dt.datetime.now(dt.timezone.utc)
         floor = now.replace(second=0, microsecond=0)
         minute_key = floor.strftime("%Y-%m-%dT%H:%M")
+        states = self._steering_states()
         due = []
         for job in self.jobs:
+            state = states.get(job.id) or {}
+            if state.get("paused"):
+                continue
+            # An explicit run-now outranks the cron window entirely, including
+            # for a job with no cron at all (webhook/manual triggers), and is
+            # consumed here so it fires exactly once.
+            if state.get("run_now"):
+                self._consume_steering("run_now", job.id)
+                due.append(job)
+                continue
             if job.cron is None or not job.cron.matches(floor):
                 continue
             last = self.ledger.last_run(job.id)
             if last is None or not str(last.get("ts", "")).startswith(minute_key):
+                # skip-next burns on the window it would have fired in, so the
+                # job returns to its normal cadence the window after.
+                if state.get("skip_next"):
+                    self._consume_steering("skip_next", job.id)
+                    continue
                 due.append(job)  # fire once per matching minute (idempotent)
         return due
+
+    def _mark_running(self, job_id: str) -> None:
+        """Best-effort: in-flight reporting is observability, never a
+        precondition for doing the work."""
+        if not self.data_dir:
+            return
+        try:
+            from .job_state import mark_running
+            mark_running(self.data_dir, job_id)
+        except Exception:
+            pass
+
+    def _clear_running(self, job_id: str) -> None:
+        if not self.data_dir:
+            return
+        try:
+            from .job_state import clear_running
+            clear_running(self.data_dir, job_id)
+        except Exception:
+            pass
+
+    def _steering_states(self) -> dict:
+        """Operator pause/run-now/skip-next flags, written by the dashboard
+        process. Steering is best-effort: an unreadable store must never stop
+        the scheduler, so a failure here means "nothing is steered"."""
+        if not self.data_dir:
+            return {}
+        try:
+            from .job_state import all_states
+            return all_states(self.data_dir)
+        except Exception:
+            return {}
+
+    def _consume_steering(self, flag: str, job_id: str) -> None:
+        if not self.data_dir:
+            return
+        try:
+            from . import job_state
+            if flag == "run_now":
+                job_state.consume_run_now(self.data_dir, job_id)
+            else:
+                job_state.consume_skip_next(self.data_dir, job_id)
+        except Exception:
+            # A one-shot request that cannot be cleared would otherwise repeat
+            # every tick. Surfacing it is the dashboard's job; the scheduler
+            # keeps running either way.
+            pass
 
     def _usage_today(self, provider: str) -> dict:
         """Tokens/cost for the current UTC day from the ledger (cloud rows only)."""
@@ -350,35 +442,36 @@ class JobEngine:
         """Honest prerequisite gate: return a reason string when the routed
         executor/provider structurally cannot succeed (executor binary
         missing, local Ollama endpoint unreachable, cloud key absent), else
-        None. The FakeExecutor (deterministic test/demo stub) is exempt —
-        there is no real provider behind it by construction. Pure function
-        of (route, executor) — no `self`/job dependency, so any caller with
-        a route and an executor can gate a dispatch through it (run_job
-        below; opportunity.py's scan_for_opportunities, a different
-        module's dispatch loop, the same way)."""
-        if isinstance(executor, FakeExecutor):
-            return None
+        None. An executor declares whether it needs a model behind it
+        (Executor.requires_model_provider); the model gates below are skipped
+        for those that do not. Pure function of (route, executor) — no
+        `self`/job dependency, so any caller with a route and an executor can
+        gate a dispatch through it (run_job below; opportunity.py's
+        scan_for_opportunities, a different module's dispatch loop, the same
+        way).
+
+        Order is load-bearing. Reachability of the executor ITSELF is checked
+        first and applies to everyone: an n8n instance that is down must still
+        skip (exit 6), even though its dispatch needs no model. Only after
+        that does the model requirement decide whether the local/cloud legs
+        run at all."""
         available = getattr(executor, "available", None)
         if callable(available) and not available():
             bin_name = (getattr(executor, "pi_bin", None)
                         or getattr(executor, "opencode_bin", None)
                         or type(executor).__name__)
             return f"executor unavailable ({bin_name} binary not found on PATH)"
-        # An n8n webhook job's actual work happens inside the operator's own
-        # workflow (deterministic steps, its own AI Agent node where needed):
-        # Anton POSTs a payload, it does not make a model call. The default
-        # route therefore says nothing about whether this dispatch can
-        # succeed — the model gates below must not fire on it, or every fresh
-        # install without a reachable Ollama would skip all n8n jobs forever
-        # (CI caught exactly that: exit-6 skip with no Ollama on 127.0.0.1).
-        from .executor.n8n_executor import N8NExecutor
-        if isinstance(executor, N8NExecutor):
+        if not executor.requires_model_provider:
             return None
         if route.provider == "local":
             host, port = _local_endpoint()
             if not _tcp_reachable(host, port):
                 return (f"local model {route.model}: nothing listening on "
                         f"{host}:{port} (is Ollama running?)")
+            if _ollama_model_missing(host, port, route.model):
+                return (f"local model {route.model}: not pulled on "
+                        f"{host}:{port} (ollama pull "
+                        f"{route.model.split('/', 1)[-1]})")
             return None
         prefix = route.model.split("/", 1)[0]
         env_var = _PROVIDER_ENV_VARS.get(prefix)
@@ -438,8 +531,17 @@ class JobEngine:
 
         started = time.monotonic()
         timeout_s = self.config.get("general", {}).get("job_timeout_seconds", 300)
-        result = executor.run(job.recipe, model=route.model, provider=route.provider,
-                              timeout_s=timeout_s)
+        # Publish in-flight state around the ONE blocking call, so "Right Now"
+        # reports work actually being done rather than work merely due. The
+        # finally is what keeps a crashed executor from stranding the row --
+        # a container killed outright is caught instead by the boot-time
+        # stale sweep in cmd_serve.
+        self._mark_running(job.id)
+        try:
+            result = executor.run(job.recipe, model=route.model, provider=route.provider,
+                                  timeout_s=timeout_s)
+        finally:
+            self._clear_running(job.id)
 
         breach = self.enforce_budget(job, {"tokens_in": result.tokens_in,
                                            "tokens_out": result.tokens_out,

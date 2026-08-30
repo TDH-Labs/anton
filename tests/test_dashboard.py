@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from anton import browser_vault
 from anton.browser_login import LoginResult
 from anton.config import load_config
+from anton import dashboard as anton_dashboard
 from anton.dashboard import create_app
 from anton.db import init_db
 from anton.executor import FakeExecutor
@@ -42,15 +43,26 @@ class TestDashboard(unittest.TestCase):
     def tearDown(self):
         self.dir.cleanup()
 
-    def test_index_page(self):
-        # This port is never published in the real Docker deployment -- the
-        # Ops Center at :3080 is. This is just the honest "you're on the
-        # wrong port" landing page, not a real UI (see dashboard.py's PAGE
-        # comment for why the old fake-demo chat prototype was removed).
+    def test_index_serves_the_stub_when_no_build_is_present(self):
+        # Forced, not observed. The previous version branched on whichever
+        # answer it happened to get and asserted something true of that
+        # branch, so neither outcome could fail.
+        with patch("anton.dashboard._WEB_DIST", "/nonexistent/web/dist"):
+            r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("3080", r.text, "the fallback stub must name the real port")
+        self.assertNotIn('<div id="root">', r.text)
+
+    @unittest.skipUnless(os.path.exists(os.path.join(
+        os.path.dirname(os.path.abspath(anton_dashboard.__file__)), "web", "dist", "index.html")),
+        "no frontend build in this checkout (run `npm run build` in anton/web)")
+    def test_index_serves_the_built_app_when_a_build_is_present(self):
+        # A visible skip when the build is absent, rather than a silent
+        # branch that always passes.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("Anton", r.text)
-        self.assertIn("3080", r.text)
+        self.assertIn('<div id="root">', r.text)
+        self.assertIn("/assets/", r.text)
 
     def test_n8n_config_defaults_to_unset(self):
         r = self.client.get("/api/n8n/config")
@@ -142,23 +154,30 @@ class TestDashboard(unittest.TestCase):
         self.assertTrue(rooms)  # the seed actually ran
         self.assertNotIn("devops", rooms)
 
-    def test_oauth_start_is_honest_when_no_app_is_registered(self):
-        # No oauth.<provider>.client_id is configured here. On a machine
-        # with NO provisioned credentials anywhere (config/env/secrets.env)
-        # this must say so plainly instead of returning a fake URL. On a
-        # machine WITH provisioned vendor credentials (e.g. the reference
-        # Mac), a real auth_url is correct behavior — both are honest.
+    def test_no_credentials_anywhere_says_not_configured(self):
+        # Deterministic on every machine: the suite conftest strips the QBO
+        # env vars and redirects $HOME, so load_qbo_credentials() has nothing
+        # to find. This replaced a test that asked the endpoint and the
+        # function it calls whether they agreed -- a tautology that passed
+        # everywhere and pinned nothing.
+        from anton.qbo_oauth import load_qbo_credentials
+        self.assertEqual(load_qbo_credentials(), ("", ""))
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "quickbooks"})
         self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "not_configured")
+
+    def test_provisioned_credentials_produce_a_real_intuit_url(self):
+        # The other half, forced rather than hoped for. dashboard.py imports
+        # load_qbo_credentials inside the handler, so patching the module
+        # attribute reaches it.
+        with patch("anton.qbo_oauth.load_qbo_credentials",
+                   return_value=("client-abc", "secret-xyz")):
+            r = self.client.get("/api/wizard/oauth/start",
+                                params={"provider": "quickbooks"})
         body = r.json()
-        from anton.qbo_oauth import load_qbo_credentials
-        cid, _ = load_qbo_credentials()
-        if cid:
-            self.assertEqual(body["status"], "listening")
-            self.assertIn("state", body)
-            self.assertIn("appcenter.intuit.com", body["auth_url"])
-        else:
-            self.assertEqual(body["status"], "not_configured")
+        self.assertEqual(body["status"], "listening")
+        self.assertIn("appcenter.intuit.com", body["auth_url"])
+        self.assertIn("client-abc", body["auth_url"])
 
     def test_oauth_start_unknown_provider_is_also_honest(self):
         r = self.client.get("/api/wizard/oauth/start", params={"provider": "some-unknown-service"})
@@ -276,6 +295,34 @@ class TestN8NConfig(unittest.TestCase):
         r = client.get("/api/n8n/config")
         self.assertEqual(r.json()["base_url"], "https://from-config.example.com")
 
+    def test_post_persists_base_url_to_config_yaml(self):
+        client = TestClient(create_app(self.engine, self.dir.name, load_config()))
+        r = client.post("/api/n8n/config", json={"base_url": "http://n8n_server_1:5678"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+        # The write lands on disk, not just the in-memory config dict --
+        # a fresh app instance (a process restart) must still see it.
+        reloaded = TestClient(create_app(self.engine, self.dir.name,
+                                          load_config(os.path.join(self.dir.name, "config.yaml"))))
+        r = reloaded.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+
+    def test_post_is_immediately_visible_on_the_same_app_instance(self):
+        client = TestClient(create_app(self.engine, self.dir.name, load_config()))
+        client.post("/api/n8n/config", json={"base_url": "http://n8n_server_1:5678"})
+        r = client.get("/api/n8n/config")
+        self.assertEqual(r.json()["base_url"], "http://n8n_server_1:5678")
+
+    def test_post_empty_string_clears_the_saved_url(self):
+        config = load_config()
+        config["n8n"] = {"base_url": "https://old.example.com"}
+        client = TestClient(create_app(self.engine, self.dir.name, config))
+        r = client.post("/api/n8n/config", json={"base_url": ""})
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(r.json()["base_url"])
+        r = client.get("/api/n8n/config")
+        self.assertIsNone(r.json()["base_url"])
+
 
 class TestVolumeRootDataDir(unittest.TestCase):
     """Umbrel runs with ANTON_DATA_DIR=/data -- a volume ROOT, so
@@ -378,3 +425,23 @@ class TestVolumeRootDataDir(unittest.TestCase):
         self.lock_volume_root()
         keys = self.client.get("/api/wizard/keys").json()
         self.assertTrue(keys["have_key"].get("groq"))
+
+
+class TestWebDistResolution(unittest.TestCase):
+    """The built UI is a deployment artifact, not package data: `pip install`
+    copies anton/ into site-packages and leaves anton/web/dist behind, so the
+    container must be able to say where the build actually is."""
+
+    def test_env_override_wins(self):
+        from anton.dashboard import _resolve_web_dist
+        with patch.dict(os.environ, {"ANTON_WEB_DIST": "/somewhere/else/dist"}):
+            self.assertEqual(_resolve_web_dist(), "/somewhere/else/dist")
+
+    def test_defaults_to_the_module_relative_build(self):
+        from anton.dashboard import _resolve_web_dist
+        import anton.dashboard as dash
+        env = {k: v for k, v in os.environ.items() if k != "ANTON_WEB_DIST"}
+        with patch.dict(os.environ, env, clear=True):
+            expected = os.path.join(
+                os.path.dirname(os.path.abspath(dash.__file__)), "web", "dist")
+            self.assertEqual(_resolve_web_dist(), expected)

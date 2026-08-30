@@ -15,6 +15,11 @@ dependencies = [
     # precisely -- bump both together deliberately, same discipline as pi's
     # own pin below.
     "playwright==1.62.0",
+    # `anton mcp` (anton/mcp_server.py): serves Anton's tools over MCP so any
+    # client -- Claude Desktop, Claude Code, n8n's MCP node -- is a valid
+    # operator front door. A floor, not a pin: the protocol is versioned on
+    # the wire and the SDK's server API has been stable across 1.x.
+    "mcp>=1.2.0",
 ]
 
 [build-system]

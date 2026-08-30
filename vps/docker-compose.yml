@@ -22,7 +22,6 @@ services:
       - ANTON_DATA_DIR=/data
       - ANTON_PORT=8799
       - ANTON_SERVE_PORT=8798
-      - ANTON_WEB_INTERNAL_PORT=3079
       - ANTON_WEB_PORT=3080
       # Login password for the published UI. Leave unset to auto-generate one
       # on first boot (shown once on the login page, then persisted to the

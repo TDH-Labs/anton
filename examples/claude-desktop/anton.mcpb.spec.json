@@ -1,0 +1,16 @@
+{
+  "$schema": "https://registry.modelcontextprotocol.io/bundle/schema.json",
+  "name": "Anton Governance & Memory",
+  "description": "Anton's 8 MCP tools: status, jobs, approvals, ledger, usage, second brain, steering, decisions.",
+  "logo": "none",
+  "servers": [
+    {
+      "name": "anton",
+      "command": "anton",
+      "args": ["mcp"],
+      "env": {
+        "ANTON_BASE_URL": "http://127.0.0.1:8799"
+      }
+    }
+  ]
+}

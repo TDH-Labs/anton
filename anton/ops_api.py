@@ -66,6 +66,14 @@ class WizardPicksReq(BaseModel):
     picks: List[str] = []
 
 
+class SteerReq(BaseModel):
+    """Body of POST /api/jobs/{id}/steer. One of: pause, resume, run-now,
+    skip-next -- the operator's whole reprioritization vocabulary. A cron
+    system has no useful notion of a priority integer; deferring, promoting,
+    and skipping one occurrence is what steering means here."""
+    action: str
+
+
 class AutomationDraftReq(BaseModel):
     """POST /api/automations/draft body. `description` is the plain-English
     ask ("Describe it") or a note about the uploaded procedure doc; when a
@@ -240,11 +248,12 @@ WORK_CATALOG = [
                    (("List tomorrow's appointments", False),
                     ("Draft a reminder message per customer", False),
                     ("Send the reminders", True))),
-        _work_card("inbox-triage", "Inbox triage", "Flags the messages that actually need a reply",
+        _work_card("inbox-triage", "Inbox triage", "Turns each new message into done work: file, extract, summarise, flag, or a held draft — only sends wait for your OK",
                    "Every weekday at 8 AM and 1 PM",
-                   (("Skim new mail and group by urgency", False),
-                    ("Draft suggested replies for the urgent ones", False),
-                    ("Send any replies", True))),
+                   (("Classify each new message (file/extract/summarize/flag/draft)", False),
+                    ("Apply the safe kinds immediately", False),
+                    ("Draft replies for the ones that need one", False),
+                    ("Send only after your OK", True))),
     ]},
     {"id": "marketing", "label": "Marketing", "cards": [
         _work_card("social-week", "Week of social posts", "Drafts five posts for your review before anything is published",
@@ -440,10 +449,75 @@ def register_ops_routes(app: FastAPI, engine: JobEngine, data_dir: str, config: 
                 status, label = "fail", f"exit {exit_code}"
             done.append({"text": f"{row.get('task')} ({label})",
                          "meta": meta, "status": status})
-        due = engine.due_jobs()
-        ongoing = [{"text": f"Waiting on the next window for {j.id}", "meta": "scheduled", "pct": None}
-                   for j in due]
+        # Work actually in flight comes first and is labelled as running; the
+        # due-window entries follow, labelled as scheduled. Conflating the two
+        # is what made "Right Now" show a finished run in the present tense.
+        from .job_state import list_running
+        ongoing = []
+        running_ids = set()
+        try:
+            for row in list_running(data_dir):
+                running_ids.add(row["job_id"])
+                age = row.get("age_seconds")
+                ongoing.append({
+                    "text": f"Running {row['job_id']}",
+                    "meta": "running now" if age is None else f"running {age}s",
+                    "pct": None,
+                    "status": "running",
+                })
+        except Exception:
+            # An unreadable in-flight table degrades to the scheduled-only
+            # view rather than failing the whole worklog read.
+            pass
+        for j in engine.due_jobs():
+            if j.id in running_ids:
+                continue
+            ongoing.append({"text": f"Waiting on the next window for {j.id}",
+                            "meta": "scheduled", "pct": None, "status": "scheduled"})
         return {"ongoing": ongoing, "done": list(reversed(done))[:20]}
+
+    @app.get("/api/jobs/state")
+    def list_job_state(request: Request):
+        """Every job with its steering flags and whether it is in flight --
+        the Right Now and Schedule screens' one read."""
+        from .job_state import all_states, list_running
+        states = all_states(data_dir)
+        running = {r["job_id"]: r for r in list_running(data_dir)}
+        out = []
+        for job in engine.jobs:
+            state = states.get(job.id) or {
+                "job_id": job.id, "paused": False, "run_now": False, "skip_next": False}
+            out.append({**state, "running": job.id in running,
+                        "started_at": (running.get(job.id) or {}).get("started_at")})
+        return {"jobs": out}
+
+    @app.post("/api/jobs/{job_id}/steer")
+    def steer_job(job_id: str, req: SteerReq, request: Request):
+        """pause | resume | run-now | skip-next.
+
+        Every verb lands at the NEXT poll tick (general.poll_seconds, 15s by
+        default) and none interrupts a run already in flight -- `cmd_serve`
+        dispatches synchronously. The response says so explicitly so a caller
+        never implies instant control to the operator."""
+        _require_token(request, token)
+        if not any(job.id == job_id for job in engine.jobs):
+            raise HTTPException(404, f"no job {job_id!r}")
+        from . import job_state
+        action = req.action
+        if action == "pause":
+            state = job_state.set_paused(data_dir, job_id, True)
+        elif action == "resume":
+            state = job_state.set_paused(data_dir, job_id, False)
+        elif action == "run-now":
+            state = job_state.request_run_now(data_dir, job_id)
+        elif action == "skip-next":
+            state = job_state.request_skip_next(data_dir, job_id)
+        else:
+            raise HTTPException(400, f"unknown action {action!r}")
+        poll = (engine.config.get("general") or {}).get("poll_seconds", 15)
+        return {"status": "ok", "state": state,
+                "takes_effect": f"at the next poll tick (within {poll}s)",
+                "interrupts_running_job": False}
 
     @app.get("/api/learning")
     def learning_entries():

@@ -40,31 +40,49 @@ _MCP_SERVERS_SCHEMA = (
 )
 
 
-def list_connected_sources(data_dir: str) -> list[dict]:
+def list_connected_sources(data_dir: str, config: Optional[dict] = None) -> list[dict]:
     """Whatever this install actually has wired up. The vault (Anton's own
     second brain) is always available and always included; everything else
-    comes from mcp_servers (Add-ons in the Ops Center UI) -- email, QBO,
-    Drive, an allowlisted messaging channel, or anything else an operator
-    has connected. Defensive CREATE TABLE: this runs from the scheduler
-    loop, which may start before the dashboard process has ever run
+    comes from mcp_servers (Add-ons in the Ops Center UI) plus the
+    config-declared extra sources (general.opportunity_extra_sources) the
+    operator wants surveyed too -- sessions users have with other agents,
+    prompts, bounded disk roots. Nothing beyond $data_dir/the configured
+    paths is ever touched: the scan's READ-ONLY prompt and the executor's
+    tool grant are what bound it, and every entry declares itself for the
+    scan prompt. Defensive CREATE TABLE: this runs from the scheduler loop,
+    which may start before the dashboard process has ever run
     ops_schema.ensure_ops_schema()."""
     sources = [{"name": "vault", "what": "Anton's own second brain (notes, graph, digests)"}]
     db_path = os.path.join(data_dir, "isolation.db")
-    if not os.path.exists(db_path):
-        return sources
-    conn = sqlite3.connect(db_path, timeout=10.0)
-    try:
-        conn.execute(_MCP_SERVERS_SCHEMA)
-        rows = conn.execute(
-            "SELECT name, what FROM mcp_servers WHERE status='active'").fetchall()
-    finally:
-        conn.close()
-    sources.extend({"name": name, "what": what} for name, what in rows)
+    if os.path.exists(db_path):
+        conn = sqlite3.connect(db_path, timeout=10.0)
+        try:
+            conn.execute(_MCP_SERVERS_SCHEMA)
+            rows = conn.execute(
+                "SELECT name, what FROM mcp_servers WHERE status='active'").fetchall()
+        finally:
+            conn.close()
+        sources.extend({"name": name, "what": what} for name, what in rows)
+    for extra in ((config or {}).get("general", {})
+                  .get("opportunity_extra_sources") or []):
+        if not isinstance(extra, dict):
+            continue
+        name = str(extra.get("name") or "").strip()
+        what = str(extra.get("what") or "").strip()
+        if not name:
+            continue
+        sources.append({"name": name, "what": what or name,
+                        "path": str(extra["path"]).strip() if extra.get("path") else None})
     return sources
 
 
 def build_scan_prompt(sources: list[dict], opportunities_dir: str) -> str:
-    source_lines = "\n".join(f"- {s['name']}: {s['what']}" for s in sources)
+    def _line(s):
+        base = f"- {s['name']}: {s['what']}"
+        if s.get("path"):
+            base += f" (under {s['path']})"
+        return base
+    source_lines = "\n".join(_line(s) for s in sources)
     return f"""Survey the following sources this install has connected, looking for
 genuine business opportunities worth actively upskilling toward -- not just reacting to
 something that broke:
@@ -193,7 +211,7 @@ def scan_for_opportunities(engine, *, min_worth: str = "high", model: Optional[s
         return []
 
     os.makedirs(opp_dir, exist_ok=True)
-    sources = list_connected_sources(engine.data_dir)
+    sources = list_connected_sources(engine.data_dir, engine.config)
     prompt = build_scan_prompt(sources, opp_dir)
     _dispatch(engine, task_label="opportunity:scan", prompt=prompt, model=model,
              provider=provider, timeout_s=timeout_s, slug="opportunity-scan", stage="scan")

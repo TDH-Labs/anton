@@ -2,6 +2,7 @@
 dashboard /api/connections/* endpoints)."""
 import json
 import os
+import tempfile
 import sys
 import unittest
 from unittest import mock
@@ -15,13 +16,18 @@ from anton.connections import (BUNDLED, bridges_configured, bundled_catalog,
 
 class _Ctx(unittest.TestCase):
     def setUp(self):
-        self.data_dir = "/tmp/anton-test-connections"
+        # A per-test temp dir, not a fixed /tmp path shared across runs and
+        # concurrent processes. The fixed path was actively unsafe: both
+        # cli._load_secrets_into_env and config.apply_bridge_credential_overrides
+        # read `dirname(data_dir)/secrets.yaml`, and dirname("/tmp/anything")
+        # is "/tmp" -- so a stray /tmp/secrets.yaml left by any other program
+        # was loaded straight into os.environ for the rest of the run.
+        self._tmp = tempfile.TemporaryDirectory(prefix="anton-connections-")
+        self.data_dir = os.path.join(self._tmp.name, "data")
         os.makedirs(self.data_dir, exist_ok=True)
-        # clean cached registry and any persisted secrets between tests
-        for stale in ("mcp-registry-cache.json", "secrets.yaml"):
-            p = os.path.join(self.data_dir, stale)
-            if os.path.exists(p):
-                os.remove(p)
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def _app(self, config=None):
         from anton.dashboard import create_app
@@ -105,6 +111,26 @@ class TestConnectionsEndpoints(_Ctx):
         body = r.json()
         self.assertGreaterEqual(len(body["connections"]), len(BUNDLED))
         self.assertIn("bridges", body)
+
+    def test_catalog_dedupes_entries_sharing_an_id(self):
+        # The live MCP registry is known to list the same server more than
+        # once (registry_servers derives id from name, so republished/
+        # mirrored entries collide) -- a duplicate id breaks the Add-ons
+        # grid's React key reconciliation once the search box filters the
+        # list down, leaving stale cards onscreen.
+        with mock.patch("anton.dashboard.registry_servers", return_value=[
+                {"id": "dup-mcp", "name": "Dup One", "category": "registry",
+                 "transport": "stdio", "auth": "none", "what": "first"},
+                {"id": "dup-mcp", "name": "Dup Two", "category": "registry",
+                 "transport": "stdio", "auth": "none", "what": "second"},
+        ]):
+            client = self._app()
+            r = client.get("/api/connections/catalog?registry=1")
+        ids = [c["id"] for c in r.json()["connections"]]
+        self.assertEqual(len(ids), len(set(ids)))
+        # First occurrence wins.
+        dup = next(c for c in r.json()["connections"] if c["id"] == "dup-mcp")
+        self.assertEqual(dup["name"], "Dup One")
 
     def test_catalog_includes_bridge_apps_when_configured(self):
         cfg = {"bridges": {"composio": {"api_key": "k"}, "nango": {"secret_key": "s"}}}

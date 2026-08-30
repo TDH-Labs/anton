@@ -97,6 +97,15 @@ def ensure_ops_schema(isolation_db_conn: sqlite3.Connection) -> None:
     _add_missing_columns(isolation_db_conn, _APPROVALS_COLUMNS)
     _add_missing_columns(isolation_db_conn, _PLAYBOOKS_COLUMNS)
     isolation_db_conn.executescript(_NEW_TABLES)
+    # running_jobs / job_state: live dispatch state and operator steering,
+    # owned by job_state.py because the scheduler process writes them and the
+    # dashboard process reads them.
+    from .job_state import ensure_schema as ensure_job_state_schema
+    ensure_job_state_schema(isolation_db_conn)
+    # chat_sessions / chat_messages: durable Ask Anton history, owned by
+    # chat.py.
+    from .chat import ensure_schema as ensure_chat_schema
+    ensure_chat_schema(isolation_db_conn)
     isolation_db_conn.commit()
 
 
