@@ -83,3 +83,40 @@ The workflow's Respond to Webhook node returns
 `{"output": str, "exit_code": int, "error": str?}` — the minimal contract in
 `anton/executor/n8n_executor.py`, so a workflow needs no Anton-specific
 knowledge to be dispatchable.
+
+## anton-mcp-client.json — Anton's MCP tools as n8n nodes
+
+n8n's own **MCP Client** node can call Anton directly (no webhook glue).
+This workflow is the minimal proof: a manual trigger → one MCP call to
+`anton_status`.
+
+**Prerequisite — Anton's HTTP transport:** n8n cannot spawn a stdio MCP
+subprocess, so Anton must expose its SSE/HTTP surface:
+
+```bash
+# on the Anton host (loopback; use --host 0.0.0.0 only behind TLS/exposure decision)
+anton mcp --transport http --port 8877 --token "$ANTON_DASHBOARD_TOKEN"
+```
+
+**Import + wire:**
+
+1. Import `anton-mcp-client.json` (**Workflows → Import from File**).
+2. Edit the **Anton MCP Client** node:
+   - `Endpoint URL`: `http://<anton-host>:8877/mcp`
+   - `Authentication`: **Header Auth**; create a credential with header
+     `Authorization: Bearer <token>`.
+   - `Tool`: pick any of the 8 (`anton_status`, `anton_pending_approvals`,
+     `anton_search_memory`, …). With `Manual parameters` you can pass inputs
+     for the parameterized ones (e.g. `slug` for search memory).
+3. Run it. The node returns Anton's JSON.
+
+**Usage pattern:** put the MCP Client node *before* the Gate workflow in
+any pipeline that touches money/outbound — ask `anton_pending_approvals`,
+and branch: approved → proceed, pending → Wait for the person. That gives
+your visual workflows Anton's exact governance without inventing it a
+second time.
+
+**Verification:** run the workflow; the MCP node must return a real
+`anton_status` payload from the live dashboard (not an error). Both
+`anton-gate.json` and `anton-auditor.json` have been verified
+container-to-container against a real n8n.

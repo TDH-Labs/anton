@@ -337,11 +337,12 @@ wrongly — test with a real client writing then reading a real vault.
 
 | Step | Build | Proven by |
 |---|---|---|
-| 1 | MCP hardening: vault search + gated write, `anton_propose_work`, `anton_start_upskill`/`anton_upskill_status`, transport decision (stdio vs HTTP/SSE) | Real MCP client (like the existing `test_mcp_server.py` drives) against a live container; write→read→search round-trip on a real vault |
-| 2 | Goose recipe + SmartApprove investigation | Real Goose install, headless, money action parks approval (or the documented fallback) |
-| 3 | Claude Code + Codex installs | Real clients, real schedule firing — not `print` assertions |
-| 4 | n8n MCP client node + README | Real workflow calls Anton's approval tool in-container |
-| 5 | `.mcpb` bundle | Double-click install on a clean Claude Desktop |
+| 1 | MCP hardening: vault search + gated write, `anton_propose_work`, `anton_start_upskill`/`anton_upskill_status` | Real MCP client against a live container; write->read->search round-trip on a real vault |
+| 2 | Transport decision - RESOLVED: `--transport stdio|sse|http` shipped; HTTP requires a token (test-pinned), loopback default. n8n + Claude Desktop URL use sse/http; local harnesses use stdio | SSE smoke-tested live (200 handshake) + `test_http_transport_requires_a_token` |
+| 3 | Goose recipe (`examples/goose/anton-recipe.yaml`, written against the real installed Goose schema) + SmartApprove investigation | Real Goose install, headless, money action parks approval (or the documented fallback) |
+| 4 | Claude Code + Codex + opencode + pi-skill + Claude Desktop installs (`examples/`) | Real clients, real schedule firing - not `print` assertions |
+| 5 | n8n MCP client node (`examples/n8n/anton-mcp-client.json` + README) | Real workflow calls Anton approval tool in-container |
+| 6 | `.mcpb` bundle (spec + README) | Double-click install on a clean Claude Desktop |
 
 Final gate, unchanged from Part 1: the suite must pass under CI shape —
 `env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY python3 -m pytest tests/ -q`

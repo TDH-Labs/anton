@@ -1,0 +1,54 @@
+{
+  "name": "Anton · MCP client (status → approvals)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "When clicked",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "endpointUrl": "http://127.0.0.1:8877/mcp",
+        "authentication": "headerAuth",
+        "tool": {
+          "value": "anton_status",
+          "label": "anton_status"
+        },
+        "manualParameters": true,
+        "toolInput": {
+          "define": "string"
+        }
+      },
+      "id": "anton-mcp-client",
+      "name": "Anton MCP Client",
+      "type": "@n8n/n8n-nodes-langchain.mcpClient",
+      "typeVersion": 1,
+      "position": [220, 0],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ANTON_HEADER_AUTH_ID",
+          "name": "Anton header auth"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When clicked": {
+      "main": [
+        [
+          {
+            "node": "Anton MCP Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -236,8 +236,17 @@ def _register(server, client: "AntonClient") -> None:
             "outbound messages -- confirm with the person before calling it."))
 
 
-async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None) -> None:
-    """Run the MCP server over stdio until the client disconnects."""
+async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
+                transport: str = "stdio", host: str = "127.0.0.1",
+                port: int = 8877) -> None:
+    """Run the MCP server. Default transport is stdio (local harnesses:
+    Claude Code, Codex, pi, opencode, Goose on the same host).
+    `transport="sse"` or `transport="http"` bind an HTTP surface for
+    clients that cannot spawn a subprocess (n8n's MCP client node, Claude
+    Desktop via URL, remote harnesses). The HTTP surface is bound to
+    loopback by default; bind "0.0.0.0" only when the operator has
+    decided the network exposure is acceptable. HTTP transports require a
+    token (the authz spine knows the dashboard token as the same secret)."""
     from mcp.server import MCPServer
 
     client = AntonClient(base_url, token)
@@ -252,13 +261,36 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None) -
             "one without the person asking you to."),
     )
     _register(server, client)
-    await server.run_stdio_async()
+
+    if transport == "stdio":
+        await server.run_stdio_async()
+        return
+
+    # The HTTP surface is a network door: require the dashboard token so an
+    # open port does not silently expose Anton's tools. Bind loopback unless
+    # the operator explicitly passed a host.
+    if token is None:
+        raise ValueError(
+            f"mcp transport={transport!r} requires a token "
+            "(--token or ANTON_DASHBOARD_TOKEN) so the surface is not open")
+    if transport == "sse":
+        await server.run_sse_async(host=host, port=port, sse_path="/sse")
+    elif transport == "http":
+        await server.run_streamable_http_async(host=host, port=port,
+                                               streamable_http_path="/mcp")
+    else:
+        raise ValueError(f"unknown transport {transport!r}")
 
 
-def main(base_url: Optional[str] = None, token: Optional[str] = None) -> int:
-    """Entry point for `anton mcp`."""
+def main(base_url: Optional[str] = None, token: Optional[str] = None,
+         transport: str = "stdio", host: str = "127.0.0.1",
+         port: int = 8877) -> int:
+    """Entry point for `anton mcp`. `--transport sse|http` expose an HTTP
+    surface for clients that cannot spawn a subprocess (n8n MCP node,
+    Claude Desktop URL, remote harnesses); stdio is the default."""
     import asyncio
     resolved = base_url or os.environ.get("ANTON_BASE_URL") or DEFAULT_BASE_URL
     resolved_token = token or os.environ.get("ANTON_DASHBOARD_TOKEN") or None
-    asyncio.run(serve(resolved, resolved_token))
+    asyncio.run(serve(resolved, resolved_token, transport=transport,
+                      host=host, port=port))
     return 0

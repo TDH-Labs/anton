@@ -155,6 +155,20 @@ class TestToolRegistration(unittest.TestCase):
         mem = next(t for t in tools if t.name == "anton_search_memory")
         self.assertIn("slug", mem.input_schema.get("properties", {}))
 
+    def test_http_transport_requires_a_token(self):
+        """n8n's MCP client node and Claude Desktop URL need the HTTP/SSE
+        surface (`anton mcp --transport sse|http`); that surface is a
+        network door and must refuse to open without a token, so a bare
+        `--transport http` cannot silently expose Anton's tools on a port."""
+        import asyncio
+        from anton import mcp_server
+        async def _run():
+            with self.assertRaises(ValueError) as ctx:
+                await mcp_server.serve("http://127.0.0.1:8799", None,
+                                       transport="http", port=8877)
+            self.assertIn("requires a token", str(ctx.exception))
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -479,7 +479,8 @@ def cmd_mcp(args, config: dict) -> int:
     authz middleware, and a second in-process JobEngine would give this
     server a private view of state the real scheduler does not share."""
     from .mcp_server import main as mcp_main
-    return mcp_main(base_url=args.base_url, token=args.token)
+    return mcp_main(base_url=args.base_url, token=args.token,
+                    transport=args.transport, host=args.host, port=args.port)
 
 
 def cmd_doctor(args, config: dict) -> int:
@@ -616,11 +617,21 @@ def main(argv=None) -> int:
                         help="index data/skills into skill_dependencies")
 
     mcp_p = sub.add_parser(
-        "mcp", help="serve Anton over MCP (stdio) for Claude Desktop / Code / any client")
+        "mcp", help="serve Anton over MCP (stdio, or HTTP/SSE) for any MCP client")
     mcp_p.add_argument("--base-url", default=None,
                        help="running dashboard to talk to (default http://127.0.0.1:8799)")
     mcp_p.add_argument("--token", default=None,
                        help="bearer token when this install has authz enabled")
+    mcp_p.add_argument("--transport", choices=("stdio", "sse", "http"), default="stdio",
+                       help="stdio for local harnesses (default); sse or http bind an "
+                            "HTTP surface for clients that cannot spawn a subprocess "
+                            "(n8n MCP client node, Claude Desktop URL, remote harnesses). "
+                            "HTTP transports require --token.")
+    mcp_p.add_argument("--host", default="127.0.0.1",
+                       help="bind address for sse/http (default loopback; 0.0.0.0 only "
+                            "when exposure is intended)")
+    mcp_p.add_argument("--port", type=int, default=8877,
+                       help="port for sse/http (default 8877)")
     mcp_p.set_defaults(fn=cmd_mcp)
 
     doctor = sub.add_parser("doctor", help="read-only diagnostics")
