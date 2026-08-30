@@ -175,6 +175,28 @@ class TestDashboardApi(unittest.TestCase):
         # outcome says parked — never "sent"
         self.assertIn("parked", body["outcome"])
 
+    def test_send_kind_actually_creates_a_pending_approval_row(self):
+        # The reviewer's finding: the response claimed "parked for approval"
+        # but /api/approvals — the only place a person looks — was empty.
+        # Fix: the real gate callable materialises a row in the approvals
+        # table the UI reads. Assert against the API, not the response text.
+        r = self.client.post("/api/inbox/messages",
+                             json={"subject": "can you reply",
+                                   "body": "Please reply with the numbers."},
+                             headers=self._h())
+        self.assertEqual(r.status_code, 200, r.text)
+        approvals = self.client.get("/api/approvals", headers=self._h())
+        self.assertEqual(approvals.status_code, 200, approvals.text)
+        rows = approvals.json()
+        if isinstance(rows, dict):
+            rows = rows.get("approvals") or rows.get("items") or []
+        # The card render: a send-kind ingest must surface in "Waiting on
+        # you" as an approve card, not be silently absent.
+        self.assertTrue(rows, "expected at least one approval card after send-kind ingest")
+        self.assertTrue(
+            any("send reply" in (a.get("title") or "").lower() for a in rows),
+            f"expected a 'send reply' approval card, got {rows}")
+
     def test_unauth_ingest_refused(self):
         r = self.client.post("/api/inbox/messages",
                              json={"subject": "s", "body": "b"})

@@ -32,6 +32,7 @@ is the behavioral contract.
 | `anton_recent_runs` | `GET /api/ledger` |
 | `anton_usage` | `GET /api/usage` |
 | `anton_search_memory` | `GET /api/vault/note?slug=<slug>` |
+| `anton_propose_work` | `GET /api/opportunities` — what Anton's scanner surfaced as worth doing |
 | `anton_steer_job` | `POST /api/jobs/<id>/steer` body `{"action": "pause\|resume\|run-now\|skip-next"}` |
 | `anton_decide_approval` | `POST /api/approvals/<id>` body `{"decision": "once\|always\|defer"}` |
 

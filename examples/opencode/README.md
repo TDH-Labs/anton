@@ -24,8 +24,9 @@ authz enabled.
 
 ## What opencode gets
 
-The 8 Anton tools: status, list jobs, pending approvals, recent runs,
-usage, search memory, steer job, decide approval. The same three rules as
+The 9 Anton tools: status, list jobs, pending approvals, recent runs,
+usage, search memory, propose work, steer job, decide approval. The same
+three rules as
 every other harness apply (see `../codex/AGENTS.md` — the rules are
 harness-agnostic):
 
@@ -35,5 +36,5 @@ harness-agnostic):
 
 ## Verification
 
-- `opencode` interactive → `/mcp` → `anton` listed with 8 tools.
+- `opencode` interactive → `/mcp` → `anton` listed with 9 tools.
 - Ask it to `anton_status` → real output against the running dashboard.

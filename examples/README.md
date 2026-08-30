@@ -21,11 +21,11 @@ is a deliberate operator decision (put it behind TLS / an approved proxy).
 The MCP server talks to the **running** dashboard (`--base-url
 http://127.0.0.1:8799`, or `ANTON_BASE_URL`) rather than building its own
 engine — same reason the webhook receiver, inbox, and scheduler all share
-one process view. It serves 8 tools:
+one process view. It serves 9 tools:
 
 `anton_status`, `anton_list_jobs`, `anton_pending_approvals`,
 `anton_recent_runs`, `anton_usage`, `anton_search_memory`,
-`anton_steer_job`, `anton_decide_approval`.
+`anton_propose_work`, `anton_steer_job`, `anton_decide_approval`.
 
 ## The installs
 

@@ -666,6 +666,34 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             })
         return out
 
+    @app.get("/api/opportunities")
+    def opportunities(request: Request):
+        """Read-only view of what the proactive opportunity scanner has
+        surfaced: pending initiative candidates (opportunity-<slug>,
+        source 'scan:<source>:worth=<worth>') that meta_learning has not
+        dispatched yet. Backs the `anton_propose_work` MCP tool so any
+        harness can ask "what should I be doing?" and get Anton's answer.
+        Same authenticated-read posture as the other read routes."""
+        _require_token(request, token)
+        conn = open_isolation_db(data_dir)
+        try:
+            rows = conn.execute(
+                "SELECT slug, source, risk, ts FROM initiatives "
+                "WHERE status='pending' AND slug LIKE 'opportunity-%' "
+                "ORDER BY ts DESC LIMIT 20").fetchall()
+        finally:
+            conn.close()
+        out = []
+        for slug, source, risk, ts in rows:
+            subject = slug[len("opportunity-"):]
+            worth = "low"
+            if "worth=" in source:
+                worth = source.rsplit("worth=", 1)[1]
+            src = source.split(":")[1] if source.startswith("scan:") and ":" in source else source
+            out.append({"slug": slug, "subject": subject, "source": src,
+                        "worth": worth, "risk": risk, "ts": ts})
+        return {"opportunities": out}
+
     @app.get("/api/jobs")
     def jobs():
         """Job[] { id, automationId, trigger, nextRun, lastRun, cadenceMin }
@@ -1311,7 +1339,14 @@ def create_app(engine: JobEngine, data_dir: str, config: dict) -> FastAPI:
             "body": req.body,
             "received_at": req.received_at,
         })
-        outcome = inbox.apply(msg, data_dir)
+        try:
+            outcome = inbox.apply(
+                msg, data_dir,
+                outbound_gate=lambda m: inbox.park_for_approval(m, data_dir))
+        except ValueError as e:
+            # A send with no wired gate is a config error, not a user error:
+            # surface it as a 500 so it is never silently mis-claimed.
+            raise HTTPException(500, str(e))
         record = msg.to_record()
         return {
             "status": "ok",

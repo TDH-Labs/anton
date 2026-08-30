@@ -155,20 +155,72 @@ class TestToolRegistration(unittest.TestCase):
         mem = next(t for t in tools if t.name == "anton_search_memory")
         self.assertIn("slug", mem.input_schema.get("properties", {}))
 
-    def test_http_transport_requires_a_token(self):
-        """n8n's MCP client node and Claude Desktop URL need the HTTP/SSE
-        surface (`anton mcp --transport sse|http`); that surface is a
-        network door and must refuse to open without a token, so a bare
-        `--transport http` cannot silently expose Anton's tools on a port."""
+    def test_propose_work_tool_is_declared_and_dispatches_to_opportunities(self):
         import asyncio
         from anton import mcp_server
-        async def _run():
-            with self.assertRaises(ValueError) as ctx:
-                await mcp_server.serve("http://127.0.0.1:8799", None,
-                                       transport="http", port=8877)
-            self.assertIn("requires a token", str(ctx.exception))
-        asyncio.run(_run())
+        # declared in the TOOLS list (so the generic register loop binds it)
+        spec = next(t for t in mcp_server.TOOLS if t["name"] == "anton_propose_work")
+        self.assertEqual(spec["method"], "GET")
+        self.assertEqual(spec["path"], "/api/opportunities")
+        # dispatches through the HTTP surface like every read tool
+        c, t = client()
+        mcp_server.dispatch(c, "anton_propose_work", {})
+        self.assertEqual(t.calls[0][0], "GET")
+        self.assertEqual(t.calls[0][1], "/api/opportunities")
+        # registered on a real server
+        server = self._server()
+        tools = asyncio.run(server.list_tools())
+        self.assertIn("anton_propose_work", {x.name for x in tools})
 
+    def test_http_transport_rejects_bare_requests_on_a_real_socket(self):
+        """The real exploit the reviewer ran: server launched WITH a token,
+        then a bare request with no Authorization header hits the HTTP
+        surface; _require_bearer must reject it -- the token must gate
+        REQUESTS, not just launch. This opens an actual socket."""
+        import asyncio, threading, time, urllib.error, urllib.request
+        from anton import mcp_server
+
+        TOKEN = "test-token-123"
+        PORT = 18877
+        server = mcp_server.MCPServer(name="anton", version="0.2.0")
+        app = server.streamable_http_app(streamable_http_path="/mcp")
+        mcp_server._require_bearer(app, TOKEN)
+        import uvicorn
+        uvi = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
+                                            log_level="error"))
+        t = threading.Thread(target=asyncio.run, args=(uvi.serve(),), daemon=True)
+        t.start()
+        for _ in range(50):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{PORT}/mcp", timeout=0.3)
+                time.sleep(0.1)
+            except Exception:
+                time.sleep(0.1)
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{PORT}/mcp",
+            data=b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}',
+            headers={"Content-Type": "application/json"},
+            method="POST")
+        try:
+            urllib.request.urlopen(req, timeout=3)
+            self.fail("bare request was accepted - MCP surface is unauthenticated")
+        except urllib.error.HTTPError as e:
+            self.assertIn(e.code, (401, 403), f"expected 401/403, got {e.code}")
+
+        good = urllib.request.Request(
+            f"http://127.0.0.1:{PORT}/mcp",
+            data=b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {TOKEN}"},
+            method="POST")
+        try:
+            resp = urllib.request.urlopen(good, timeout=3)
+            self.assertNotIn(resp.status, (401, 403))
+        except urllib.error.HTTPError as e:
+            self.assertNotIn(e.code, (401, 403),
+                             "token request rejected, expected pass-through to SDK")
+        uvi.should_exit = True
 
 if __name__ == "__main__":
     unittest.main()

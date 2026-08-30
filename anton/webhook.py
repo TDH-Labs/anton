@@ -62,12 +62,14 @@ def make_handler(engine: JobEngine):
                     payload = {}
                 if isinstance(payload, list):
                     outcomes = []
+                    gate = lambda m: inbox.park_for_approval(m, engine.data_dir)
                     for item in payload[:50]:
                         if not isinstance(item, dict):
                             continue
                         msg = inbox.InboxMessage.from_body(item)
                         try:
-                            outcome = inbox.apply(msg, engine.data_dir)
+                            outcome = inbox.apply(msg, engine.data_dir,
+                                                  outbound_gate=gate)
                         except Exception as e:  # one bad message must not drop the batch
                             outcome = f"error: {type(e).__name__}: {e}"
                         outcomes.append({"message": msg.message_id, "kind": msg.kind,
@@ -78,7 +80,9 @@ def make_handler(engine: JobEngine):
                     return
                 if isinstance(payload, dict):
                     msg = inbox.InboxMessage.from_body(payload)
-                    outcome = inbox.apply(msg, engine.data_dir)
+                    gate = lambda m: inbox.park_for_approval(m, engine.data_dir)
+                    outcome = inbox.apply(msg, engine.data_dir,
+                                          outbound_gate=gate)
                     self._send(200, {"status": "ok", "message": msg.message_id,
                                      "kind": msg.kind, "gate": msg.gate,
                                      "outcome": outcome, "notes": msg.notes})

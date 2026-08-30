@@ -36,6 +36,7 @@ secrets policy matters.)
 - `anton_steer_job` / `anton_decide_approval` — the operator's powers;
   treat `decide_approval` as releasing real money/outbound: only act when
   the person asked.
+- `anton_propose_work` — what Anton thinks is worth doing next.
 - `anton_status` / `anton_recent_runs` / `anton_usage` — what Anton is
   doing and what it cost.
 

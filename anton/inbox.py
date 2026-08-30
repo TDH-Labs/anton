@@ -155,10 +155,11 @@ def _vault_note_path(vault_dir: str, slug: str) -> str:
 
 def apply(message: InboxMessage, data_dir: str, *, outbound_gate=None) -> str:
     """Apply the classified kind and return a one-line outcome for the
-    ledger / work queue. Ungated kinds complete here. gated kinds create a
-    held draft plus — when an outbound_gate callable is supplied — an
-    approval row, and stop; when no gate callable is wired, the draft still
-    persists and the caller records the parking decision."""
+    ledger / work queue. Ungated kinds complete here. kind=send creates a
+    held draft AND requires an outbound_gate callable that materialises the
+    approval row (park_for_approval) -- a send without one raises, because
+    "parked for approval" with no row anywhere a human can see would be a
+    lie."""
     kind = message.kind or classify(message)
     message.kind = kind
     message.gate = KINDS[kind]["gate"]
@@ -199,7 +200,15 @@ def apply(message: InboxMessage, data_dir: str, *, outbound_gate=None) -> str:
                     f"From: {message.from_addr}\n\n"
                     f"---\n\n(message to answer, held for review)\n")
         message.notes = f"draft at {os.path.basename(path)}"
-        if kind == "send" and outbound_gate is not None:
+        if kind == "send":
+            if outbound_gate is None:
+                # Fail LOUD: a send without a gate callable means the
+                # "parked for approval" contract would be decorative (no
+                # row anywhere a human sees it). Every real caller must
+                # wire one.
+                raise ValueError(
+                    "kind=send requires an outbound_gate; without one the "
+                    "parked-for-approval contract cannot be honored")
             outbound_gate(message)
 
     elif kind == "summarize":
@@ -213,6 +222,35 @@ def apply(message: InboxMessage, data_dir: str, *, outbound_gate=None) -> str:
 def _append_jsonl(path: str, row: Dict[str, object]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def park_for_approval(message: InboxMessage, data_dir: str, *,
+                      isolation_db: Optional[str] = None) -> dict:
+    """Create ONE real pending-approval row for a kind=send message, in the
+    same `approvals` table the Ops Center's "Waiting on you" reads. Both
+    inbound paths (dashboard API, webhook) call this; without it the
+    "parked for approval" claim in the response was decorative -- the
+    response said parked, but /api/approvals showed nothing.
+
+    Returns the approval row's id for the response."""
+    import secrets as _secrets
+    import sqlite3 as _sqlite
+    import datetime as _dt
+
+    db_path = isolation_db or os.path.join(data_dir, "isolation.db")
+    now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = _secrets.token_hex(16)
+    action = f"send reply: {message.subject[:80]}"
+    with _sqlite.connect(db_path, timeout=10.0) as conn:
+        conn.execute(
+            "INSERT INTO approvals(nonce, action, amount, recipient, status,"
+            " ts, initiator_human, initiator_principal) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (nonce, action, "0.00", message.from_addr, "pending", now,
+             "inbox", "api:inbox"))
+        aid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+    return {"id": aid, "nonce": nonce, "status": "pending"}
 
 
 def read_work(name: str, data_dir: str, *, limit: int = 50) -> List[Dict[str, object]]:

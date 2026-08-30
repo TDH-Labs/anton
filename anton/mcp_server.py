@@ -28,6 +28,8 @@ import json
 import os
 from typing import Any, Optional
 
+from mcp.server import MCPServer
+
 DEFAULT_BASE_URL = "http://127.0.0.1:8799"
 
 
@@ -128,6 +130,17 @@ TOOLS: list[dict] = [
         },
         "method": "GET", "path": "/api/vault/note",
         "query": ["slug"],
+    },
+    {
+        "name": "anton_propose_work",
+        "description": (
+            "What Anton's proactive scanner has surfaced as worth upskilling "
+            "toward: pending opportunities (subject, source, worth) that have "
+            "not been dispatched yet. Ask this before idle time to get the "
+            "operator's agent an initiative list; empty is a correct, expected "
+            "answer most days. Read-only: finding work is never performing it."),
+        "schema": {"type": "object", "properties": {}},
+        "method": "GET", "path": "/api/opportunities",
     },
 ]
 
@@ -236,6 +249,50 @@ def _register(server, client: "AntonClient") -> None:
             "outbound messages -- confirm with the person before calling it."))
 
 
+def _require_bearer(app, token: str):
+    """Wrap a Starlette app so every request must carry
+    `Authorization: Bearer <token>`. Constant-time compare; anything missing
+    or wrong gets 401 before it reaches any route -- this is the enforcement
+    the SDK's optional auth middleware does not provide for a fixed token.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+    import hmac as _hmac
+
+    expected = token.encode()
+
+    class BearerRequired(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+            if not auth.lower().startswith("bearer "):
+                return JSONResponse({"error": "authorization required"}, status_code=401)
+            provided = auth[7:].strip().encode()
+            if not _hmac.compare_digest(provided, expected):
+                return JSONResponse({"error": "invalid bearer token"}, status_code=401)
+            return await call_next(request)
+
+    app.add_middleware(BearerRequired)
+    return app
+
+
+def _make_token_verifier(token: Optional[str]):
+    """Bearer-auth checker for the HTTP/SSE MCP surface. The SDK applies
+    it to every request on those transports; without it the token only
+    stops the server from LAUNCHING, and an already-running surface would
+    answer bare requests -- including anton_decide_approval, which releases
+    real money/outbound actions. Returns None (no auth) for stdio, where
+    the process boundary is the auth."""
+    if token is None:
+        return None
+    import hmac as _hmac
+    async def _verify(tok: str):
+        from mcp.server.auth.provider import AccessToken
+        if _hmac.compare_digest(tok, token):
+            return AccessToken(token=tok, client_id="anton:mcp", scopes=["tools"])
+        return None
+    return _verify
+
+
 async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
                 transport: str = "stdio", host: str = "127.0.0.1",
                 port: int = 8877) -> None:
@@ -246,10 +303,12 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
     Desktop via URL, remote harnesses). The HTTP surface is bound to
     loopback by default; bind "0.0.0.0" only when the operator has
     decided the network exposure is acceptable. HTTP transports require a
-    token (the authz spine knows the dashboard token as the same secret)."""
-    from mcp.server import MCPServer
-
+    token (the authz spine knows the dashboard token as the same secret)
+    AND token_verifier so every HTTP request is authenticated -- the token
+    gates launch and the verifier gates requests, neither alone suffices."""
     client = AntonClient(base_url, token)
+    token_verifier = _make_token_verifier(token)
+
     server = MCPServer(
         name="anton",
         version="0.2.0",
@@ -259,6 +318,7 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
             "person; these tools are the operator's second door. Approvals "
             "gate real money movement and outbound messages -- never decide "
             "one without the person asking you to."),
+        token_verifier=token_verifier,
     )
     _register(server, client)
 
@@ -273,13 +333,24 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
         raise ValueError(
             f"mcp transport={transport!r} requires a token "
             "(--token or ANTON_DASHBOARD_TOKEN) so the surface is not open")
+
+    import uvicorn
     if transport == "sse":
-        await server.run_sse_async(host=host, port=port, sse_path="/sse")
+        app = server.sse_app(sse_path="/sse", host=host)
     elif transport == "http":
-        await server.run_streamable_http_async(host=host, port=port,
-                                               streamable_http_path="/mcp")
+        app = server.streamable_http_app(streamable_http_path="/mcp")
     else:
         raise ValueError(f"unknown transport {transport!r}")
+
+    # The SDK's own auth middleware is gated behind OAuth settings and
+    # extracts-but-does-not-require credentials; shipping the surface
+    # without an enforcement layer lets a bare request reach tool dispatch
+    # (including anton_decide_approval). Wrap the app so EVERY request must
+    # carry the matching bearer token.
+    app = _require_bearer(app, token)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning")
+    server_uv = uvicorn.Server(config)
+    await server_uv.serve()
 
 
 def main(base_url: Optional[str] = None, token: Optional[str] = None,
