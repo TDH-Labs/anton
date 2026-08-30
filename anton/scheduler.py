@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import socket
@@ -9,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+import urllib.request
 from typing import List, Optional
 
 from .canary import attempt_repairs, compute_tripwires
@@ -56,6 +58,34 @@ def _tcp_reachable(host: str, port: int, timeout_s: float = 1.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def _ollama_model_missing(host: str, port: int, model: str, timeout_s: float = 2.0) -> bool:
+    """True only when Ollama answered cleanly and the configured model tag is
+    definitively absent from it -- e.g. `ollama/llama3.1:8b` configured but
+    never `ollama pull`ed. A live server with the wrong model rejects a
+    dispatch immediately (pi's own provider client 404s in well under a
+    second), but that still burns the run: the job is marked failed for the
+    poll cycle instead of skipped-with-reason, and a human reading the
+    ledger sees an opaque exit 1 rather than "pull this model".
+
+    Deliberately asymmetric with _tcp_reachable: any failure to reach or
+    parse /api/tags returns False (not missing) rather than blocking --
+    _tcp_reachable already covers "Ollama is down"; this only adds a new
+    skip reason when it has positive evidence the model genuinely is not
+    there, never on an ambiguous/errored probe.
+    """
+    tag = model.split("/", 1)[1] if "/" in model else model
+    try:
+        with urllib.request.urlopen(
+                f"http://{host}:{port}/api/tags", timeout=timeout_s) as resp:
+            body = json.loads(resp.read())
+    except Exception:
+        return False
+    names = {m.get("name") for m in body.get("models", []) if isinstance(m, dict)}
+    if not names:
+        return False
+    return tag not in names
 
 
 def get_son_of_anton_mode(data_dir: Optional[str]) -> bool:
@@ -438,6 +468,10 @@ class JobEngine:
             if not _tcp_reachable(host, port):
                 return (f"local model {route.model}: nothing listening on "
                         f"{host}:{port} (is Ollama running?)")
+            if _ollama_model_missing(host, port, route.model):
+                return (f"local model {route.model}: not pulled on "
+                        f"{host}:{port} (ollama pull "
+                        f"{route.model.split('/', 1)[-1]})")
             return None
         prefix = route.model.split("/", 1)[0]
         env_var = _PROVIDER_ENV_VARS.get(prefix)

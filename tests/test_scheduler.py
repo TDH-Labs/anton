@@ -1,13 +1,16 @@
 import datetime as dt
+import io
+import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 from anton.config import load_config
 from anton.db import init_db
 from anton.executor import FakeExecutor
 from anton.jobs import load_jobs
 from anton.ledger import Ledger
-from anton.scheduler import JobEngine
+from anton.scheduler import JobEngine, _ollama_model_missing
 
 JOBS = """
 - id: e2e-canary
@@ -295,3 +298,83 @@ class TestProviderPrerequisiteGate(unittest.TestCase):
         row = self.ledger.last_run("cron-job")
         self.assertEqual(row["exit"], 0)
         self.assertNotIn("skipped:no-provider", row["flags"])
+
+
+def _tags_response(names: list[str]) -> "io.BytesIO":
+    """A fake urlopen() context manager response for /api/tags."""
+    body = json.dumps({"models": [{"name": n} for n in names]}).encode()
+    return io.BytesIO(body)
+
+
+class TestOllamaModelAvailabilityGate(unittest.TestCase):
+    """_provider_block's TCP check only proves something is listening on the
+    Ollama port -- not that the CONFIGURED model is actually pulled there.
+    Found on a real machine: routes.local_model pointed at a model that was
+    never `ollama pull`ed, so every local dispatch reached a live Ollama and
+    still failed (pi's provider client 404s), burning the run as an opaque
+    exit 1 instead of a clear skip. Ollama itself is real and reachable in
+    every test below (self._reachable patches only _tcp_reachable's result,
+    not the process) -- these tests isolate the NEW check, /api/tags."""
+
+    def _job_engine(self, model_tag: str):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        init_db(os.path.join(d.name, "isolation.db"))
+        jobs_path = os.path.join(d.name, "jobs.yaml")
+        with open(jobs_path, "w", encoding="utf-8") as f:
+            f.write("- id: local-job\n  trigger: { type: cron, expr: \"*/15 * * * *\" }\n"
+                    "  recipe: r\n")
+        cfg = load_config()
+        cfg["routes"]["local_model"] = model_tag
+        from anton.executor.base import Executor
+
+        class StubPiExecutor(Executor):
+            def available(self):
+                return True
+            def run(self, task, *, model, provider, cwd=None, timeout_s=None):
+                raise AssertionError("run() must not be reached when the model is missing")
+        ledger = Ledger(os.path.join(d.name, "runs.jsonl"))
+        return JobEngine(load_jobs(jobs_path), ledger, StubPiExecutor(), cfg, data_dir=d.name), ledger
+
+    def test_unit_missing_model_is_detected(self):
+        with patch("urllib.request.urlopen", return_value=_tags_response(["phi4:latest"])):
+            self.assertTrue(_ollama_model_missing("h", 1, "ollama/llama3.1:8b"))
+
+    def test_unit_present_model_is_not_missing(self):
+        with patch("urllib.request.urlopen",
+                   return_value=_tags_response(["llama3.1:8b", "phi4:latest"])):
+            self.assertFalse(_ollama_model_missing("h", 1, "ollama/llama3.1:8b"))
+
+    def test_unit_a_probe_failure_does_not_add_a_new_block(self):
+        # _tcp_reachable already owns "Ollama is down"; this check must stay
+        # silent on ambiguous evidence rather than invent a second reason.
+        with patch("urllib.request.urlopen", side_effect=OSError("connection reset")):
+            self.assertFalse(_ollama_model_missing("h", 1, "ollama/llama3.1:8b"))
+
+    def test_unit_an_empty_tags_list_does_not_add_a_new_block(self):
+        with patch("urllib.request.urlopen", return_value=_tags_response([])):
+            self.assertFalse(_ollama_model_missing("h", 1, "ollama/llama3.1:8b"))
+
+    def test_unit_malformed_json_does_not_add_a_new_block(self):
+        with patch("urllib.request.urlopen", return_value=io.BytesIO(b"not json")):
+            self.assertFalse(_ollama_model_missing("h", 1, "ollama/llama3.1:8b"))
+
+    def test_dispatch_skips_with_a_pull_instruction_when_the_model_is_missing(self):
+        engine, ledger = self._job_engine("ollama/totally-fake-model:1b")
+        with patch("anton.scheduler._tcp_reachable", return_value=True), \
+             patch("urllib.request.urlopen", return_value=_tags_response(["phi4:latest"])):
+            rec = engine.run_job(engine.by_id("local-job"))
+        self.assertEqual(rec.exit, 6)
+        self.assertIn("skipped:no-provider", rec.flags)
+        self.assertIn("not pulled", rec.output)
+        self.assertIn("ollama pull totally-fake-model:1b", rec.output)
+
+    def test_dispatch_proceeds_past_the_gate_when_the_model_is_present(self):
+        engine, ledger = self._job_engine("ollama/llama3.1:8b")
+        with patch("anton.scheduler._tcp_reachable", return_value=True), \
+             patch("urllib.request.urlopen",
+                   return_value=_tags_response(["llama3.1:8b"])):
+            # StubPiExecutor.run() raises if reached -- reaching it (rather
+            # than a skip) IS the assertion that the gate let this through.
+            with self.assertRaises(AssertionError):
+                engine.run_job(engine.by_id("local-job"))
