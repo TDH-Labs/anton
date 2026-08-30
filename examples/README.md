@@ -32,6 +32,8 @@ one process view. It serves 9 tools:
 | Harness | Folder | Transport |
 |---|---|---|
 | Goose | `goose/` | stdio (local) / SSE (remote) |
+| Hermes Agent | `hermes/` | stdio (local) / SSE+header (remote) |
+| OpenClaw | `openclaw/` | stdio (local) / HTTP+header (remote) |
 | Claude Code | `claude-code/` | stdio |
 | Codex CLI | `codex/` | stdio |
 | opencode | `opencode/` | stdio |
