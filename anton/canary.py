@@ -32,6 +32,32 @@ def register_repair_recipe(job_id: str, *, ev: float, feasibility: float,
     REPAIR_RECIPES[job_id] = (ev, feasibility, risk, kind)
 
 
+def _diagnose_n8n_unreachable(engine: Any, job: Job) -> bool:
+    """True when `job` dispatches through N8NExecutor and that instance is
+    not answering right now.
+
+    This runs BEFORE the REPAIR_RECIPES lookup for n8n-backed jobs, because
+    re-running is the wrong repair when the target itself is down: it just
+    burns another cycle failing the same way, and (worse) would silently
+    mark a real n8n outage as "auto_repaired" the moment the job happened to
+    succeed on an unrelated retry. A down n8n instance is diagnosis, not
+    repair -- it always surfaces to a human via _record_repair_candidate,
+    never auto-executes, regardless of what REPAIR_RECIPES says for this
+    job_id. Bounded deliberately: this checks reachability only. An expired
+    credential or a genuinely broken third-party integration is not
+    something to auto-fix -- see examples/n8n/README.md's Auditor workflow
+    for the complementary n8n-side half (a workflow skipping Anton's own
+    gate gets deactivated, not silently patched).
+    """
+    if not job.executor or job.executor.get("name") != "n8n":
+        return False
+    from .executor.n8n_executor import N8NExecutor
+    executor = engine._resolve_executor(job)
+    if not isinstance(executor, N8NExecutor):
+        return False
+    return not executor.available()
+
+
 def attempt_repairs(engine: Any, tripwires: List[dict]) -> List[dict]:
     """For each tripwire with a mapped repair recipe: score it through the
     governor and either dispatch the repair (re-running the job is the
@@ -45,13 +71,17 @@ def attempt_repairs(engine: Any, tripwires: List[dict]) -> List[dict]:
     outcomes: List[dict] = []
     for t in tripwires:
         job_id = t["job_id"]
-        recipe = REPAIR_RECIPES.get(job_id)
-        if recipe is None:
-            outcomes.append({"job_id": job_id, "action": "no_recipe"})
-            continue
         job = engine.by_id(job_id)
         if job is None:
             outcomes.append({"job_id": job_id, "action": "job_missing"})
+            continue
+        if _diagnose_n8n_unreachable(engine, job):
+            outcomes.append({"job_id": job_id, "action": "n8n_unreachable"})
+            _record_repair_candidate(engine, job_id, "n8n_unreachable")
+            continue
+        recipe = REPAIR_RECIPES.get(job_id)
+        if recipe is None:
+            outcomes.append({"job_id": job_id, "action": "no_recipe"})
             continue
         ev, feasibility, risk, kind = recipe
         ruling = classify(ev, feasibility, risk=risk, kind=kind)
