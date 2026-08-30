@@ -196,6 +196,36 @@ class TestDashboardApi(unittest.TestCase):
         self.assertTrue(
             any("send reply" in (a.get("title") or "").lower() for a in rows),
             f"expected a 'send reply' approval card, got {rows}")
+        # park_for_approval's INSERT never set kind, so a schema-added
+        # column with no SQL default left it NULL; dashboard.py's read side
+        # falls back with `kind or "money"`, so an outbound message rendered
+        # to a reviewer as a MONEY approval.
+        card = next(a for a in rows if "send reply" in (a.get("title") or "").lower())
+        self.assertEqual(card.get("kind"), "outbound",
+                         "an inbox send-gate approval must not render as a money approval")
+
+    def test_park_for_approval_works_against_a_schema_bare_database(self):
+        # park_for_approval connects directly with sqlite3.connect rather
+        # than through open_isolation_db, so it can be the FIRST touch on
+        # isolation.db in a request. Without ensure_ops_schema() inside it,
+        # a fresh install's very first inbox message would fail with
+        # "no such column: kind" the moment kind was added to the INSERT.
+        import sqlite3
+        from anton import inbox
+        from anton.db import init_db
+
+        fresh_dir = tempfile.mkdtemp()
+        db_path = os.path.join(fresh_dir, "isolation.db")
+        init_db(db_path)  # base schema only -- no ensure_ops_schema yet
+
+        msg = inbox.InboxMessage.from_body({"subject": "reply please", "body": "reply please"})
+        msg.kind = "send"
+        result = inbox.park_for_approval(msg, fresh_dir, isolation_db=db_path)
+
+        conn = sqlite3.connect(db_path)
+        kind = conn.execute("SELECT kind FROM approvals WHERE id=?", (result["id"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual(kind, "outbound")
 
     def test_unauth_ingest_refused(self):
         r = self.client.post("/api/inbox/messages",

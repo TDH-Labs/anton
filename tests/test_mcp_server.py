@@ -176,26 +176,39 @@ class TestToolRegistration(unittest.TestCase):
         """The real exploit the reviewer ran: server launched WITH a token,
         then a bare request with no Authorization header hits the HTTP
         surface; _require_bearer must reject it -- the token must gate
-        REQUESTS, not just launch. This opens an actual socket."""
+        REQUESTS, not just launch. This opens an actual socket.
+
+        Deliberately calls mcp_server.serve() -- the actual `anton mcp`
+        entry point -- rather than hand-assembling an MCPServer +
+        _require_bearer pair. An earlier version of this test built its own
+        server with no token_verifier and so never caught that serve()
+        itself crashed on construction (MCPServer rejects a token_verifier
+        passed without matching `auth` settings): the test proved the
+        middleware works in isolation while the real command was broken.
+        Only exercising the real entry point closes that gap."""
         import asyncio, threading, time, urllib.error, urllib.request
         from anton import mcp_server
 
         TOKEN = "test-token-123"
-        PORT = 18877
-        server = mcp_server.MCPServer(name="anton", version="0.2.0")
-        app = server.streamable_http_app(streamable_http_path="/mcp")
-        mcp_server._require_bearer(app, TOKEN)
-        import uvicorn
-        uvi = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=PORT,
-                                            log_level="error"))
-        t = threading.Thread(target=asyncio.run, args=(uvi.serve(),), daemon=True)
+        PORT = 18878
+
+        def run_server():
+            asyncio.run(mcp_server.serve(
+                base_url="http://127.0.0.1:1", token=TOKEN,
+                transport="http", host="127.0.0.1", port=PORT))
+
+        t = threading.Thread(target=run_server, daemon=True)
         t.start()
         for _ in range(50):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{PORT}/mcp", timeout=0.3)
-                time.sleep(0.1)
+                break
+            except urllib.error.HTTPError:
+                break  # server answered (even with an error) -- it's up
             except Exception:
                 time.sleep(0.1)
+        else:
+            self.fail("serve() never opened the socket -- see the real crash it must not have")
 
         req = urllib.request.Request(
             f"http://127.0.0.1:{PORT}/mcp",
@@ -212,6 +225,7 @@ class TestToolRegistration(unittest.TestCase):
             f"http://127.0.0.1:{PORT}/mcp",
             data=b'{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
             headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
                      "Authorization": f"Bearer {TOKEN}"},
             method="POST")
         try:
@@ -220,7 +234,23 @@ class TestToolRegistration(unittest.TestCase):
         except urllib.error.HTTPError as e:
             self.assertNotIn(e.code, (401, 403),
                              "token request rejected, expected pass-through to SDK")
-        uvi.should_exit = True
+
+    def test_stdio_transport_needs_no_token(self):
+        """serve() must not require a token for stdio: the process boundary
+        is the auth there, and a hand-set ANTON_DASHBOARD_TOKEN in the
+        operator's shell must not make plain `anton mcp` (Claude Code,
+        Codex, pi, opencode -- all stdio, all local) refuse to start.
+        run_stdio_async is mocked -- it reads real process stdin, which
+        pytest's own capture leaves unreadable, unrelated to what this
+        test checks."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from anton import mcp_server
+
+        with patch("mcp.server.MCPServer.run_stdio_async", new_callable=AsyncMock) as run:
+            asyncio.run(mcp_server.serve(
+                base_url="http://127.0.0.1:1", token=None, transport="stdio"))
+            run.assert_awaited_once()
 
 if __name__ == "__main__":
     unittest.main()

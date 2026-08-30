@@ -236,18 +236,24 @@ def park_for_approval(message: InboxMessage, data_dir: str, *,
     import secrets as _secrets
     import sqlite3 as _sqlite
     import datetime as _dt
+    from .ops_schema import ensure_ops_schema
 
     db_path = isolation_db or os.path.join(data_dir, "isolation.db")
     now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = _secrets.token_hex(16)
     action = f"send reply: {message.subject[:80]}"
     with _sqlite.connect(db_path, timeout=10.0) as conn:
+        # This can be the FIRST touch on isolation.db in a request (dashboard
+        # routes normally reach the `kind` column through open_isolation_db,
+        # which runs this first) -- without it, a fresh install's very first
+        # inbox message would hit "no such column: kind".
+        ensure_ops_schema(conn)
         conn.execute(
             "INSERT INTO approvals(nonce, action, amount, recipient, status,"
-            " ts, initiator_human, initiator_principal) "
-            "VALUES(?,?,?,?,?,?,?,?)",
+            " ts, initiator_human, initiator_principal, kind) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
             (nonce, action, "0.00", message.from_addr, "pending", now,
-             "inbox", "api:inbox"))
+             "inbox", "api:inbox", "outbound"))
         aid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.commit()
     return {"id": aid, "nonce": nonce, "status": "pending"}

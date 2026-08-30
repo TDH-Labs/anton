@@ -275,24 +275,6 @@ def _require_bearer(app, token: str):
     return app
 
 
-def _make_token_verifier(token: Optional[str]):
-    """Bearer-auth checker for the HTTP/SSE MCP surface. The SDK applies
-    it to every request on those transports; without it the token only
-    stops the server from LAUNCHING, and an already-running surface would
-    answer bare requests -- including anton_decide_approval, which releases
-    real money/outbound actions. Returns None (no auth) for stdio, where
-    the process boundary is the auth."""
-    if token is None:
-        return None
-    import hmac as _hmac
-    async def _verify(tok: str):
-        from mcp.server.auth.provider import AccessToken
-        if _hmac.compare_digest(tok, token):
-            return AccessToken(token=tok, client_id="anton:mcp", scopes=["tools"])
-        return None
-    return _verify
-
-
 async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
                 transport: str = "stdio", host: str = "127.0.0.1",
                 port: int = 8877) -> None:
@@ -303,11 +285,18 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
     Desktop via URL, remote harnesses). The HTTP surface is bound to
     loopback by default; bind "0.0.0.0" only when the operator has
     decided the network exposure is acceptable. HTTP transports require a
-    token (the authz spine knows the dashboard token as the same secret)
-    AND token_verifier so every HTTP request is authenticated -- the token
-    gates launch and the verifier gates requests, neither alone suffices."""
+    token (the authz spine knows the dashboard token as the same secret).
+    The token gates launch AND every request: launch via the check below,
+    requests via `_require_bearer` wrapping the ASGI app further down.
+
+    `MCPServer`'s own `token_verifier=`/`auth=` mechanism is NOT used here --
+    it is a full OAuth resource-server setup (it raises ValueError if you
+    pass a token_verifier without matching `auth` settings) and heavier than
+    a fixed shared secret needs. `_require_bearer` is a plain Starlette
+    bearer-check middleware wrapping the app; it is what actually enforces
+    the token, is covered by a real-socket test, and does not require the
+    SDK's OAuth machinery to be configured correctly to work at all."""
     client = AntonClient(base_url, token)
-    token_verifier = _make_token_verifier(token)
 
     server = MCPServer(
         name="anton",
@@ -318,7 +307,6 @@ async def serve(base_url: str = DEFAULT_BASE_URL, token: Optional[str] = None,
             "person; these tools are the operator's second door. Approvals "
             "gate real money movement and outbound messages -- never decide "
             "one without the person asking you to."),
-        token_verifier=token_verifier,
     )
     _register(server, client)
 
